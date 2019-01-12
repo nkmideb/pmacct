@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -60,7 +60,6 @@
 thread_pool_t *isis_pool;
 
 /* Functions */
-#if defined ENABLE_THREADS
 void nfacctd_isis_wrapper()
 {
   /* initialize threads pool */
@@ -71,7 +70,6 @@ void nfacctd_isis_wrapper()
   /* giving a kick to the BGP thread */
   send_to_pool(isis_pool, skinny_isis_daemon, NULL);
 }
-#endif
 
 void skinny_isis_daemon()
 {
@@ -108,17 +106,17 @@ void skinny_isis_daemon()
 
   if (!config.nfacctd_isis_iface && !config.igp_daemon_map) {
     Log(LOG_ERR, "ERROR ( %s/core/ISIS ): No 'isis_daemon_iface' and 'igp_daemon_map' values specified. Terminating thread.\n", config.name);
-    exit_all(1);
+    exit_gracefully(1);
   }
   else if (config.nfacctd_isis_iface && config.igp_daemon_map) {
     Log(LOG_ERR, "ERROR ( %s/core/ISIS ): 'isis_daemon_iface' and 'igp_daemon_map' are mutually exclusive. Terminating thread.\n", config.name);
-    exit_all(1);
+    exit_gracefully(1);
   }
 
   if (config.nfacctd_isis_iface) {
     if ((device.dev_desc = pcap_open_live(config.nfacctd_isis_iface, 65535, 0, 1000, errbuf)) == NULL) {
       Log(LOG_ERR, "ERROR ( %s/core/ISIS ): pcap_open_live(): %s\n", config.name, errbuf);
-      exit(1);
+      exit_gracefully(1);
     }
 
     device.link_type = pcap_datalink(device.dev_desc);
@@ -155,7 +153,7 @@ void skinny_isis_daemon()
   if (config.nfacctd_isis_net) area_net_title(area, config.nfacctd_isis_net);
   else {
     Log(LOG_ERR, "ERROR ( %s/core/ISIS ): 'isis_daemon_net' value is not specified. Terminating thread.\n", config.name);
-    exit_all(1);
+    exit_gracefully(1);
   }
 
   circuit = isis_circuit_new();
@@ -176,12 +174,12 @@ void skinny_isis_daemon()
     ret = str_to_addr(config.nfacctd_isis_ip, &addr);
     if (!ret) {
       Log(LOG_ERR, "ERROR ( %s/core/ISIS ): 'isis_daemon_ip' value is not a valid IPv4/IPv6 address. Terminating thread.\n", config.name);
-      exit_all(1);
+      exit_gracefully(1);
     }
   }
   else {
     Log(LOG_ERR, "ERROR ( %s/core/ISIS ): 'isis_daemon_ip' value is not specified. Terminating thread.\n", config.name);
-    exit_all(1);
+    exit_gracefully(1);
   }
 
   circuit->ip_router = addr.address.ipv4.s_addr;
@@ -346,6 +344,7 @@ void isis_sll_handler(const struct pcap_pkthdr *h, register struct packet_ptrs *
 
 int iso_handler(register struct packet_ptrs *pptrs)
 {
+  return FALSE;
 }
 
 void isis_srcdst_lookup(struct packet_ptrs *pptrs)
@@ -482,7 +481,7 @@ int igp_daemon_map_adj_metric_handler(char *filename, struct id_entry *e, char *
     return TRUE;
   }
 
-  while (token = extract_token(&str_ptr, ';')) {
+  while ((token = extract_token(&str_ptr, ';'))) {
     if (idx >= MAX_IGP_MAP_ELEM) {
       Log(LOG_ERR, "ERROR ( %s ): maximum number of elements (%u) per adj_metric violated. ", filename, MAX_IGP_MAP_ELEM);
       return TRUE;
@@ -533,7 +532,7 @@ int igp_daemon_map_reach_metric_handler(char *filename, struct id_entry *e, char
     return TRUE;
   }
 
-  while (token = extract_token(&str_ptr, ';')) {
+  while ((token = extract_token(&str_ptr, ';'))) {
     if (idx >= MAX_IGP_MAP_ELEM) {
       Log(LOG_ERR, "ERROR ( %s ): maximum number of elements (%u) per reach_metric violated. ", filename, MAX_IGP_MAP_ELEM);
       return TRUE;
@@ -585,7 +584,7 @@ int igp_daemon_map_reach6_metric_handler(char *filename, struct id_entry *e, cha
     return TRUE;
   }
 
-  while (token = extract_token(&str_ptr, ';')) {
+  while ((token = extract_token(&str_ptr, ';'))) {
     if (idx >= MAX_IGP_MAP_ELEM) {
       Log(LOG_ERR, "ERROR ( %s ): maximum number of elements (%u) per reach6_metric violated. ", filename, MAX_IGP_MAP_ELEM);
       return TRUE;
@@ -827,7 +826,7 @@ void igp_daemon_map_initialize(char *filename, struct plugin_requests *req)
     if ((idmm_fd = pcap_dump_open(p, config.igp_daemon_map_msglog)) == NULL) {
       Log(LOG_ERR, "ERROR ( %s/core/ISIS ): Can not open igp_daemon_map_msglog '%s' (%s).\n",
                 config.name, config.igp_daemon_map_msglog, pcap_geterr(p));
-      exit_all(1);
+      exit_gracefully(1);
     }
   }
 }

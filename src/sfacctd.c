@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -35,6 +35,7 @@
 #include "plugin_hooks.h"
 #include "pkt_handlers.h"
 #include "ip_flow.h"
+#include "ip_frag.h"
 #include "classifier.h"
 #include "net_aggr.h"
 #include "crc32.h"
@@ -56,7 +57,7 @@ struct channels_list_entry channels_list[MAX_N_PLUGINS]; /* communication channe
 /* Functions */
 void usage_daemon(char *prog_name)
 {
-  printf("%s (%s)\n", SFACCTD_USAGE_HEADER, PMACCT_BUILD);
+  printf("%s %s (%s)\n", SFACCTD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
   printf("Usage: %s [ -D | -d ] [ -L IP address ] [ -l port ] [ -c primitive [ , ... ] ] [ -P plugin [ , ... ] ]\n", prog_name);
   printf("       %s [ -f config_file ]\n", prog_name);
   printf("       %s [ -h ]\n", prog_name);
@@ -78,7 +79,9 @@ void usage_daemon(char *prog_name)
   printf("  -R  \tRenormalize sampled data\n");
   printf("  -u  \tLeave IP protocols in numerical format\n");
   printf("  -I  \tRead packets from the specified savefile\n");
+  printf("  -Z  \tReading from a savefile, sleep the given amount of seconds at startup and between replays\n");
   printf("  -W  \tReading from a savefile, don't exit but sleep when finished\n");
+  printf("  -Y  \tReading from a savefile, replay the number of times specified\n");
   printf("\nMemory plugin (-P memory) options:\n");
   printf("  -p  \tSocket for client-server communication (DEFAULT: /tmp/collect.pipe)\n");
   printf("  -b  \tNumber of buckets\n");
@@ -89,7 +92,7 @@ void usage_daemon(char *prog_name)
   printf("  -O  \t[ formatted | csv | json | avro ] \n\tOutput format\n");
   printf("  -o  \tPath to output file\n");
   printf("  -A  \tAppend output (applies to -o)\n");
-  printf("  -E  \tCSV format serparator (applies to -O csv, DEFAULT: ',')\n");
+  printf("  -E  \tCSV format separator (applies to -O csv, DEFAULT: ',')\n");
   printf("\n");
   printf("For examples, see:\n");
   printf("  https://github.com/pmacct/pmacct/blob/master/QUICKSTART or\n");
@@ -117,6 +120,7 @@ int main(int argc,char **argv, char **envp)
   struct id_table bitr_table;
   struct id_table sampling_table;
   u_int32_t idx;
+  int pipe_fd = 0, capture_methods = 0;
   int ret;
   SFSample spp;
 
@@ -130,6 +134,7 @@ int main(int argc,char **argv, char **envp)
   struct ip_mreq multi_req4;
 
   struct pcap_device device;
+  int pcap_savefile_round = 0;
 
   unsigned char dummy_packet[64]; 
   unsigned char dummy_packet_vlan[64]; 
@@ -150,6 +155,9 @@ int main(int argc,char **argv, char **envp)
   struct pcap_pkthdr dummy_pkthdr_mpls6;
   struct pcap_pkthdr dummy_pkthdr_vlan_mpls6;
 #endif
+
+  struct packet_ptrs recv_pptrs;
+  struct pcap_pkthdr recv_pkthdr;
 
   /* getopt() stuff */
   extern char *optarg;
@@ -173,6 +181,7 @@ int main(int argc,char **argv, char **envp)
   biss_map_allocated = FALSE;
   bta_map_allocated = FALSE;
   bitr_map_allocated = FALSE;
+  custom_primitives_allocated = FALSE;
   bta_map_caching = TRUE;
   sampling_map_caching = TRUE;
   find_id_func = SF_find_id;
@@ -209,7 +218,10 @@ int main(int argc,char **argv, char **envp)
   config.acct_type = ACCT_SF;
 
   rows = 0;
-  glob_pcapt = NULL;
+  memset(&device, 0, sizeof(device));
+
+  memset(&recv_pptrs, 0, sizeof(recv_pptrs));
+  memset(&recv_pkthdr, 0, sizeof(recv_pkthdr));
 
   /* getting commandline values */
   while (!errflag && ((cp = getopt(argc, argv, ARGS_SFACCTD)) != -1)) {
@@ -332,6 +344,16 @@ int main(int argc,char **argv, char **envp)
       strlcpy(cfg_cmdline[rows], "pcap_savefile_wait: true", SRVBUFLEN);
       rows++;
       break;
+    case 'Z':
+      strlcpy(cfg_cmdline[rows], "pcap_savefile_delay: ", SRVBUFLEN);
+      strncat(cfg_cmdline[rows], optarg, CFG_LINE_LEN(cfg_cmdline[rows]));
+      rows++;
+      break;
+    case 'Y':
+      strlcpy(cfg_cmdline[rows], "pcap_savefile_replay: ", SRVBUFLEN);
+      strncat(cfg_cmdline[rows], optarg, CFG_LINE_LEN(cfg_cmdline[rows]));
+      rows++;
+      break;
     case 'h':
       usage_daemon(argv[0]);
       exit(0);
@@ -418,7 +440,7 @@ int main(int argc,char **argv, char **envp)
     else Log(LOG_INFO, "INFO ( %s/core ): proc_priority set to %d\n", config.name, getpriority(PRIO_PROCESS, 0));
   }
 
-  Log(LOG_INFO, "INFO ( %s/core ): %s (%s)\n", config.name, SFACCTD_USAGE_HEADER, PMACCT_BUILD);
+  Log(LOG_INFO, "INFO ( %s/core ): %s %s (%s)\n", config.name, SFACCTD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
   Log(LOG_INFO, "INFO ( %s/core ): %s\n", config.name, PMACCT_COMPILE_ARGS);
 
   if (strlen(config_file)) {
@@ -438,13 +460,13 @@ int main(int argc,char **argv, char **envp)
 
       if (list->cfg.sampling_rate && config.ext_sampling_rate) {
         Log(LOG_ERR, "ERROR ( %s/core ): Internal packet sampling and external packet sampling are mutual exclusive.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
 
       /* applies to specific plugins */
       if (list->type.id == PLUGIN_ID_NFPROBE || list->type.id == PLUGIN_ID_SFPROBE) {
         Log(LOG_ERR, "ERROR ( %s/core ): 'nfprobe' and 'sfprobe' plugins not supported in 'sfacctd'.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
       else if (list->type.id == PLUGIN_ID_TEE) {
         tee_plugins++;
@@ -478,11 +500,11 @@ int main(int argc,char **argv, char **envp)
 	if (list->cfg.what_to_count & (COUNT_SRC_AS|COUNT_DST_AS|COUNT_SUM_AS)) {
 	  if (!list->cfg.networks_file && list->cfg.nfacctd_as & NF_AS_NEW) {
 	    Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation was selected but NO 'networks_file' specified. Exiting...\n\n", list->name, list->type.string);
-	    exit(1);
+	    exit_gracefully(1);
 	  }
-          if (!list->cfg.nfacctd_bgp && list->cfg.nfacctd_as == NF_AS_BGP) {
-            Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation selected but 'bgp_daemon' is not enabled. Exiting...\n\n", list->name, list->type.string);
-            exit(1);
+          if (!list->cfg.nfacctd_bgp && !list->cfg.nfacctd_bmp && list->cfg.nfacctd_as == NF_AS_BGP) {
+            Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation selected but 'bgp_daemon' or 'bmp_daemon' is not enabled. Exiting...\n\n", list->name, list->type.string);
+            exit_gracefully(1);
 	  }
           if (list->cfg.nfacctd_as & NF_AS_FALLBACK && list->cfg.networks_file)
             list->cfg.nfacctd_as |= NF_AS_NEW;
@@ -496,10 +518,10 @@ int main(int argc,char **argv, char **envp)
           else {
             if ((list->cfg.nfacctd_net == NF_NET_NEW && !list->cfg.networks_file) ||
                 (list->cfg.nfacctd_net == NF_NET_STATIC && !list->cfg.networks_mask) ||
-                (list->cfg.nfacctd_net == NF_NET_BGP && !list->cfg.nfacctd_bgp) ||
+                (list->cfg.nfacctd_net == NF_NET_BGP && !list->cfg.nfacctd_bgp && !list->cfg.nfacctd_bmp) ||
                 (list->cfg.nfacctd_net == NF_NET_IGP && !list->cfg.nfacctd_isis)) {
-              Log(LOG_ERR, "ERROR ( %s/%s ): network aggregation selected but none of 'bgp_daemon', 'isis_daemon', 'networks_file', 'networks_mask' is specified. Exiting ...\n\n", list->name, list->type.string);
-              exit(1);
+              Log(LOG_ERR, "ERROR ( %s/%s ): network aggregation selected but none of 'bgp_daemon', 'bmp_daemon', 'isis_daemon', 'networks_file', 'networks_mask' is specified. Exiting ...\n\n", list->name, list->type.string);
+              exit_gracefully(1);
             }
             if (list->cfg.nfacctd_net & NF_NET_FALLBACK && list->cfg.networks_file)
               list->cfg.nfacctd_net |= NF_NET_NEW;
@@ -508,9 +530,10 @@ int main(int argc,char **argv, char **envp)
 
 	if (list->cfg.what_to_count & COUNT_CLASS && !list->cfg.classifiers_path) {
 	  Log(LOG_ERR, "ERROR ( %s/%s ): 'class' aggregation selected but NO 'classifiers' key specified. Exiting...\n\n", list->name, list->type.string);
-	  exit(1);
+	  exit_gracefully(1);
 	}
 
+#if defined (WITH_NDPI)
 	if (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS) {
           config.handle_fragments = TRUE;
           config.classifier_ndpi = TRUE;
@@ -518,8 +541,9 @@ int main(int argc,char **argv, char **envp)
 
 	if ((list->cfg.what_to_count & COUNT_CLASS) && (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS)) {
 	  Log(LOG_ERR, "ERROR ( %s/%s ): 'class_legacy' and 'class' primitives are mutual exclusive. Exiting...\n\n", list->name, list->type.string);
-	  exit(1);
+	  exit_gracefully(1);
 	}
+#endif
 
 	list->cfg.type_id = list->type.id;
 	bgp_config_checks(&list->cfg);
@@ -534,13 +558,41 @@ int main(int argc,char **argv, char **envp)
 
   if (tee_plugins && data_plugins) {
     Log(LOG_ERR, "ERROR ( %s/core ): 'tee' plugins are not compatible with data (memory/mysql/pgsql/etc.) plugins. Exiting...\n\n", config.name);
-    exit(1);
+    exit_gracefully(1);
   }
 
-  if (config.pcap_savefile && (config.nfacctd_port || config.nfacctd_ip)) {
-    Log(LOG_ERR, "ERROR ( %s/core ): 'pcap_savefile' is mutual exclusive with live collection, ie. 'sfacctd_ip' and/or 'sfacctd_port' Exiting...\n\n", config.name);
-    exit(1);
+  if (config.pcap_savefile) capture_methods++;
+  if (config.nfacctd_port || config.nfacctd_ip) capture_methods++;
+#ifdef WITH_KAFKA
+  if (config.nfacctd_kafka_broker_host || config.nfacctd_kafka_topic) capture_methods++;
+#endif
+#ifdef WITH_ZMQ
+  if (config.nfacctd_zmq_address) capture_methods++;
+#endif
+
+  if (capture_methods > 1) {
+    Log(LOG_ERR, "ERROR ( %s/core ): pcap_savefile, sfacctd_ip, sfacctd_kafka_* and sfacctd_zmq_* are mutual exclusive. Exiting...\n\n", config.name);
+    exit_gracefully(1);
   }
+
+#ifdef WITH_KAFKA
+  if ((config.nfacctd_kafka_broker_host && !config.nfacctd_kafka_topic) || (config.nfacctd_kafka_topic && !config.nfacctd_kafka_broker_host)) {
+    Log(LOG_ERR, "ERROR ( %s/core ): Kafka collection requires both sfacctd_kafka_broker_host and sfacctd_kafka_topic to be specified. Exiting...\n\n", config.name);
+    exit_gracefully(1);
+  }
+
+  if (config.nfacctd_kafka_broker_host && tee_plugins) {
+    Log(LOG_ERR, "ERROR ( %s/core ): Kafka collection is mutual exclusive with 'tee' plugins. Exiting...\n\n", config.name);
+    exit_gracefully(1);
+  }
+#endif
+
+#ifdef WITH_ZMQ
+  if (config.nfacctd_zmq_address && tee_plugins) {
+    Log(LOG_ERR, "ERROR ( %s/core ): ZeroMQ collection is mutual exclusive with 'tee' plugins. Exiting...\n\n", config.name);
+    exit_gracefully(1);
+  }
+#endif
 
   /* signal handling we want to inherit to plugins (when not re-defined elsewhere) */
   signal(SIGCHLD, startup_handle_falling_child); /* takes note of plugins failed during startup phase */
@@ -551,9 +603,31 @@ int main(int argc,char **argv, char **envp)
 
   if (config.pcap_savefile) {
     open_pcap_savefile(&device, config.pcap_savefile);
+    pcap_savefile_round = 1;
+
     config.handle_fragments = TRUE;
     init_ip_fragment_handler();
   }
+#ifdef WITH_KAFKA
+  else if (config.nfacctd_kafka_broker_host) {
+    SF_init_kafka_host(&nfacctd_kafka_host);
+
+    config.handle_fragments = TRUE;
+    init_ip_fragment_handler();
+
+    recv_pptrs.pkthdr = &recv_pkthdr;
+  }
+#endif
+#ifdef WITH_ZMQ
+  else if (config.nfacctd_zmq_address) {
+    SF_init_zmq_host(&nfacctd_zmq_host, &pipe_fd);
+
+    config.handle_fragments = TRUE;
+    init_ip_fragment_handler();
+
+    recv_pptrs.pkthdr = &recv_pkthdr;
+  }
+#endif
   else {
     /* If no IP address is supplied, let's set our default
        behaviour: IPv4 address, INADDR_ANY, port 2100 */
@@ -581,7 +655,7 @@ int main(int argc,char **argv, char **envp)
       ret = str_to_addr(config.nfacctd_ip, &addr);
       if (!ret) {
         Log(LOG_ERR, "ERROR ( %s/core ): 'sfacctd_ip' value is not valid. Exiting.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
       slen = addr_to_sa((struct sockaddr *)&server, &addr, config.nfacctd_port);
     }
@@ -605,13 +679,18 @@ int main(int argc,char **argv, char **envp)
 
       if (config.sock < 0) {
         Log(LOG_ERR, "ERROR ( %s/core ): socket() failed.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
     }
 
     /* bind socket to port */
+#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
+    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *)&yes, sizeof(yes));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT.\n", config.name);
+#else
     rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
+#endif
 
 #if (defined ENABLE_IPV6) && (defined IPV6_BINDV6ONLY)
     rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
@@ -640,7 +719,7 @@ int main(int argc,char **argv, char **envp)
         multi_req4.imr_multiaddr.s_addr = mcast_groups[idx].address.ipv4.s_addr;
         if (setsockopt(config.sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&multi_req4, sizeof(multi_req4)) < 0) {
 	  Log(LOG_ERR, "ERROR ( %s/core ): IPv4 multicast address - ADD membership failed.\n", config.name);
-	  exit(1);
+	  exit_gracefully(1);
 	}
       }
 #if defined ENABLE_IPV6
@@ -649,7 +728,7 @@ int main(int argc,char **argv, char **envp)
 	ip6_addr_cpy(&multi_req6.ipv6mr_multiaddr, &mcast_groups[idx].address.ipv6);
 	if (setsockopt(config.sock, IPPROTO_IPV6, IPV6_JOIN_GROUP, (char *)&multi_req6, sizeof(multi_req6)) < 0) {
 	  Log(LOG_ERR, "ERROR ( %s/core ): IPv6 multicast address - ADD membership failed.\n", config.name);
-	  exit(1);
+	  exit_gracefully(1);
 	}
       }
 #endif
@@ -671,15 +750,25 @@ int main(int argc,char **argv, char **envp)
   }
   else pptrs.v4.bitr_table = NULL;
 
+  if (config.aggregate_primitives) {
+    req.key_value_table = (void *) &custom_primitives_registry;
+    load_id_file(MAP_CUSTOM_PRIMITIVES, config.aggregate_primitives, NULL, &req, &custom_primitives_allocated);
+  }
+  else memset(&custom_primitives_registry, 0, sizeof(custom_primitives_registry));
+
   /* fixing per plugin custom primitives pointers, offsets and lengths */
-  memset(&custom_primitives_registry, 0, sizeof(custom_primitives_registry));
   list = plugins_list;
   while(list) { 
     custom_primitives_reconcile(&list->cfg.cpptrs, &custom_primitives_registry);
+    if (custom_primitives_vlen(&list->cfg.cpptrs)) list->cfg.data_type |= PIPE_TYPE_VLEN;
     list = list->next;
   }
 
-#if defined ENABLE_THREADS
+  if (config.nfacctd_bgp && config.nfacctd_bmp) {
+    Log(LOG_ERR, "ERROR ( %s/core ): bgp_daemon and bmp_daemon are currently mutual exclusive. Exiting.\n", config.name);
+    exit_gracefully(1);
+  }
+
   /* starting the ISIS threa */
   if (config.nfacctd_isis) {
     req.bpf_filter = TRUE;
@@ -691,11 +780,17 @@ int main(int argc,char **argv, char **envp)
   }
 
   /* starting the BGP thread */
-  load_comm_patterns(&config.nfacctd_bgp_stdcomm_pattern, &config.nfacctd_bgp_extcomm_pattern,
-			&config.nfacctd_bgp_lrgcomm_pattern, &config.nfacctd_bgp_stdcomm_pattern_to_asn);
-
   if (config.nfacctd_bgp) {
     req.bpf_filter = TRUE;
+
+    if (config.nfacctd_bgp_stdcomm_pattern_to_asn && config.nfacctd_bgp_lrgcomm_pattern_to_asn) {
+      Log(LOG_ERR, "ERROR ( %s/core ): bgp_stdcomm_pattern_to_asn and bgp_lrgcomm_pattern_to_asn are mutual exclusive. Exiting.\n", config.name);
+      exit_gracefully(1);
+    }
+
+    load_comm_patterns(&config.nfacctd_bgp_stdcomm_pattern, &config.nfacctd_bgp_extcomm_pattern,
+                        &config.nfacctd_bgp_lrgcomm_pattern, &config.nfacctd_bgp_stdcomm_pattern_to_asn,
+                        &config.nfacctd_bgp_lrgcomm_pattern_to_asn);
 
     if (config.nfacctd_bgp_peer_as_src_type == BGP_SRC_PRIMITIVES_MAP) {
       if (config.nfacctd_bgp_peer_as_src_map) {
@@ -704,7 +799,7 @@ int main(int argc,char **argv, char **envp)
       }
       else {
         Log(LOG_ERR, "ERROR ( %s/core ): bgp_peer_as_src_type set to 'map' but no map defined. Exiting.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
     }
     else pptrs.v4.bpas_table = NULL;
@@ -716,7 +811,7 @@ int main(int argc,char **argv, char **envp)
       }
       else {
         Log(LOG_ERR, "ERROR ( %s/core ): bgp_src_local_pref_type set to 'map' but no map defined. Exiting.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
     }
     else pptrs.v4.blp_table = NULL;
@@ -728,7 +823,7 @@ int main(int argc,char **argv, char **envp)
       }
       else {
         Log(LOG_ERR, "ERROR ( %s/core ): bgp_src_med_type set to 'map' but no map defined. Exiting.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
     }
     else pptrs.v4.bmed_table = NULL;
@@ -754,22 +849,6 @@ int main(int argc,char **argv, char **envp)
     /* Let's give the BMP thread some advantage to create its structures */
     sleep(5);
   }
-#else
-  if (config.nfacctd_isis) {
-    Log(LOG_ERR, "ERROR ( %s/core ): 'isis_daemon' is available only with threads (--enable-threads). Exiting.\n", config.name);
-    exit(1);
-  }
-
-  if (config.nfacctd_bgp) {
-    Log(LOG_ERR, "ERROR ( %s/core ): 'bgp_daemon' is available only with threads (--enable-threads). Exiting.\n", config.name);
-    exit(1);
-  }
-
-  if (config.nfacctd_bmp) {
-    Log(LOG_ERR, "ERROR ( %s/core ): 'bmp_daemon' is available only with threads (--enable-threads). Exiting.\n", config.name);
-    exit(1);
-  }
-#endif
 
 #if defined WITH_GEOIP
   if (config.geoip_ipv4_file || config.geoip_ipv6_file) {
@@ -783,11 +862,11 @@ int main(int argc,char **argv, char **envp)
   }
 #endif
 
-  if (!config.pcap_savefile) {
+  if (!config.pcap_savefile && !config.nfacctd_kafka_broker_host) {
     rc = bind(config.sock, (struct sockaddr *) &server, slen);
     if (rc < 0) {
       Log(LOG_ERR, "ERROR ( %s/core ): bind() to ip=%s port=%d/udp failed (errno: %d).\n", config.name, config.nfacctd_ip, config.nfacctd_port, errno);
-      exit(1);
+      exit_gracefully(1);
     }
   }
 
@@ -946,7 +1025,28 @@ int main(int argc,char **argv, char **envp)
   pptrs.vlanmpls6.l3_proto = ETHERTYPE_IP;
 #endif
 
-  if (!config.pcap_savefile) {
+  if (config.pcap_savefile) {
+    Log(LOG_INFO, "INFO ( %s/core ): reading sFlow data from: %s\n", config.name, config.pcap_savefile);
+    allowed = TRUE;
+
+    if (!config.pcap_sf_delay) sleep(2);
+    else sleep(config.pcap_sf_delay);
+  }
+#ifdef WITH_KAFKA
+  else if (config.nfacctd_kafka_broker_host) {
+    Log(LOG_INFO, "INFO ( %s/core ): reading sFlow data from Kafka %s:%s\n", config.name,
+	p_kafka_get_broker(&nfacctd_kafka_host), p_kafka_get_topic(&nfacctd_kafka_host));
+    allowed = TRUE;
+  }
+#endif
+#ifdef WITH_ZMQ
+  else if (config.nfacctd_zmq_address) {
+    Log(LOG_INFO, "INFO ( %s/core ): reading sFlow data from ZeroMQ %s\n", config.name,
+        p_zmq_get_address(&nfacctd_zmq_host));
+    allowed = TRUE;
+  }
+#endif
+  else {
     char srv_string[INET6_ADDRSTRLEN];
     struct host_addr srv_addr;
     u_int16_t srv_port;
@@ -955,11 +1055,6 @@ int main(int argc,char **argv, char **envp)
     addr_to_str(srv_string, &srv_addr);
     Log(LOG_INFO, "INFO ( %s/core ): waiting for sFlow data on %s:%u\n", config.name, srv_string, srv_port);
     allowed = TRUE;
-  }
-  else {
-    Log(LOG_INFO, "INFO ( %s/core ): reading NetFlow/IPFIX data from: %s\n", config.name, config.pcap_savefile);
-    allowed = TRUE;
-    sleep(2);
   }
 
   if (config.sfacctd_counter_file || config.sfacctd_counter_amqp_routing_key || config.sfacctd_counter_kafka_topic) {
@@ -980,7 +1075,7 @@ int main(int argc,char **argv, char **envp)
       sf_cnt_misc_db->peers_log = malloc(MAX_SF_CNT_LOG_ENTRIES*sizeof(struct bgp_peer_log));
       if (!sf_cnt_misc_db->peers_log) {
         Log(LOG_ERR, "ERROR ( %s/core ): Unable to malloc() sFlow counters log structure. Exiting.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
       memset(sf_cnt_misc_db->peers_log, 0, MAX_SF_CNT_LOG_ENTRIES*sizeof(struct bgp_peer_log));
       bgp_peer_log_seq_init(&sf_cnt_misc_db->log_seq);
@@ -1017,12 +1112,68 @@ int main(int argc,char **argv, char **envp)
 
   /* Main loop */
   for (;;) {
-    if (!config.pcap_savefile) {
+    if (config.pcap_savefile) {
+      ret = recvfrom_savefile(&device, (void **) &sflow_packet, (struct sockaddr *) &client, &spp.ts, &pcap_savefile_round, &recv_pptrs);
+    }
+#ifdef WITH_KAFKA
+    else if (config.nfacctd_kafka_broker_host) {
+      int kafka_reconnect = FALSE;
+      void *kafka_msg = NULL;
+
+      ret = p_kafka_consume_poller(&nfacctd_kafka_host, &kafka_msg, 1000);
+
+      switch (ret) {
+      case TRUE: /* got data */
+        ret = p_kafka_consume_data(&nfacctd_kafka_host, kafka_msg, sflow_packet, SFLOW_MAX_MSG_SIZE);
+	if (ret < 0) kafka_reconnect = TRUE;
+	break;
+      case FALSE: /* timeout */
+	continue;
+	break;
+      case ERR: /* error */
+      default:
+	kafka_reconnect = TRUE;
+	break;
+      }
+
+      if (kafka_reconnect) {
+	/* Close */
+        p_kafka_manage_consumer(&nfacctd_kafka_host, FALSE);
+
+	/* Re-open */
+	SF_init_kafka_host(&nfacctd_kafka_host);
+
+	continue;
+      }
+
+      ret = recvfrom_rawip(sflow_packet, ret, (struct sockaddr *) &client, &recv_pptrs);
+    }
+#endif
+#ifdef WITH_ZMQ
+    else if (config.nfacctd_zmq_address) {
+      ret = p_zmq_recv_poll(&nfacctd_zmq_host, 1000);
+
+      switch (ret) {
+      case TRUE: /* got data */
+	ret = p_zmq_recv_bin(&nfacctd_zmq_host.sock, sflow_packet, SFLOW_MAX_MSG_SIZE);
+	if (ret < 0) continue; /* ZMQ_RECONNECT_IVL */
+	break;
+      case FALSE: /* timeout */
+	continue;
+	break;
+      case ERR: /* error */
+      default:
+	continue; /* ZMQ_RECONNECT_IVL */
+	break;
+      }
+
+      ret = recvfrom_rawip(sflow_packet, ret, (struct sockaddr *) &client, &recv_pptrs);
+    }
+#endif
+    else {
       ret = recvfrom(config.sock, sflow_packet, SFLOW_MAX_MSG_SIZE, 0, (struct sockaddr *) &client, &clen);
     }
-    else {
-      ret = recvfrom_savefile(&device, (void **) &sflow_packet, (struct sockaddr *) &client, &spp.ts);
-    }
+
     spp.rawSample = pptrs.v4.f_header = sflow_packet;
     spp.rawSampleLen = pptrs.v4.f_len = ret;
     spp.datap = (u_int32_t *) spp.rawSample;
@@ -1041,6 +1192,8 @@ int main(int argc,char **argv, char **envp)
     if (reload_map) {
       bta_map_caching = TRUE;
       sampling_map_caching = TRUE;
+
+      if (config.nfacctd_allow_file) load_allow_file(config.nfacctd_allow_file, &allow);
 
       load_networks(config.networks_file, &nt, &nc);
 
@@ -1080,7 +1233,12 @@ int main(int argc,char **argv, char **envp)
 
     if (sfacctd_counter_backend_methods) {
       gettimeofday(&sf_cnt_misc_db->log_tstamp, NULL);
-      compose_timestamp(sf_cnt_misc_db->log_tstamp_str, SRVBUFLEN, &sf_cnt_misc_db->log_tstamp, TRUE, config.timestamps_since_epoch);
+      compose_timestamp(sf_cnt_misc_db->log_tstamp_str, SRVBUFLEN, &sf_cnt_misc_db->log_tstamp, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
+
+      /* let's reset log sequence here as we do not sequence dump_init/dump_close events */
+      if (bgp_peer_log_seq_has_ro_bit(&sf_cnt_misc_db->log_seq))
+        bgp_peer_log_seq_init(&sf_cnt_misc_db->log_seq);
 
 #ifdef WITH_RABBITMQ
       if (config.sfacctd_counter_amqp_routing_key) {
@@ -1185,7 +1343,7 @@ void process_SFv2v4_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
   sysUpTime = spp->sysUpTime = getData32(spp);
   samplesInPacket = getData32(spp);
   
-  pptrsv->v4.f_status = sfv245_check_status(spp, agent);
+  pptrsv->v4.f_status = sfv245_check_status(spp, &pptrsv->v4, agent);
   set_vector_f_status(pptrsv);
 
   if (config.debug) {
@@ -1203,7 +1361,6 @@ void process_SFv2v4_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
     spp->sysUpTime = sysUpTime;
 
     set_vector_sample_type(pptrsv, 0);
-SFv2v4_read_sampleType:
     sampleType = getData32(spp);
     if (!pptrsv->v4.sample_type) set_vector_sample_type(pptrsv, sampleType);
     switch (sampleType) {
@@ -1232,7 +1389,7 @@ void process_SFv5_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
   sequenceNo = spp->sequenceNo = getData32(spp);
   sysUpTime = spp->sysUpTime = getData32(spp);
   samplesInPacket = getData32(spp);
-  pptrsv->v4.f_status = sfv245_check_status(spp, agent);
+  pptrsv->v4.f_status = sfv245_check_status(spp, &pptrsv->v4, agent);
   set_vector_f_status(pptrsv);
 
   if (config.debug) {
@@ -1396,6 +1553,7 @@ void process_SF_raw_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
     else Log(LOG_DEBUG, "DEBUG ( %s/core ): sFlow packet version (%u) not supported for dissection\n",
 		config.name, spp->datagramVersion); 
   }
+  else sfv245_check_status(spp, pptrs, agent);
 
   /* If dissecting, we may also send the full packet in case multiple tee
      plugins are instantiated and any of them does not require dissection */
@@ -1475,6 +1633,8 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
   if (sample->gotIPV4 || sample->gotIPV6 || !sample->eth_type) {
     reset_net_status_v(pptrsv);
     pptrs->flow_type = SF_evaluate_flow_type(pptrs);
+
+    if (config.classifier_ndpi || config.aggregate_primitives) sf_flow_sample_hdr_decode(sample);
 
     /* we need to understand the IP protocol version in order to build the fake packet */
     switch (pptrs->flow_type) {
@@ -1843,7 +2003,7 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
   struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) &sa_local;
 #endif 
   SFSample *sample = (SFSample *)pptrs->f_data; 
-  int x, j, begin = 0, end = 0;
+  int x, begin = 0, end = 0;
   pm_id_t ret = 0;
 
   if (!t) return 0;
@@ -1888,7 +2048,7 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
     begin = t->num-t->ipv6_num;
     end = t->num;
     sa_local.sa_family = AF_INET6;
-    for (j = 0; j < 4; j++) sa6->sin6_addr.s6_addr[j] = sample->agent_addr.address.ip_v6.s6_addr[j];
+    memcpy(sa6->sin6_addr.s6_addr, sample->agent_addr.address.ip_v6.s6_addr, 16);
   }
 #endif
 
@@ -1962,7 +2122,7 @@ void reset_ip6(struct packet_ptrs *pptrs)
 }
 #endif
 
-char *sfv245_check_status(SFSample *spp, struct sockaddr *sa)
+char *sfv245_check_status(SFSample *spp, struct packet_ptrs *pptrs, struct sockaddr *sa)
 {
   struct sockaddr salocal;
   u_int32_t aux1 = spp->agentSubId;
@@ -1981,7 +2141,7 @@ char *sfv245_check_status(SFSample *spp, struct sockaddr *sa)
   if (hash >= 0) {
     entry = search_status_table(&salocal, aux1, 0, hash, XFLOW_STATUS_TABLE_MAX_ENTRIES);
     if (entry) {
-      update_status_table(entry, spp->sequenceNo);
+      update_status_table(entry, spp->sequenceNo, pptrs->f_len);
       entry->inc = 1;
     }
   }
@@ -2003,7 +2163,7 @@ void sfv245_check_counter_log_init(struct packet_ptrs *pptrs)
       entry->sf_cnt = malloc(sizeof(struct bgp_peer));
       if (!entry->sf_cnt) {
         Log(LOG_ERR, "ERROR ( %s/core ): Unable to malloc() xflow_status_entry sFlow counters log structure. Exiting.\n", config.name);
-        exit(1);
+        exit_gracefully(1);
       }
       memset(entry->sf_cnt, 0, sizeof(struct bgp_peer));
     }
@@ -2048,7 +2208,7 @@ int sf_cnt_log_msg(struct bgp_peer *peer, SFSample *sample, int version, u_int32
 
     /* no need for seq and timestamp for "dump" event_type */
     if (etype == BGP_LOGDUMP_ET_LOG) {
-      json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t)bms->log_seq));
+      json_object_set_new_nocheck(obj, "seq", json_integer((json_int_t) bgp_peer_log_seq_get(&bms->log_seq)));
       bgp_peer_log_seq_increment(&bms->log_seq);
 
       json_object_set_new_nocheck(obj, "timestamp", json_string(bms->log_tstamp_str));
@@ -2141,8 +2301,7 @@ int readCounters_generic(struct bgp_peer *peer, SFSample *sample, char *event_ty
   char msg_type[] = "sflow_cnt_generic";
   int ret = 0;
 #ifdef WITH_JANSSON
-  char ip_address[INET6_ADDRSTRLEN];
-  json_t *obj = (json_t *) vobj, *kv;
+  json_t *obj = (json_t *) vobj;
 
   /* parse sFlow first and foremost */
   sample->ifCounters.ifIndex = getData32(sample);
@@ -2217,8 +2376,7 @@ int readCounters_ethernet(struct bgp_peer *peer, SFSample *sample, char *event_t
   char msg_type[] = "sflow_cnt_ethernet";
   int ret = 0;
 #ifdef WITH_JANSSON
-  char ip_address[INET6_ADDRSTRLEN];
-  json_t *obj = (json_t *) vobj, *kv;
+  json_t *obj = (json_t *) vobj;
 
   u_int32_t m32_1, m32_2, m32_3, m32_4, m32_5;
   u_int32_t m32_6, m32_7, m32_8, m32_9, m32_10;
@@ -2278,7 +2436,6 @@ int readCounters_vlan(struct bgp_peer *peer, SFSample *sample, char *event_type,
   char msg_type[] = "sflow_cnt_vlan";
   int ret = 0;
 #ifdef WITH_JANSSON
-  char ip_address[INET6_ADDRSTRLEN];
   json_t *obj = (json_t *) vobj;
 
   u_int64_t m64_1;
@@ -2385,6 +2542,78 @@ void sf_cnt_link_misc_structs(struct bgp_misc_structs *bms)
   bms->msglog_kafka_topic = config.sfacctd_counter_kafka_topic;
   bms->peer_str = malloc(strlen("peer_src_ip") + 1);
   strcpy(bms->peer_str, "peer_src_ip");
+  bms->peer_port_str = NULL;
 
   /* dump not supported */
 }
+
+/* XXX: unify decoding flow sample header, now done twice if DPI or custom primitives are enabled */
+void sf_flow_sample_hdr_decode(SFSample *sample)
+{
+  struct packet_ptrs *pptrs = &sample->hdr_ptrs;
+
+  /* cleanups */
+  reset_index_pkt_ptrs(pptrs);
+  pptrs->pkthdr = NULL;
+  pptrs->packet_ptr = pptrs->mac_ptr = pptrs->vlan_ptr = pptrs->mpls_ptr = NULL;
+  pptrs->iph_ptr = pptrs->tlh_ptr = pptrs->payload_ptr = NULL;
+  pptrs->l3_proto = pptrs->l4_proto = FALSE;
+#if defined (WITH_NDPI)
+  memset(&sample->ndpi_class, 0, sizeof(pm_class2_t)); 
+#endif
+
+  if (sample->header && sample->headerLen) {
+    memset(&sample->hdr_pcap, 0, sizeof(struct pcap_pkthdr));
+    sample->hdr_pcap.caplen = sample->headerLen;
+
+    pptrs->pkthdr = (struct pcap_pkthdr *) &sample->hdr_pcap;
+    pptrs->packet_ptr = (u_char *) sample->header;
+
+    if (sample->headerProtocol == SFLHEADER_ETHERNET_ISO8023) { 
+      eth_handler(&sample->hdr_pcap, pptrs);
+      if (pptrs->iph_ptr) {
+	if ((*pptrs->l3_handler)(pptrs)) {
+#if defined (WITH_NDPI)
+	  if (config.classifier_ndpi && pm_ndpi_wfl) {
+	    sample->ndpi_class = pm_ndpi_workflow_process_packet(pm_ndpi_wfl, pptrs);
+	  }
+#endif
+	  set_index_pkt_ptrs(pptrs);
+	}
+      }
+    }
+  }
+}
+
+#ifdef WITH_KAFKA
+void SF_init_kafka_host(void *kh)
+{
+  struct p_kafka_host *kafka_host = kh;
+
+  p_kafka_init_host(kafka_host, config.nfacctd_kafka_config_file);
+  p_kafka_connect_to_consume(kafka_host);
+  p_kafka_set_broker(kafka_host, config.nfacctd_kafka_broker_host, config.nfacctd_kafka_broker_port);
+  p_kafka_set_topic(kafka_host, config.nfacctd_kafka_topic);
+  p_kafka_set_content_type(kafka_host, PM_KAFKA_CNT_TYPE_BIN);
+  p_kafka_manage_consumer(kafka_host, TRUE);
+}
+#endif
+
+#ifdef WITH_ZMQ
+void SF_init_zmq_host(void *zh, int *pipe_fd)
+{
+  struct p_zmq_host *zmq_host = zh;
+  char log_id[SHORTBUFLEN];
+
+  p_zmq_init_pull(zmq_host);
+
+  snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+  p_zmq_set_log_id(zmq_host, log_id);
+
+  p_zmq_set_address(zmq_host, config.nfacctd_zmq_address);
+  p_zmq_pull_setup(zmq_host);
+  p_zmq_set_retry_timeout(zmq_host, PM_ZMQ_DEFAULT_RETRY);
+
+  if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
+}
+#endif

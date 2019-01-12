@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -42,9 +42,9 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   unsigned char *pipebuf;
   struct pollfd pfd;
   struct insert_data idata;
-  time_t t, avro_schema_deadline = 0;
+  time_t avro_schema_deadline = 0;
   int timeout, refresh_timeout, avro_schema_timeout = 0;
-  int ret, num; 
+  int ret, num, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
@@ -62,11 +62,13 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   char *dataptr;
 
 #ifdef WITH_AVRO
-  char *avro_acct_schema_str;
+  char *avro_acct_schema_str = NULL;
 #endif
 
 #ifdef WITH_ZMQ
   struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host = NULL;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -106,19 +108,30 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       config.kafka_avro_schema_refresh_time = 0;
       avro_schema_deadline = 0;
       avro_schema_timeout = 0;
-      avro_acct_schema_str = NULL;
+    }
+
+    if (config.kafka_avro_schema_registry) {
+#ifdef WITH_SERDES
+      if (config.sql_multi_values) {
+        Log(LOG_ERR, "ERROR ( %s/%s ): 'kafka_avro_schema_registry' is not compatible with 'kafka_multi_values'. Exiting.\n", config.name, config.type);
+        exit_gracefully(1);
+      }
+#else
+      Log(LOG_ERR, "ERROR ( %s/%s ): 'kafka_avro_schema_registry' requires --enable-serdes. Exiting.\n", config.name, config.type);
+      exit_gracefully(1);
+#endif
     }
 #endif
   }
 
   if ((config.sql_table && strchr(config.sql_table, '$')) && config.sql_multi_values) {
     Log(LOG_ERR, "ERROR ( %s/%s ): dynamic 'kafka_topic' is not compatible with 'kafka_multi_values'. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   if ((config.sql_table && strchr(config.sql_table, '$')) && config.amqp_routing_key_rr) {
     Log(LOG_ERR, "ERROR ( %s/%s ): dynamic 'kafka_topic' is not compatible with 'kafka_topic_rr'. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   /* setting function pointers */
@@ -140,28 +153,12 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   set_net_funcs(&nt);
 
   if (config.ports_file) load_ports(config.ports_file, &pt);
-  if (config.pkt_len_distrib_bins_str) load_pkt_len_distrib_bins();
-  else {
-    if (config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB) {
-      Log(LOG_ERR, "ERROR ( %s/%s ): 'aggregate' contains pkt_len_distrib but no 'pkt_len_distrib_bins' defined. Exiting.\n", config.name, config.type);
-      exit_plugin(1);
-    }
-  }
   
   memset(&idata, 0, sizeof(idata));
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
   set_primptrs_funcs(&extras);
 
-  if (config.pipe_zmq) {
-    plugin_pipe_zmq_compile_check();
-#ifdef WITH_ZMQ
-    p_zmq_plugin_pipe_init_plugin(zmq_host);
-    p_zmq_plugin_pipe_consume(zmq_host);
-    p_zmq_set_retry_timeout(zmq_host, config.pipe_zmq_retry);
-    pipe_fd = p_zmq_get_fd(zmq_host);
-    seq = 0;
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   idata.now = time(NULL);
@@ -185,6 +182,8 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   for(;;) {
     poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
+
     calc_refresh_timeout(refresh_deadline, idata.now, &refresh_timeout);
     if (config.kafka_avro_schema_topic) calc_refresh_timeout(avro_schema_deadline, idata.now, &avro_schema_timeout);
 
@@ -194,24 +193,18 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), timeout);
 
     if (ret <= 0) {
-      if (getppid() == 1) {
+      if (getppid() != core_pid) {
         Log(LOG_ERR, "ERROR ( %s/%s ): Core process *seems* gone. Exiting.\n", config.name, config.type);
-        exit_plugin(1);
+        exit_gracefully(1);
       }
 
       if (ret < 0) goto poll_again;
     }
 
-    idata.now = time(NULL);
+    poll_ops:
+    P_update_time_reference(&idata);
 
-    if (config.sql_history) {
-      while (idata.now > (basetime.tv_sec + timeslot)) {
-	new_basetime.tv_sec = basetime.tv_sec;
-        basetime.tv_sec += timeslot;
-        if (config.sql_history == COUNT_MONTHLY)
-          timeslot = calc_monthly_timeslot(basetime.tv_sec, config.sql_history_howmany, ADD);
-      }
-    }
+    if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
 
 #ifdef WITH_AVRO
     if (idata.now > avro_schema_deadline) {
@@ -220,12 +213,22 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     }
 #endif
 
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
+    }
+
     switch (ret) {
     case 0: /* timeout */
-      if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
       break;
     default: /* we received data */
       read_data:
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+        poll_bypass = TRUE;
+        goto poll_ops;
+      }
+
       if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
@@ -234,7 +237,7 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         }
         else {
           if ((ret = read(pipe_fd, &rgptr, sizeof(rgptr))) == 0) 
-	    exit_plugin(1); /* we exit silently; something happened at the write end */
+	    exit_gracefully(1); /* we exit silently; something happened at the write end */
         }
 
         if ((rg->ptr + bufsz) > rg->end) rg->ptr = rg->base;
@@ -264,7 +267,7 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
 #ifdef WITH_ZMQ
       else if (config.pipe_zmq) {
-	ret = p_zmq_plugin_pipe_recv(zmq_host, pipebuf, config.buffer_size);
+	ret = p_zmq_topic_recv(zmq_host, pipebuf, config.buffer_size);
 	if (ret > 0) {
 	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
 	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
@@ -277,17 +280,13 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
 #endif
 
-      /* lazy refresh time handling */ 
-      if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
-
       data = (struct pkt_data *) (pipebuf+sizeof(struct ch_buf_hdr));
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
-                seq, ((struct ch_buf_hdr *)pipebuf)->num);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%llu seq=%u num_entries=%u\n",
+                config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->len, seq,
+                ((struct ch_buf_hdr *)pipebuf)->num);
 
-      if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
         for (num = 0; primptrs_funcs[num]; num++)
           (*primptrs_funcs[num])((u_char *)data, &extras, &prim_ptrs);
@@ -300,10 +299,6 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = 0;
         }
 
-        if (config.pkt_len_distrib_bins_str &&
-            config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB)
-          evaluate_pkt_len_distrib(data);
-
         prim_ptrs.data = data;
         (*insert_func)(&prim_ptrs, &idata);
 
@@ -315,8 +310,8 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           data = (struct pkt_data *) dataptr;
 	}
       }
-      }
 
+      recv_budget++;
       goto read_data;
     }
   }
@@ -336,11 +331,13 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
   struct pkt_mpls_primitives empty_pmpls;
   struct pkt_tunnel_primitives empty_ptun;
   char *empty_pcust = NULL;
-  char src_mac[18], dst_mac[18], src_host[INET6_ADDRSTRLEN], dst_host[INET6_ADDRSTRLEN], ip_address[INET6_ADDRSTRLEN];
-  char rd_str[SRVBUFLEN], misc_str[SRVBUFLEN], dyn_kafka_topic[SRVBUFLEN], *orig_kafka_topic = NULL;
-  int i, j, stop, batch_idx, is_topic_dyn = FALSE, qn = 0, ret, saved_index = index;
+  char dyn_kafka_topic[SRVBUFLEN], *orig_kafka_topic = NULL;
+  char elem_part_key[SRVBUFLEN], tmpbuf[SRVBUFLEN];
+  int j, stop, is_topic_dyn = FALSE, qn = 0, ret, saved_index = index;
   int mv_num = 0, mv_num_save = 0;
   time_t start, duration;
+  struct primitives_ptrs prim_ptrs;
+  struct pkt_data dummy_data;
   pid_t writer_pid = getpid();
 
   char *json_buf = NULL;
@@ -349,7 +346,14 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
 #ifdef WITH_AVRO
   avro_writer_t avro_writer;
   char *avro_buf = NULL;
-  int avro_buffer_full = FALSE;
+  int avro_len = 0, avro_buffer_full = FALSE;
+#endif
+
+#ifdef WITH_SERDES
+  serdes_conf_t *sd_conf;
+  serdes_t *sd_desc;
+  serdes_schema_t *sd_schema;
+  char sd_errstr[LONGSRVBUFLEN];
 #endif
 
   p_kafka_init_host(&kafkap_kafka_host, config.kafka_config_file);
@@ -374,7 +378,7 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
   empty_pcust = malloc(config.cpptrs.len);
   if (!empty_pcust) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() empty_pcust. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   memset(&empty_pbgp, 0, sizeof(struct pkt_bgp_primitives));
@@ -382,18 +386,39 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
   memset(&empty_pmpls, 0, sizeof(struct pkt_mpls_primitives));
   memset(&empty_ptun, 0, sizeof(struct pkt_tunnel_primitives));
   memset(empty_pcust, 0, config.cpptrs.len);
+  memset(&prim_ptrs, 0, sizeof(prim_ptrs));
+  memset(&dummy_data, 0, sizeof(dummy_data));
+  memset(tmpbuf, 0, sizeof(tmpbuf));
 
   p_kafka_connect_to_produce(&kafkap_kafka_host);
   p_kafka_set_broker(&kafkap_kafka_host, config.sql_host, config.kafka_broker_port);
+
+  if (config.kafka_partition_key && strchr(config.kafka_partition_key, '$')) dyn_partition_key = TRUE;
+  else dyn_partition_key = FALSE;
+
   if (!is_topic_dyn && !config.amqp_routing_key_rr) p_kafka_set_topic(&kafkap_kafka_host, config.sql_table);
+
+  if (config.kafka_partition_dynamic && !config.kafka_partition_key) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): kafka_partition_dynamic needs a kafka_partition_key to operate. Exiting.\n", config.name, config.type);
+    exit_gracefully(1);
+  }
+  if (config.kafka_partition_dynamic && config.kafka_partition) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): kafka_partition_dynamic and kafka_partition are mutually exclusive. Exiting.\n", config.name, config.type);
+    exit_gracefully(1);
+  }
+
+  if (!config.kafka_partition_dynamic) config.kafka_partition = RD_KAFKA_PARTITION_UA;
+
   p_kafka_set_partition(&kafkap_kafka_host, config.kafka_partition);
-  p_kafka_set_key(&kafkap_kafka_host, config.kafka_partition_key, config.kafka_partition_keylen);
+
+  if (!dyn_partition_key)
+    p_kafka_set_key(&kafkap_kafka_host, config.kafka_partition_key, config.kafka_partition_keylen);
 
   if (config.message_broker_output & PRINT_OUTPUT_JSON) p_kafka_set_content_type(&kafkap_kafka_host, PM_KAFKA_CNT_TYPE_STR);
   else if (config.message_broker_output & PRINT_OUTPUT_AVRO) p_kafka_set_content_type(&kafkap_kafka_host, PM_KAFKA_CNT_TYPE_BIN);
   else {
     Log(LOG_ERR, "ERROR ( %s/%s ): Unsupported kafka_output value specified. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   for (j = 0, stop = 0; (!stop) && P_preprocess_funcs[j]; j++)
@@ -426,7 +451,7 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
 
       if (!json_buf) {
 	Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (json_buf). Exiting ..\n", config.name, config.type);
-	exit_plugin(1);
+	exit_gracefully(1);
       }
       else memset(json_buf, 0, config.sql_multi_values);
     }
@@ -439,16 +464,40 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
 
     if (!avro_buf) {
       Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (avro_buf). Exiting ..\n", config.name, config.type);
-      exit_plugin(1);
+      exit_gracefully(1);
     }
     else memset(avro_buf, 0, config.avro_buffer_size);
 
     avro_writer = avro_writer_memory(avro_buf, config.avro_buffer_size);
+
+    if (config.kafka_avro_schema_registry) {
+#ifdef WITH_SERDES
+      char *avro_acct_schema_str = write_avro_schema_to_memory(avro_acct_schema);
+      char *avro_acct_schema_name = compose_avro_schema_name(config.type, config.name);
+
+      sd_conf = serdes_conf_new(NULL, 0, "schema.registry.url", config.kafka_avro_schema_registry, NULL);
+
+      sd_desc = serdes_new(sd_conf, sd_errstr, sizeof(sd_errstr));
+      if (!sd_desc) {
+        Log(LOG_ERR, "ERROR ( %s/%s ): serdes_new() failed: %s. Exiting.\n", config.name, config.type, sd_errstr);
+        exit_gracefully(1);
+      }
+
+      sd_schema = serdes_schema_add(sd_desc, avro_acct_schema_name, -1, avro_acct_schema_str, -1, sd_errstr, sizeof(sd_errstr));
+      if (!sd_schema) {
+	Log(LOG_ERR, "ERROR ( %s/%s ): serdes_schema_add() failed: %s. Exiting.\n", config.name, config.type, sd_errstr);
+	exit_gracefully(1);
+      }
+      else {
+	Log(LOG_DEBUG, "DEBUG ( %s/%s ): serdes_schema_add(): name=%s id=%d definition=%s\n", config.name, config.type,
+		serdes_schema_name(sd_schema), serdes_schema_id(sd_schema), serdes_schema_definition(sd_schema));
+      }
+#endif
+    }
 #endif
   }
 
   for (j = 0; j < index; j++) {
-    void *json_obj;
     char *json_str;
 
     if (queue[j]->valid != PRINT_CACHE_COMMITTED) continue;
@@ -474,6 +523,14 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
 
     if (queue[j]->valid == PRINT_CACHE_FREE) continue;
 
+    if (dyn_partition_key) {
+      prim_ptrs.data = &dummy_data;
+      primptrs_set_all_from_chained_cache(&prim_ptrs, queue[j]);
+
+      handle_dynname_internal_strings(elem_part_key, SRVBUFLEN, config.kafka_partition_key, &prim_ptrs, DYN_STR_KAFKA_PART);
+      p_kafka_set_key(&kafkap_kafka_host, elem_part_key, strlen(elem_part_key));
+    }
+
     if (config.message_broker_output & PRINT_OUTPUT_JSON) {
 #ifdef WITH_JANSSON
       json_t *json_obj = json_object();
@@ -497,25 +554,46 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
       add_writer_name_and_pid_avro(avro_value, config.name, writer_pid);
       avro_value_sizeof(&avro_value, &avro_value_size);
 
-      if (avro_value_size > config.avro_buffer_size) {
-        Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: insufficient buffer size (avro_buffer_size=%u)\n",
-            config.name, config.type, config.avro_buffer_size);
-        Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: increase value or look for avro_buffer_size in CONFIG-KEYS document.\n\n",
-            config.name, config.type);
-        exit_plugin(1);
+      if (!config.kafka_avro_schema_registry) {
+	if (avro_value_size > config.avro_buffer_size) {
+	  Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: insufficient buffer size (avro_buffer_size=%u)\n",
+	      config.name, config.type, config.avro_buffer_size);
+	  Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: increase value or look for avro_buffer_size in CONFIG-KEYS document.\n\n",
+	      config.name, config.type);
+	  exit_gracefully(1);
+	}
+	else if (avro_value_size >= (config.avro_buffer_size - avro_writer_tell(avro_writer))) {
+	  avro_buffer_full = TRUE;
+	  j--;
+	}
+	else if (avro_value_write(avro_writer, &avro_value)) {
+	  Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: unable to write value: %s\n", config.name, config.type, avro_strerror());
+	  exit_gracefully(1);
+	}
+	else mv_num++;
+
+	avro_len = avro_writer_tell(avro_writer);
       }
-      else if (avro_value_size >= (config.avro_buffer_size - avro_writer_tell(avro_writer))) {
-        avro_buffer_full = TRUE;
-        j--;
-      }
-      else if (avro_value_write(avro_writer, &avro_value)) {
-        Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: unable to write value: %s\n",
-            config.name, config.type, avro_strerror());
-        exit_plugin(1);
-      }
+#ifdef WITH_SERDES
       else {
-        mv_num++;
+	char *avro_local_buf = NULL;
+
+	avro_len = 0;
+	if (avro_buf) {
+	  free(avro_buf);
+	  avro_buf = NULL;
+	}
+
+	if (serdes_schema_serialize_avro(sd_schema, &avro_value, &avro_local_buf, &avro_len, sd_errstr, sizeof(sd_errstr))) {
+	  Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: serdes_schema_serialize_avro() failed: %s\n", config.name, config.type, sd_errstr);
+	  exit_gracefully(1);
+	}
+	else {
+	  avro_buf = avro_local_buf;
+	  mv_num++;
+	}
       }
+#endif
 
       avro_value_decref(&avro_value);
       avro_value_iface_decref(avro_iface);
@@ -533,7 +611,7 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
 	if (json_strlen >= (config.sql_multi_values - json_buf_off)) {
 	  if (json_strlen >= config.sql_multi_values) {
 	    Log(LOG_ERR, "ERROR ( %s/%s ): kafka_multi_values not large enough to store JSON elements. Exiting ..\n", config.name, config.type); 
-	    exit(1);
+	    exit_gracefully(1);
 	  }
 
 	  tmp_str = json_str;
@@ -553,7 +631,10 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
 
       if (json_str) {
         if (is_topic_dyn) {
-          P_handle_table_dyn_strings(dyn_kafka_topic, SRVBUFLEN, orig_kafka_topic, queue[j]);
+          prim_ptrs.data = &dummy_data;
+          primptrs_set_all_from_chained_cache(&prim_ptrs, queue[j]);
+
+	  handle_dynname_internal_strings(dyn_kafka_topic, SRVBUFLEN, orig_kafka_topic, &prim_ptrs, DYN_STR_KAFKA_TOPIC);
           p_kafka_set_topic(&kafkap_kafka_host, dyn_kafka_topic);
         }
 
@@ -590,7 +671,10 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
 #ifdef WITH_AVRO
       if (!config.sql_multi_values || (mv_num >= config.sql_multi_values) || avro_buffer_full) {
         if (is_topic_dyn) {
-          P_handle_table_dyn_strings(dyn_kafka_topic, SRVBUFLEN, orig_kafka_topic, queue[j]);
+	  prim_ptrs.data = &dummy_data;
+	  primptrs_set_all_from_chained_cache(&prim_ptrs, queue[j]);
+
+	  handle_dynname_internal_strings(dyn_kafka_topic, SRVBUFLEN, orig_kafka_topic, &prim_ptrs, DYN_STR_KAFKA_TOPIC);
           p_kafka_set_topic(&kafkap_kafka_host, dyn_kafka_topic);
         }
 
@@ -599,8 +683,9 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
           p_kafka_set_topic(&kafkap_kafka_host, dyn_kafka_topic);
         }
 
-        ret = p_kafka_produce_data(&kafkap_kafka_host, avro_buf, avro_writer_tell(avro_writer));
-        avro_writer_reset(avro_writer);
+        ret = p_kafka_produce_data(&kafkap_kafka_host, avro_buf, avro_len);
+        if (!config.kafka_avro_schema_registry) avro_writer_reset(avro_writer);
+
         avro_buffer_full = FALSE;
         mv_num_save = mv_num;
         mv_num = 0;
@@ -624,9 +709,9 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
     }
     else if (config.message_broker_output & PRINT_OUTPUT_AVRO) {
 #ifdef WITH_AVRO
-      if (avro_writer_tell(avro_writer)) {
-        ret = p_kafka_produce_data(&kafkap_kafka_host, avro_buf, avro_writer_tell(avro_writer));
-        avro_writer_free(avro_writer);
+      if (avro_len) {
+        ret = p_kafka_produce_data(&kafkap_kafka_host, avro_buf, avro_len);
+        if (!config.kafka_avro_schema_registry) avro_writer_free(avro_writer);
 
         if (!ret) qn += mv_num;
       }
@@ -676,6 +761,7 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
 void kafka_avro_schema_purge(char *avro_schema_str)
 {
   struct p_kafka_host kafka_avro_schema_host;
+  int part, part_cnt, tpc;
 
   if (!avro_schema_str || !config.kafka_avro_schema_topic) return;
 
@@ -691,7 +777,33 @@ void kafka_avro_schema_purge(char *avro_schema_str)
   p_kafka_set_key(&kafka_avro_schema_host, config.kafka_partition_key, config.kafka_partition_keylen);
   p_kafka_set_content_type(&kafka_avro_schema_host, PM_KAFKA_CNT_TYPE_STR);
 
-  p_kafka_produce_data(&kafka_avro_schema_host, avro_schema_str, strlen(avro_schema_str));
+  if (config.kafka_partition_dynamic) {
+    rd_kafka_resp_err_t err;
+    const struct rd_kafka_metadata *metadata;
+
+    err = rd_kafka_metadata(kafka_avro_schema_host.rk, 0, kafka_avro_schema_host.topic, &metadata, 100);
+    if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Unable to get Kafka metadata for topic %s: %s\n",
+              config.name, config.type, kafka_avro_schema_host.topic, rd_kafka_err2str(err));
+      exit_gracefully(1);
+    }
+
+    part_cnt = -1;
+    for (tpc = 0 ; tpc < metadata->topic_cnt ; tpc++) {
+      const struct rd_kafka_metadata_topic *t = &metadata->topics[tpc];
+      if (!strcmp(t->topic, config.kafka_avro_schema_topic)) {
+          part_cnt = t->partition_cnt;
+          break;
+      }
+    }
+
+    for(part = 0; part < part_cnt; part++) {
+      p_kafka_produce_data_to_part(&kafka_avro_schema_host, avro_schema_str, strlen(avro_schema_str), part);
+    }
+  }
+  else {
+    p_kafka_produce_data(&kafka_avro_schema_host, avro_schema_str, strlen(avro_schema_str));
+  }
 
   p_kafka_close(&kafka_avro_schema_host, FALSE);
 }

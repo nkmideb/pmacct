@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -30,15 +30,18 @@
 #define EXT
 #endif
 EXT int telemetry_peer_init(telemetry_peer *, int);
-EXT int telemetry_peer_z_init(telemetry_peer_z *);
 EXT void telemetry_peer_close(telemetry_peer *, int);
-EXT void telemetry_peer_z_close(telemetry_peer_z *);
-EXT u_int32_t telemetry_cisco_hdr_get_len(telemetry_peer *);
-EXT u_int32_t telemetry_cisco_hdr_get_type(telemetry_peer *);
-EXT int telemetry_is_zjson(int);
+EXT u_int32_t telemetry_cisco_hdr_v0_get_len(telemetry_peer *);
+EXT u_int32_t telemetry_cisco_hdr_v0_get_type(telemetry_peer *);
+EXT u_int16_t telemetry_cisco_hdr_v1_get_len(telemetry_peer *);
+EXT u_int8_t telemetry_cisco_hdr_v1_get_type(telemetry_peer *);
 EXT void telemetry_link_misc_structs(telemetry_misc_structs *);
-EXT int telemetry_tpuc_addr_cmp(const void *, const void *);
+EXT int telemetry_tpc_addr_cmp(const void *, const void *);
 EXT int telemetry_validate_input_output_decoders(int, int);
 EXT void telemetry_log_peer_stats(telemetry_peer *, struct telemetry_data *);
 EXT void telemetry_log_global_stats(struct telemetry_data *);
+
+#ifdef WITH_ZMQ
+EXT void telemetry_init_zmq_host(void *, int *);
+#endif
 #undef EXT

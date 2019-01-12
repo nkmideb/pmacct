@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -93,10 +93,10 @@ struct configuration {
   u_int64_t pipe_size;
   u_int64_t buffer_size;
   int buffer_immediate;
-  int pipe_check_core_pid;
   int pipe_zmq;
   int pipe_zmq_retry;
   int pipe_zmq_profile;
+  int pipe_zmq_hwm;
   int files_umask;
   int files_uid;
   int files_gid;
@@ -120,6 +120,7 @@ struct configuration {
   char *sql_user;
   char *sql_passwd;
   char *sql_host;
+  int sql_port;
   char *sql_data;
   char *sql_backup_host;
   int sql_optimize_clauses;
@@ -141,6 +142,8 @@ struct configuration {
   char *sql_locking_style;
   int sql_use_copy;
   char *sql_delimiter;
+  int timestamps_rfc3339;
+  int timestamps_utc;
   int timestamps_secs;
   int timestamps_since_epoch;
   int mongo_insert_batch;
@@ -157,10 +160,12 @@ struct configuration {
   int amqp_avro_schema_refresh_time;
   int kafka_broker_port;
   int kafka_partition;
+  int kafka_partition_dynamic;
   char *kafka_partition_key;
   int kafka_partition_keylen;
   char *kafka_avro_schema_topic;
   int kafka_avro_schema_refresh_time;
+  char *kafka_avro_schema_registry;
   char *kafka_config_file;
   int print_cache_entries;
   int print_markers;
@@ -172,6 +177,11 @@ struct configuration {
   char *print_latest_file;
   int nfacctd_port;
   char *nfacctd_ip;
+  char *nfacctd_kafka_broker_host;
+  int nfacctd_kafka_broker_port;
+  char *nfacctd_kafka_topic;
+  char *nfacctd_kafka_config_file;
+  char *nfacctd_zmq_address;
   char *nfacctd_allow_file;
   int nfacctd_time;
   int nfacctd_time_new;
@@ -212,9 +222,11 @@ struct configuration {
   int telemetry_port_tcp;
   int telemetry_port_udp;
   char *telemetry_ip;
+  char *telemetry_zmq_address;
   char *telemetry_decoder;
+  int telemetry_decoder_id;
   int telemetry_max_peers;
-  int telemetry_udp_timeout;
+  int telemetry_peer_timeout;
   char *telemetry_allow_file;
   int telemetry_pipe_size;
   int telemetry_ipprec;
@@ -301,6 +313,7 @@ struct configuration {
   char *nfacctd_bgp_extcomm_pattern;
   char *nfacctd_bgp_lrgcomm_pattern;
   char *nfacctd_bgp_stdcomm_pattern_to_asn;
+  char *nfacctd_bgp_lrgcomm_pattern_to_asn;
   int nfacctd_bgp_peer_as_src_type;
   int nfacctd_bgp_src_std_comm_type;
   int nfacctd_bgp_src_ext_comm_type;
@@ -321,9 +334,6 @@ struct configuration {
   int nfacctd_bgp_follow_nexthop_external;
   char *nfacctd_bgp_neighbors_file;
   char *nfacctd_bgp_md5_file;
-  int nfacctd_bgp_offline_input;
-  char *nfacctd_bgp_offline_file_spool;
-  int nfacctd_bgp_offline_file_refresh_time;
   int bgp_table_peer_buckets;
   int bgp_table_per_peer_buckets;
   int bgp_table_attr_hash_buckets;
@@ -351,6 +361,13 @@ struct configuration {
   int bgp_table_dump_kafka_partition_keylen;
   int bgp_table_dump_kafka_broker_port;
   char *bgp_table_dump_kafka_config_file;
+  int bgp_lg;
+  char *bgp_lg_ip;
+  int bgp_lg_port;
+  int bgp_lg_threads;
+  char *bgp_lg_user;
+  char *bgp_lg_passwd;
+  char *bgp_xconnect_map;
   int bmp_sock;
   int nfacctd_bmp;
   char *nfacctd_bmp_ip;
@@ -435,9 +452,14 @@ struct configuration {
   char *clbuf; /* pcap filter */
   int pcap_protocol;
   char *pcap_savefile;
-  char *dev;
-  int if_wait;
-  int sf_wait;
+  int pcap_direction;
+  int pcap_ifindex;
+  char *pcap_interfaces_map;
+  char *pcap_if;
+  int pcap_if_wait;
+  int pcap_sf_wait;
+  int pcap_sf_delay;
+  int pcap_sf_replay;
   int num_memory_pools;
   int memory_pool_size;
   int buckets;
@@ -504,6 +526,7 @@ struct configuration {
   int nfprobe_direction;
   u_int32_t nfprobe_ifindex;
   int nfprobe_ifindex_type;
+  int nfprobe_dont_cache;
   char *sfprobe_receiver;
   char *sfprobe_agentip;
   int sfprobe_agentsubid;
@@ -513,17 +536,16 @@ struct configuration {
   int tee_max_receiver_pools;
   char *tee_receivers;
   int tee_pipe_size;
-  int tee_dissect_send_full_pkt;
+  char *tee_kafka_config_file;
   int uacctd_group;
   int uacctd_nl_size;
   int uacctd_threshold;
   char *tunnel0;
-  char *pkt_len_distrib_bins_str;
-  char *pkt_len_distrib_bins[MAX_PKT_LEN_DISTRIB_BINS];
-  u_int16_t pkt_len_distrib_bins_lookup[ETHER_JUMBO_MTU+1];
   int use_ip_next_hop;
+  int decode_arista_trailer;
   int dump_max_writers;
   int tmp_asa_bi_flow;
+  int tmp_bgp_lookup_compare_ports;
   size_t thread_stack;
 };
 

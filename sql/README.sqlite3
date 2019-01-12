@@ -75,12 +75,14 @@ Similarly, BGP tables:
     - dst_as => ip_dst (INT(8) NOT NULL DEFAULT 0, if sql_table_version < 6)
   * peer_src_as => peer_as_src (INT(8) NOT NULL DEFAULT 0)
   * peer_dst_as => peer_as_dst (INT(8) NOT NULL DEFAULT 0)
-  * peer_src_ip => peer_ip_src (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-    - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * peer_src_ip => peer_ip_src (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
-  * peer_dst_ip => peer_ip_dst (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
     - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * peer_dst_ip => peer_ip_dst (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
+    - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
   * mpls_vpn_rd => mpls_vpn_rd (CHAR(18) NOT NULL DEFAULT ' ')
   * std_comm => comms (CHAR(24) NOT NULL DEFAULT ' ')
   * ext_comm => ecomms (CHAR(24) NOT NULL DEFAULT ' ')
@@ -104,26 +106,34 @@ Similarly, BGP tables:
   * dst_host_country => country_ip_dst (CHAR(2) NOT NULL DEFAULT '--', see README.GeoIP)
   * src_host_pocode => pocode_ip_src (CHAR(12) NOT NULL DEFAULT ' ', see README.GeoIP)
   * dst_host_pocode => pocode_ip_dst (CHAR(12) NOT NULL DEFAULT ' ', see README.GeoIP)
-  * sampling_rate => sampling_rate (INT(8) NOT NULL DEFAULT 0, see README.sampling_rate)
-  * pkt_len_distrib => pkt_len_distrib (CHAR(10) NOT NULL DEFAULT ' ', see README.pkt_len_distrib)
+  * src_host_coords => lat_ip_src (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * src_host_coords => lon_ip_src (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * dst_host_coords => lat_ip_dst (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * dst_host_coords => lon_ip_dst (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * sampling_rate => sampling_rate (INT(8) NOT NULL DEFAULT 0, see README.sampling)
+  * sampling_direction => sampling_direction (CHAR(1) NOT NULL DEFAULT ' ', see README.sampling)
   * class => class_id (CHAR(16) NOT NOT NULL DEFAULT ' ')
   * src_mac => mac_src (CHAR(17) NOT NULL DEFAULT '0:0:0:0:0:0')
   * dst_mac => mac_dst (CHAR(17) NOT NULL DEFAULT '0:0:0:0:0:0')
   * vlan => vlan (INT(4) NOT NULL DEFAULT 0)
   * src_as => as_src (INT(8) NOT NULL DEFAULT 0)
   * dst_as => as_dst (INT(8) NOT NULL DEFAULT 0)
-  * src_host => ip_src (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-    - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * src_host => ip_src (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6) 
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true) 
-  * dst_host => ip_dst (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
     - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * dst_host => ip_dst (CHAR(45) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
-  * src_net => net_src (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
     - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * src_net => net_src (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
-  * dst_net => net_dst (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
     - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * dst_net => net_dst (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
+    - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
   * src_port => src_port (INT(4) NOT NULL DEFAULT 0)
     - or src_port => port_src (INT(4) NOT NULL DEFAULT 0, if sql_table_version >= 8 or sql_table_type == bgp)
   * dst_port => dst_port (INT(4) NOT NULL DEFAULT 0)
@@ -132,24 +142,28 @@ Similarly, BGP tables:
   * proto => ip_proto (CHAR(6) NOT NULL DEFAULT ' ')
     - or (INT(2) DEFAULT 0, if sql_num_protos: true)
   * tos => tos (INT(4) NOT NULL DEFAULT 0)
-  * post_nat_src_host => post_nat_ip_src (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-    - or (INT(8) NOT NULL DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * post_nat_src_host => post_nat_ip_src (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
-  * post_nat_dst_host => post_nat_ip_dst (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-    - or (INT(8) NOT NULL DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+    - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6) 
+  * post_nat_dst_host => post_nat_ip_dst (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
+    - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
   * post_nat_src_port => post_nat_port_src (INT(4) NOT NULL DEFAULT 0)
   * post_nat_dst_port => post_nat_port_dst (INT(4) NOT NULL DEFAULT 0)
   * nat_event => nat_event (INT(2) NOT NULL DEFAULT 0)
   * mpls_label_top => mpls_label_top (INT(4) NOT NULL DEFAULT 0)
   * mpls_label_bottom => mpls_label_bottom (INT(4) NOT NULL DEFAULT 0)
   * mpls_stack_depth => mpls_stack_depth (INT(1) NOT NULL DEFAULT 0)
-  * tunnel_src_host => tunnel_ip_src (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-    - or (INT(8) NOT NULL DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * tunnel_src_host => tunnel_ip_src (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
-  * tunnel_dst_host => tunnel_ip_dst (CHAR(15) NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
-    - or (INT(8) NOT NULL DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+    - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
+  * tunnel_dst_host => tunnel_ip_dst (CHAR(45) NOT NULL DEFAULT '0.0.0.0')
+    - or (CHAR(15) NOT NULL DEFAULT '0.0.0.0', if --disable-ipv6)
     - or (INT(32) DEFAULT 0, if sql_num_hosts: true)
+    - or (INT(8) DEFAULT 0, if sql_num_hosts: true and --disable-ipv6)
   * tunnel_proto => tunnel_ip_proto (CHAR(6) NOT NULL DEFAULT ' ')
     - or (INT(2) DEFAULT 0, if sql_num_protos: true)
   * tunnel_tos => tunnel_tos (INT(4) NOT NULL DEFAULT 0)
@@ -168,6 +182,9 @@ Similarly, BGP tables:
   * timestamp_max => timestamp_max, timestamp_max_residual:
     - timestamp_max DATETIME NOT NULL DEFAULT '0000-00-00 00:00:00', see README.timestamp)
     - timestamp_max_residual INT NOT NULL DEFAULT 0, see README.timestamp)
+  * export_proto_seqno => export_proto_seqno (INT(4) NOT NULL DEFAULT 0, see README.export_proto)
+  * export_proto_version => export_proto_version (INT(2) NOT NULL DEFAULT 0, see README.export_proto)
+  * export_proto_sysid => export_proto_sysid (INT(4) NOT NULL DEFAULT 0, see README.export_proto)
 
 - 'packets' and 'bytes' counters need to be defined as part of the SQL schema
   whenever traffic flows are being accounted for; they are not required, and 
@@ -182,14 +199,10 @@ Similarly, BGP tables:
 - For custom-defined primitives refer to the README.custom_primitives doc.
 
 NOTE: mind to specify EVERYTIME which SQL table version you
-intend to adhere to by using either of the following rules:
+intend to adhere to by using the following config directives:
 
-When using commandline options:
-  * -v [ 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 ]
-
-When using configuration directives:
-  * sql_table_version: [ 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 ]
-  * sql_table_type: [ bgp ]
+* sql_table_version: [ 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 ]
+* sql_table_type: [ bgp ]
 
 NOTE: specifying a non-documented SQL table profile will result
 in an non-determined behaviour. Unless this will create crashes

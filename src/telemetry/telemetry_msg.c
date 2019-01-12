@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -24,6 +24,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "../bgp/bgp.h"
 #include "telemetry.h"
 #if defined WITH_RABBITMQ
@@ -31,6 +32,9 @@
 #endif
 #ifdef WITH_KAFKA
 #include "kafka_common.h"
+#endif
+#if defined WITH_ZMQ
+#include "zmq_common.h"
 #endif
 
 /* Functions */
@@ -48,7 +52,9 @@ void telemetry_process_data(telemetry_peer *peer, struct telemetry_data *t_data,
     char event_type[] = "log";
 
     if (!telemetry_validate_input_output_decoders(data_decoder, config.telemetry_msglog_output)) {
-      telemetry_log_msg(peer, t_data, peer->buf.base, peer->msglen, data_decoder, tms->log_seq, event_type, config.telemetry_msglog_output);
+      telemetry_log_msg(peer, t_data, peer->buf.base, peer->msglen, data_decoder,
+			telemetry_log_seq_get(&tms->log_seq), event_type,
+			config.telemetry_msglog_output);
     }
   }
 
@@ -61,6 +67,22 @@ void telemetry_process_data(telemetry_peer *peer, struct telemetry_data *t_data,
   if (tms->msglog_backend_methods || tms->dump_backend_methods)
     telemetry_log_seq_increment(&tms->log_seq);
 }
+
+#if defined WITH_ZMQ
+int telemetry_recv_zmq_generic(telemetry_peer *peer, u_int32_t len)
+{
+  int ret = 0;
+
+  ret = p_zmq_recv_bin(&telemetry_zmq_host.sock, peer->buf.base, peer->buf.len);
+
+  if (ret > 0) {
+    peer->stats.packet_bytes += ret;
+    peer->msglen = ret;
+  }
+
+  return ret;
+}
+#endif
 
 int telemetry_recv_generic(telemetry_peer *peer, u_int32_t len)
 {
@@ -99,6 +121,15 @@ void telemetry_basic_process_json(telemetry_peer *peer)
 {
   int idx;
 
+  if (config.telemetry_decoder_id == TELEMETRY_DECODER_CISCO_V0 && config.telemetry_port_udp) {
+    peer->msglen -= TELEMETRY_CISCO_HDR_LEN_V0;
+    memmove(peer->buf.base, &peer->buf.base[TELEMETRY_CISCO_HDR_LEN_V0], peer->msglen);
+  }
+  else if (config.telemetry_decoder_id == TELEMETRY_DECODER_CISCO_V1 && config.telemetry_port_udp) {
+    peer->msglen -= TELEMETRY_CISCO_HDR_LEN_V1;
+    memmove(peer->buf.base, &peer->buf.base[TELEMETRY_CISCO_HDR_LEN_V1], peer->msglen);
+  }
+
   for (idx = 0; idx < peer->msglen; idx++) {
     if (!isprint(peer->buf.base[idx])) peer->buf.base[idx] = '\0';
   }
@@ -111,11 +142,15 @@ void telemetry_basic_process_json(telemetry_peer *peer)
 
 int telemetry_recv_json(telemetry_peer *peer, u_int32_t len, int *flags)
 {
-  int ret = 0, idx;
+  int ret = 0;
   if (!flags) return ret;
 
   (*flags) = FALSE;
-  ret = telemetry_recv_generic(peer, len);
+
+  if (!config.telemetry_zmq_address) ret = telemetry_recv_generic(peer, len);
+#if defined WITH_ZMQ
+  else ret = telemetry_recv_zmq_generic(peer, len);
+#endif
 
   telemetry_basic_process_json(peer);
 
@@ -124,78 +159,16 @@ int telemetry_recv_json(telemetry_peer *peer, u_int32_t len, int *flags)
   return ret;
 }
 
-int telemetry_recv_zjson(telemetry_peer *peer, telemetry_peer_z *peer_z, u_int32_t len, int *flags)
+int telemetry_recv_gpb(telemetry_peer *peer, u_int32_t len)
 {
   int ret = 0;
-
-#if defined (HAVE_ZLIB)
-  if (!flags) return ret;
-  (*flags) = FALSE;
 
   ret = telemetry_recv_generic(peer, len);
 
-
-  if (ret > 0) { 
-    int zret;
-
-    memset(peer_z->inflate_buf, 0, sizeof(peer_z->inflate_buf));
-    peer_z->stm.avail_out = (uInt) sizeof(peer_z->inflate_buf);
-    peer_z->stm.next_out = (Bytef *) peer_z->inflate_buf;
-
-    peer_z->stm.avail_in = (uInt) peer->msglen;
-    peer_z->stm.next_in = (Bytef *) peer->buf.base;
-
-    ret = FALSE;
-    zret = inflate(&peer_z->stm, Z_NO_FLUSH);
-    if (zret == Z_OK || zret == Z_STREAM_END) {
-      strlcpy(peer->buf.base, peer_z->inflate_buf, peer->buf.len);
-      peer->msglen = strlen(peer->buf.base) + 1;
-      ret = peer->msglen;
-
-      (*flags) = telemetry_basic_validate_json(peer);
-      if (zret == Z_STREAM_END) {
-        inflateReset(&peer_z->stm);
-      }
-    }
-  }
-#endif
-
   return ret;
 }
 
-int telemetry_recv_cisco_json(telemetry_peer *peer, int *flags)
-{
-  int ret = 0;
-  u_int32_t len;
-
-  ret = telemetry_recv_generic(peer, TELEMETRY_CISCO_HDR_LEN);
-  if (ret <= 0) return ret;
-  
-  if (ret == TELEMETRY_CISCO_HDR_LEN) {
-    len = telemetry_cisco_hdr_get_len(peer);
-    ret = telemetry_recv_json(peer, len, flags);
-  }
-  
-  return ret;
-}
-
-int telemetry_recv_cisco_zjson(telemetry_peer *peer, telemetry_peer_z *peer_z, int *flags)
-{
-  int ret = 0;
-  u_int32_t len;
-  if (!flags) return FALSE;
-  *flags = FALSE;
-
-  ret = telemetry_recv_generic(peer, TELEMETRY_CISCO_HDR_LEN);
-  if (ret == TELEMETRY_CISCO_HDR_LEN) {
-    len = telemetry_cisco_hdr_get_len(peer); 
-    ret = telemetry_recv_zjson(peer, peer_z, len, flags); 
-  }
-
-  return ret;
-}
-
-int telemetry_recv_cisco(telemetry_peer *peer, int *flags, int *data_decoder)
+int telemetry_recv_cisco_v0(telemetry_peer *peer, int *flags, int *data_decoder)
 {
   int ret = 0;
   u_int32_t type, len;
@@ -204,29 +177,68 @@ int telemetry_recv_cisco(telemetry_peer *peer, int *flags, int *data_decoder)
   *flags = FALSE;
   *data_decoder = TELEMETRY_DATA_DECODER_UNKNOWN;
 
-  ret = telemetry_recv_generic(peer, TELEMETRY_CISCO_HDR_LEN);
-  if (ret == TELEMETRY_CISCO_HDR_LEN) {
-    type = telemetry_cisco_hdr_get_type(peer);
-    len = telemetry_cisco_hdr_get_len(peer);
+  ret = telemetry_recv_generic(peer, TELEMETRY_CISCO_HDR_LEN_V0);
+  if (ret == TELEMETRY_CISCO_HDR_LEN_V0) {
+    type = telemetry_cisco_hdr_v0_get_type(peer);
+    len = telemetry_cisco_hdr_v0_get_len(peer);
 
-    switch (type) {
-    case TELEMETRY_CISCO_RESET_COMPRESSOR:
-      ret = telemetry_recv_jump(peer, len, flags);
-      (*data_decoder) = TELEMETRY_DATA_DECODER_UNKNOWN; /* XXX: JSON instead? */
-      break;
-    case TELEMETRY_CISCO_JSON:
-      ret = telemetry_recv_json(peer, len, flags);
-      (*data_decoder) = TELEMETRY_DATA_DECODER_JSON;
-      break;
-    case TELEMETRY_CISCO_GPB_COMPACT:
-      ret = telemetry_recv_generic(peer, len);
-      (*data_decoder) = TELEMETRY_DATA_DECODER_GPB;
-      break;
-    case TELEMETRY_CISCO_GPB_KV:
-      ret = telemetry_recv_generic(peer, len);
-      (*data_decoder) = TELEMETRY_DATA_DECODER_GPB;
-      break;
-    }
+    /* Linux does not implement MSG_WAITALL on UDP */
+    if (config.telemetry_port_udp) len = 0;
+
+    ret = telemetry_recv_cisco(peer, flags, data_decoder, type, len);
+  }
+
+  return ret;
+}
+
+int telemetry_recv_cisco_v1(telemetry_peer *peer, int *flags, int *data_decoder)
+{
+  int ret = 0;
+  u_int32_t type, len;
+
+  if (!flags || !data_decoder) return ret;
+  *flags = FALSE;
+  *data_decoder = TELEMETRY_DATA_DECODER_UNKNOWN;
+
+  ret = telemetry_recv_generic(peer, TELEMETRY_CISCO_HDR_LEN_V1);
+  if (ret == TELEMETRY_CISCO_HDR_LEN_V1) {
+    type = telemetry_cisco_hdr_v1_get_type(peer);
+    len = telemetry_cisco_hdr_v1_get_len(peer);
+
+    /* Linux does not implement MSG_WAITALL on UDP */
+    if (config.telemetry_port_udp) len = 0;
+
+    ret = telemetry_recv_cisco(peer, flags, data_decoder, type, len);
+  }
+
+  return ret;
+}
+
+int telemetry_recv_cisco(telemetry_peer *peer, int *flags, int *data_decoder, u_int32_t type, u_int32_t len)
+{
+  int ret = 0;
+
+  switch (type) {
+  case TELEMETRY_CISCO_RESET_COMPRESSOR:
+    ret = telemetry_recv_jump(peer, len, flags);
+    (*data_decoder) = TELEMETRY_DATA_DECODER_UNKNOWN; /* XXX: JSON instead? */
+    break;
+  case TELEMETRY_CISCO_JSON:
+    ret = telemetry_recv_json(peer, len, flags);
+    (*data_decoder) = TELEMETRY_DATA_DECODER_JSON;
+    break;
+  case TELEMETRY_CISCO_GPB_COMPACT:
+    ret = telemetry_recv_generic(peer, len);
+    (*data_decoder) = TELEMETRY_DATA_DECODER_GPB;
+    break;
+  case TELEMETRY_CISCO_GPB_KV:
+    ret = telemetry_recv_generic(peer, len);
+    (*data_decoder) = TELEMETRY_DATA_DECODER_GPB;
+    break;
+  default:
+    ret = telemetry_recv_jump(peer, len, flags);
+    (*data_decoder) = TELEMETRY_DATA_DECODER_UNKNOWN;
+    break;
   }
 
   return ret;
@@ -244,36 +256,6 @@ int telemetry_recv_jump(telemetry_peer *peer, u_int32_t len, int *flags)
   return ret;
 }
 
-int telemetry_recv_cisco_gpb(telemetry_peer *peer)
-{
-  int ret = 0;
-  u_int32_t len;
-
-  if (!peer) return ret;
-
-  ret = telemetry_recv_generic(peer, TELEMETRY_CISCO_HDR_LEN);
-  if (ret == TELEMETRY_CISCO_HDR_LEN) {
-    len = telemetry_cisco_hdr_get_len(peer);
-    ret = telemetry_recv_generic(peer, len);
-  }
-
-  return ret;
-}
-
-int telemetry_recv_cisco_gpb_kv(telemetry_peer *peer, int *flags)
-{
-  int ret = 0;
-  u_int32_t len;
-
-  ret = telemetry_recv_generic(peer, TELEMETRY_CISCO_HDR_LEN);
-  if (ret == TELEMETRY_CISCO_HDR_LEN) {
-    len = telemetry_cisco_hdr_get_len(peer);
-    ret = telemetry_recv_generic(peer, len);
-  }
-
-  return ret;
-}
-
 int telemetry_basic_validate_json(telemetry_peer *peer)
 {
   if (peer->buf.base[peer->buf.truncated_len] != '{') {
@@ -283,3 +265,76 @@ int telemetry_basic_validate_json(telemetry_peer *peer)
   else
     return FALSE;
 }
+
+#if defined (WITH_ZMQ)
+#if defined (WITH_JANSSON)
+int telemetry_decode_zmq_peer(struct telemetry_data *t_data, void *zh, char *buf, int buflen, struct sockaddr *addr, socklen_t *addr_len)
+{
+  json_t *json_obj, *telemetry_node_json, *telemetry_node_port_json;
+  json_error_t json_err;
+  struct p_zmq_host *zmq_host = zh;
+  struct host_addr telemetry_node;
+  u_int16_t telemetry_node_port;
+  int bytes, ret = SUCCESS;
+
+  if (!zmq_host || !buf || !buflen || !addr || !addr_len) return ERR;
+
+  bytes = p_zmq_recv_bin(&zmq_host->sock, buf, buflen);
+  if (bytes > 0) {
+    buf[bytes] = '\0';
+    json_obj = json_loads(buf, 0, &json_err);
+  }
+
+  if (json_obj) {
+    if (!json_is_object(json_obj)) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): telemetry_decode_zmq_peer(): json_is_object() failed.\n", config.name, t_data->log_str);
+      ret = ERR;
+      goto exit_lane;
+    }
+    else {
+      telemetry_node_json = json_object_get(json_obj, "telemetry_node");
+      if (telemetry_node_json == NULL) {
+	Log(LOG_WARNING, "WARN ( %s/%s ): telemetry_decode_zmq_peer(): no 'telemetry_node' element.\n", config.name, t_data->log_str);
+	ret = ERR;
+	goto exit_lane;
+      }
+      else {
+	const char *telemetry_node_str;
+
+	telemetry_node_str = json_string_value(telemetry_node_json);
+	str_to_addr(telemetry_node_str, &telemetry_node);
+	json_decref(telemetry_node_json);
+      }
+
+      telemetry_node_port_json = json_object_get(json_obj, "telemetry_node_port");
+      if (telemetry_node_port_json == NULL) {
+	Log(LOG_WARNING, "WARN ( %s/%s ): telemetry_decode_zmq_peer(): no 'telemetry_node_port' element.\n", config.name, t_data->log_str);
+	ret = ERR;
+	goto exit_lane;
+      }
+      else {
+	telemetry_node_port = json_integer_value(telemetry_node_port_json);
+	json_decref(telemetry_node_port_json);
+      }
+
+      (*addr_len) = addr_to_sa(addr, &telemetry_node, telemetry_node_port);
+    }
+
+    exit_lane:
+    json_decref(json_obj);
+  }
+  else {
+    Log(LOG_WARNING, "WARN ( %s/%s ): telemetry_decode_zmq_peer(): invalid telemetry node JSON received: %s.\n", config.name, t_data->log_str, json_err.text);
+    ret = ERR;
+  }
+
+  return ret;
+}
+#else
+int telemetry_decode_zmq_peer(struct telemetry_data *t_data, void *zh, char *buf, int buflen, struct sockaddr *addr, socklen_t *addr_len)
+{
+  Log(LOG_ERR, "ERROR ( %s/%s ): telemetry_decode_zmq_peer() requires --enable-zmq. Terminating.\n", config.name, t_data->log_str);
+  exit_gracefully(1);
+}
+#endif
+#endif

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -24,6 +24,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "../bgp/bgp.h"
 #include "telemetry.h"
 #if defined WITH_RABBITMQ
@@ -32,26 +33,14 @@
 #ifdef WITH_KAFKA
 #include "kafka_common.h"
 #endif
+#if defined WITH_ZMQ
+#include "zmq_common.h"
+#endif
 
 /* Functions */
 int telemetry_peer_init(telemetry_peer *peer, int type)
 {
   return bgp_peer_init(peer, type);
-}
-
-int telemetry_peer_z_init(telemetry_peer_z *peer_z)
-{
-#if defined (HAVE_ZLIB)
-  peer_z->stm.zalloc = Z_NULL;
-  peer_z->stm.zfree = Z_NULL;
-  peer_z->stm.opaque = Z_NULL;
-  peer_z->stm.avail_in = 0;
-  peer_z->stm.next_in = Z_NULL;
-
-  if (inflateInit(&peer_z->stm) != Z_OK) return ERR;
-#endif
-
-  return FALSE;
 }
 
 void telemetry_peer_close(telemetry_peer *peer, int type)
@@ -74,11 +63,11 @@ void telemetry_peer_close(telemetry_peer *peer, int type)
     peer->bmp_se = NULL;
   }
 
-  if (config.telemetry_port_udp) {
-    telemetry_peer_udp_cache tpuc;
+  if (config.telemetry_port_udp || config.telemetry_zmq_address) {
+    telemetry_peer_cache tpc;
 
-    memcpy(&tpuc.addr, &peer->addr, sizeof(struct host_addr));
-    pm_tdelete(&tpuc, &telemetry_peers_udp_cache, telemetry_tpuc_addr_cmp);
+    memcpy(&tpc.addr, &peer->addr, sizeof(struct host_addr));
+    pm_tdelete(&tpc, &telemetry_peers_cache, telemetry_tpc_addr_cmp);
 
     peer->fd = ERR; /* dirty trick to prevent close() a valid fd in bgp_peer_close() */
   }
@@ -86,14 +75,7 @@ void telemetry_peer_close(telemetry_peer *peer, int type)
   bgp_peer_close(peer, type, FALSE, FALSE, FALSE, FALSE, NULL);
 }
 
-void telemetry_peer_z_close(telemetry_peer_z *peer_z)
-{
-#if defined (HAVE_ZLIB)
-  inflateEnd(&peer_z->stm);
-#endif
-}
-
-u_int32_t telemetry_cisco_hdr_get_len(telemetry_peer *peer)
+u_int32_t telemetry_cisco_hdr_v0_get_len(telemetry_peer *peer)
 {
   u_int32_t len;
 
@@ -103,7 +85,7 @@ u_int32_t telemetry_cisco_hdr_get_len(telemetry_peer *peer)
   return len;
 }
 
-u_int32_t telemetry_cisco_hdr_get_type(telemetry_peer *peer)
+u_int32_t telemetry_cisco_hdr_v0_get_type(telemetry_peer *peer)
 {
   u_int32_t type;
 
@@ -113,15 +95,28 @@ u_int32_t telemetry_cisco_hdr_get_type(telemetry_peer *peer)
   return type;
 }
 
-int telemetry_is_zjson(int decoder)
+u_int16_t telemetry_cisco_hdr_v1_get_len(telemetry_peer *peer)
 {
-  if (decoder == TELEMETRY_DECODER_ZJSON || decoder == TELEMETRY_DECODER_CISCO_ZJSON) return TRUE;
-  else return FALSE;
+  u_int16_t len;
+
+  memcpy(&len, (peer->buf.base + 2), 2);
+  len = ntohs(len);
+
+  return len;
 }
 
-int telemetry_tpuc_addr_cmp(const void *a, const void *b)
+u_int8_t telemetry_cisco_hdr_v1_get_type(telemetry_peer *peer)
 {
-  return memcmp(&((telemetry_peer_udp_cache *)a)->addr, &((telemetry_peer_udp_cache *)b)->addr, sizeof(struct host_addr));
+  u_int8_t type;
+
+  memcpy(&type, (peer->buf.base + 1), 1);
+
+  return type;
+}
+
+int telemetry_tpc_addr_cmp(const void *a, const void *b)
+{
+  return host_addr_cmp(&((telemetry_peer_cache *)a)->addr, &((telemetry_peer_cache *)b)->addr);
 }
 
 void telemetry_link_misc_structs(telemetry_misc_structs *tms)
@@ -133,6 +128,10 @@ void telemetry_link_misc_structs(telemetry_misc_structs *tms)
   tms->msglog_kafka_host = &telemetry_daemon_msglog_kafka_host;
 #endif
   tms->max_peers = config.telemetry_max_peers;
+  tms->peers = telemetry_peers;
+  tms->peers_cache = NULL;
+  tms->peers_port_cache = NULL;
+  tms->xconnects = NULL;
   tms->dump_file = config.telemetry_dump_file;
   tms->dump_amqp_routing_key = config.telemetry_dump_amqp_routing_key;
   tms->dump_amqp_routing_key_rr = config.telemetry_dump_amqp_routing_key_rr;
@@ -146,6 +145,8 @@ void telemetry_link_misc_structs(telemetry_misc_structs *tms)
   tms->msglog_kafka_topic_rr = config.telemetry_msglog_kafka_topic_rr;
   tms->peer_str = malloc(strlen("telemetry_node") + 1);
   strcpy(tms->peer_str, "telemetry_node");
+  tms->peer_port_str = malloc(strlen("telemetry_node_port") + 1);
+  strcpy(tms->peer_port_str, "telemetry_node_port");
 }
 
 int telemetry_validate_input_output_decoders(int input, int output)
@@ -158,11 +159,16 @@ int telemetry_validate_input_output_decoders(int input, int output)
     if (output == PRINT_OUTPUT_JSON) return FALSE;
     /* else if (output == PRINT_OUTPUT_GPB) return ERR; */
   }
+  else if (input == TELEMETRY_DATA_DECODER_UNKNOWN) {
+    if (output == PRINT_OUTPUT_JSON) return FALSE;
+  }
+
+  return ERR;
 }
 
 void telemetry_log_peer_stats(telemetry_peer *peer, struct telemetry_data *t_data)
 {
-  Log(LOG_INFO, "INFO ( %s/%s ): [%s:%u] Packets: %u Packet_Bytes: %u Msg_Bytes: %u Msg_Errors: %u\n",
+  Log(LOG_INFO, "INFO ( %s/%s ): [%s:%u] pkts=%u pktBytes=%u msgBytes=%u msgErrors=%u\n",
 	config.name, t_data->log_str, peer->addr_str, peer->tcp_port, peer->stats.packets,
 	peer->stats.packet_bytes, peer->stats.msg_bytes, peer->stats.msg_errors);
 
@@ -179,7 +185,7 @@ void telemetry_log_peer_stats(telemetry_peer *peer, struct telemetry_data *t_dat
 
 void telemetry_log_global_stats(struct telemetry_data *t_data)
 {
-  Log(LOG_INFO, "INFO ( %s/%s ): Packets: %u Packet_Bytes: %u Msg_Bytes: %u Msg_Errors: %u\n",
+  Log(LOG_INFO, "INFO ( %s/%s ): [Total] pkts=%u pktBytes=%u msgBytes=%u msgErrors=%u\n",
         config.name, t_data->log_str, t_data->global_stats.packets, t_data->global_stats.packet_bytes,
 	t_data->global_stats.msg_bytes, t_data->global_stats.msg_errors);
 
@@ -188,3 +194,22 @@ void telemetry_log_global_stats(struct telemetry_data *t_data)
   t_data->global_stats.msg_bytes = 0;
   t_data->global_stats.msg_errors = 0;
 }
+
+#ifdef WITH_ZMQ
+void telemetry_init_zmq_host(void *zh, int *pipe_fd)
+{
+  struct p_zmq_host *zmq_host = zh;
+  char log_id[SHORTBUFLEN];
+
+  p_zmq_init_pull(zmq_host);
+
+  snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+  p_zmq_set_log_id(zmq_host, log_id);
+
+  p_zmq_set_address(zmq_host, config.telemetry_zmq_address);
+  p_zmq_pull_setup(zmq_host);
+  p_zmq_set_retry_timeout(zmq_host, PM_ZMQ_DEFAULT_RETRY);
+
+  if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
+}
+#endif

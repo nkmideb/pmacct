@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /* 
@@ -99,7 +99,7 @@ assegment_new (u_char type, u_short length)
   new = malloc(sizeof (struct assegment));
   if (!new) {
     Log(LOG_ERR, "ERROR ( %s/core/BGP ): malloc() failed (assegment_new: new). Exiting ..\n", config.name); // XXX
-    exit_all(1);
+    exit_gracefully(1);
   }
   memset(new, 0, sizeof (struct assegment));
   
@@ -107,7 +107,7 @@ assegment_new (u_char type, u_short length)
     new->as = assegment_data_new (length);
     if (!new->as) {
       Log(LOG_ERR, "ERROR ( %s/core/BGP ): malloc() failed (assegment_new: new->as). Exiting ..\n", config.name); // XXX
-      exit_all(1);
+      exit_gracefully(1);
     }
     memset(new->as, 0, length);
   }
@@ -178,37 +178,6 @@ assegment_dup_all (struct assegment *seg)
       seg = seg->next;
     }
   return head;
-}
-
-/* prepend the as number to given segment, given num of times */
-static struct assegment *
-assegment_prepend_asns (struct assegment *seg, as_t asnum, int num)
-{
-  as_t *newas;
-  
-  if (!num)
-    return seg;
-  
-  if (num >= AS_SEGMENT_MAX)
-    return seg; /* we don't do huge prepends */
-  
-  newas = assegment_data_new (seg->length + num);
-  
-  if (newas)
-    {
-      int i;
-      for (i = 0; i < num; i++)
-        newas[i] = asnum;
-      
-      memcpy (newas + num, seg->as, ASSEGMENT_DATA_SIZE (seg->length, 1));
-      free(seg->as);
-      seg->as = newas; 
-      seg->length += num;
-      return seg;
-    }
-
-  assegment_free_all (seg);
-  return NULL;
 }
 
 /* append given array of as numbers to the segment */
@@ -327,7 +296,7 @@ aspath_new (struct bgp_peer *peer)
   aspath = malloc(sizeof (struct aspath));
   if (!aspath) {
     Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (aspath_new). Exiting ..\n", config.name, bms->log_str);
-    exit_all(1);
+    exit_gracefully(1);
   }
   memset (aspath, 0, sizeof (struct aspath));
   return aspath;
@@ -530,6 +499,22 @@ aspath_count_numas (struct aspath *aspath)
   return num;
 }
 
+char *aspath_make_empty()
+{
+  char *str_buf;
+
+  str_buf = malloc(1);
+
+  if (!str_buf) {
+    Log(LOG_ERR, "ERROR ( %s/core/BGP ): malloc() failed (aspath_make_str_count). Exiting ..\n", config.name); // XXX
+    exit_gracefully(1);
+  }
+
+  str_buf[0] = '\0';
+
+  return str_buf;
+}
+
 /* Convert aspath structure to string expression. */
 static char *
 aspath_make_str_count (struct aspath *as)
@@ -540,16 +525,7 @@ aspath_make_str_count (struct aspath *as)
   char *str_buf;
 
   /* Empty aspath. */
-  if (!as->segments)
-    {
-      str_buf = malloc(1);
-      if (!str_buf) {
-	Log(LOG_ERR, "ERROR ( %s/core/BGP ): malloc() failed (aspath_make_str_count). Exiting ..\n", config.name); // XXX
-	exit_all(1);
-      }
-      str_buf[0] = '\0';
-      return str_buf;
-    }
+  if (!as->segments) str_buf = aspath_make_empty();
 
   seg = as->segments;
   
@@ -568,14 +544,14 @@ aspath_make_str_count (struct aspath *as)
   str_buf = malloc(str_size);
   if (!str_buf) {
     Log(LOG_ERR, "ERROR ( %s/core/BGP ): malloc() failed (aspath_make_str_count). Exiting ..\n", config.name); // XXX
-    exit_all(1);
+    exit_gracefully(1);
   }
 
   while (seg)
     {
       int i;
       char seperator;
-      
+
       /* Check AS type validity. Set seperator for segment */
       switch (seg->type)
         {
@@ -589,7 +565,8 @@ aspath_make_str_count (struct aspath *as)
             break;
           default:
             free(str_buf);
-            return NULL;
+	    str_buf = aspath_make_empty();
+	    return str_buf;
         }
       
       /* We might need to increase str_buf, particularly if path has
@@ -688,7 +665,7 @@ aspath_dup (struct aspath *aspath)
   new = malloc(sizeof (struct aspath));
   if (!new) {
     Log(LOG_ERR, "ERROR ( %s/core/BGP ): malloc() failed (aspath_dup). Exiting ..\n", config.name); // XXX
-    exit_all(1);
+    exit_gracefully(1);
   }
   memset(new, 0, sizeof(struct aspath));
 

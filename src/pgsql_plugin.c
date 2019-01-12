@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -37,8 +37,8 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   struct pollfd pfd;
   struct insert_data idata;
   time_t refresh_deadline;
-  int timeout, refresh_timeout;
-  int ret, num;
+  int refresh_timeout;
+  int ret, num, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
@@ -57,6 +57,8 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
 #ifdef WITH_ZMQ
   struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host = NULL;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -89,16 +91,7 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   sql_init_triggers(idata.now, &idata);
   sql_init_refresh_deadline(&refresh_deadline);
 
-  if (config.pipe_zmq) {
-    plugin_pipe_zmq_compile_check();
-#ifdef WITH_ZMQ
-    p_zmq_plugin_pipe_init_plugin(zmq_host);
-    p_zmq_plugin_pipe_consume(zmq_host);
-    p_zmq_set_retry_timeout(zmq_host, config.pipe_zmq_retry);
-    pipe_fd = p_zmq_get_fd(zmq_host);
-    seq = 0;
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   /* building up static SQL clauses */
@@ -114,6 +107,7 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   for(;;) {
     poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
     calc_refresh_timeout(refresh_deadline, idata.now, &refresh_timeout);
 
     pfd.fd = pipe_fd;
@@ -121,14 +115,15 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), refresh_timeout);
 
     if (ret <= 0) {
-      if (getppid() == 1) {
+      if (getppid() != core_pid) {
         Log(LOG_ERR, "ERROR ( %s/%s ): Core process *seems* gone. Exiting.\n", config.name, config.type);
-        exit_plugin(1);
+        exit_gracefully(1);
       }
 
       if (ret < 0) goto poll_again;
     }
 
+    poll_ops:
     idata.now = time(NULL);
     now = idata.now;
 
@@ -145,13 +140,37 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
     }
 
-    switch (ret) {
-    case 0: /* poll(): timeout */
+    if (idata.now > refresh_deadline) {
       if (qq_ptr) sql_cache_flush(queries_queue, qq_ptr, &idata, FALSE);
       sql_cache_handle_flush_event(&idata, &refresh_deadline, &pt);
+    }
+    else {
+      if (config.sql_trigger_exec) {
+        while (idata.now > idata.triggertime && idata.t_timeslot > 0) {
+          sql_trigger_exec(config.sql_trigger_exec);
+          idata.triggertime += idata.t_timeslot;
+          if (config.sql_trigger_time == COUNT_MONTHLY)
+            idata.t_timeslot = calc_monthly_timeslot(idata.triggertime, config.sql_trigger_time_howmany, ADD);
+        }
+      }
+    }
+
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
+    }
+
+    switch (ret) {
+    case 0: /* poll(): timeout */
       break;
     default: /* poll(): received data */
       read_data:
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+	poll_bypass = TRUE;
+	goto poll_ops;
+      }
+
       if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
@@ -162,7 +181,7 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         }
         else {
           if ((ret = read(pipe_fd, &rgptr, sizeof(rgptr))) == 0)
-            exit_plugin(1); /* we exit silently; something happened at the write end */
+            exit_gracefully(1); /* we exit silently; something happened at the write end */
         }
 
         if ((rg->ptr + bufsz) > rg->end) rg->ptr = rg->base;
@@ -192,7 +211,7 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
 #ifdef WITH_ZMQ
       else if (config.pipe_zmq) {
-	ret = p_zmq_plugin_pipe_recv(zmq_host, pipebuf, config.buffer_size);
+	ret = p_zmq_topic_recv(zmq_host, pipebuf, config.buffer_size);
 	if (ret > 0) {
 	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
 	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
@@ -205,30 +224,13 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
 #endif
 
-      /* lazy sql refresh handling */ 
-      if (idata.now > refresh_deadline) {
-        if (qq_ptr) sql_cache_flush(queries_queue, qq_ptr, &idata, FALSE);
-        sql_cache_handle_flush_event(&idata, &refresh_deadline, &pt);
-      } 
-      else {
-        if (config.sql_trigger_exec) {
-          while (idata.now > idata.triggertime && idata.t_timeslot > 0) {
-            sql_trigger_exec(config.sql_trigger_exec);
-	    idata.triggertime += idata.t_timeslot;
-	    if (config.sql_trigger_time == COUNT_MONTHLY)
-	      idata.t_timeslot = calc_monthly_timeslot(idata.triggertime, config.sql_trigger_time_howmany, ADD);
-          }
-        }
-      }
-
       data = (struct pkt_data *) (pipebuf+sizeof(struct ch_buf_hdr));
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
-                seq, ((struct ch_buf_hdr *)pipebuf)->num);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%llu seq=%u num_entries=%u\n",
+                config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->len, seq,
+                ((struct ch_buf_hdr *)pipebuf)->num);
 
-      if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
         for (num = 0; primptrs_funcs[num]; num++)
           (*primptrs_funcs[num])((u_char *)data, &extras, &prim_ptrs);
@@ -241,10 +243,6 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = 0;
         }
 
-        if (config.pkt_len_distrib_bins_str &&
-            config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB)
-          evaluate_pkt_len_distrib(data);
-
         prim_ptrs.data = data;
         (*insert_func)(&prim_ptrs, &idata);
 
@@ -256,7 +254,6 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           data = (struct pkt_data *) dataptr;
 	}
       }
-      }
 
       goto read_data;
     }
@@ -265,7 +262,6 @@ void pgsql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
 int PG_cache_dbop_copy(struct DBdesc *db, struct db_cache *cache_elem, struct insert_data *idata)
 {
-  PGresult *ret;
   char *ptr_values, *ptr_where;
   char default_delim[] = ",", delim_buf[SRVBUFLEN];
   int num=0, have_flows=0;
@@ -438,7 +434,7 @@ void PG_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
   bulk_reprocess_queries_queue = (struct db_cache **) malloc(qq_size*sizeof(struct db_cache *));
   if (!reprocess_queries_queue || !bulk_reprocess_queries_queue) {
     Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (reprocess_queries_queue). Exiting ..\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   for (j = 0, stop = 0; (!stop) && sql_preprocess_funcs[j]; j++) 
@@ -481,20 +477,20 @@ void PG_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
     strlcpy(update_clause, orig_update_clause, LONGSRVBUFLEN);
     strlcpy(lock_clause, orig_lock_clause, LONGSRVBUFLEN);
 
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, copy_clause, &prim_ptrs);
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, insert_clause, &prim_ptrs);
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, update_clause, &prim_ptrs);
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, lock_clause, &prim_ptrs);
-    handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, idata->dyn_table_name, &prim_ptrs);
+    handle_dynname_internal_strings_same(copy_clause, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+    handle_dynname_internal_strings_same(insert_clause, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+    handle_dynname_internal_strings_same(update_clause, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+    handle_dynname_internal_strings_same(lock_clause, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+    handle_dynname_internal_strings_same(idata->dyn_table_name, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
 
-    strftime_same(copy_clause, LONGSRVBUFLEN, tmpbuf, &stamp);
-    strftime_same(insert_clause, LONGSRVBUFLEN, tmpbuf, &stamp);
-    strftime_same(update_clause, LONGSRVBUFLEN, tmpbuf, &stamp);
-    strftime_same(lock_clause, LONGSRVBUFLEN, tmpbuf, &stamp);
-    strftime_same(idata->dyn_table_name, LONGSRVBUFLEN, tmpbuf, &stamp);
-
-    if (config.sql_table_schema) sql_create_table(bed.p, &stamp, &prim_ptrs); 
+    pm_strftime_same(copy_clause, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
+    pm_strftime_same(insert_clause, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
+    pm_strftime_same(update_clause, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
+    pm_strftime_same(lock_clause, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
+    pm_strftime_same(idata->dyn_table_name, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
   }
+
+  if (config.sql_table_schema) sql_create_table(bed.p, &queue[0]->basetime, &prim_ptrs); 
 
   /* beginning DB transaction */
   (*sqlfunc_cbr.lock)(bed.p);
@@ -521,8 +517,8 @@ void PG_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
 
       prim_ptrs.data = &dummy_data;
       primptrs_set_all_from_db_cache(&prim_ptrs, queue[idata->current_queue_elem]);
-      handle_dynname_internal_strings_same(tmpbuf, LONGSRVBUFLEN, tmptable, &prim_ptrs);
-      strftime_same(tmptable, LONGSRVBUFLEN, tmpbuf, &stamp);
+      handle_dynname_internal_strings_same(tmptable, LONGSRVBUFLEN, tmpbuf, &prim_ptrs, DYN_STR_SQL_TABLE);
+      pm_strftime_same(tmptable, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
 
       if (strncmp(idata->dyn_table_name, tmptable, SRVBUFLEN)) {
         pending_queries_queue[pqq_ptr] = queue[idata->current_queue_elem];
@@ -668,7 +664,7 @@ int PG_compose_static_queries()
 
     if ((config.sql_table_version < 4 || config.sql_table_version >= SQL_TABLE_VERSION_BGP) && !config.sql_optimize_clauses) {
       Log(LOG_ERR, "ERROR ( %s/%s ): The accounting of flows requires SQL table v4. Exiting.\n", config.name, config.type);
-      exit_plugin(1);
+      exit_gracefully(1);
     }
   }
 
@@ -775,7 +771,7 @@ int PG_compose_static_queries()
   return primitives;
 }
 
-void PG_compose_conn_string(struct DBdesc *db, char *host)
+void PG_compose_conn_string(struct DBdesc *db, char *host, int port)
 {
   char *string;
   int slen = SRVBUFLEN;
@@ -784,7 +780,7 @@ void PG_compose_conn_string(struct DBdesc *db, char *host)
     db->conn_string = (char *) malloc(slen);
     if (!db->conn_string) {
       Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (PG_compose_conn_string). Exiting ..\n", config.name, config.type);
-      exit_plugin(1);
+      exit_gracefully(1);
     }
     string = db->conn_string;
 
@@ -793,6 +789,7 @@ void PG_compose_conn_string(struct DBdesc *db, char *host)
     string += strlen(string);
 
     if (host) snprintf(string, slen, " host=%s", host);
+    if (port) snprintf(string, slen, " port=%u", port);
   }
 }
 
@@ -870,11 +867,13 @@ static int PG_affected_rows(PGresult *result)
 
 void PG_create_backend(struct DBdesc *db)
 {
-  if (db->type == BE_TYPE_BACKUP) {
+  if (db->type == BE_TYPE_PRIMARY) {
+    PG_compose_conn_string(db, config.sql_host, config.sql_port);
+  }
+  else if (db->type == BE_TYPE_BACKUP) {
     if (!config.sql_backup_host) return;
-  } 
-
-  PG_compose_conn_string(db, config.sql_host);
+    else PG_compose_conn_string(db, config.sql_backup_host, config.sql_port);
+  }
 }
 
 void PG_set_callbacks(struct sqlfunc_cb_registry *cbr)
@@ -906,14 +905,14 @@ void PG_init_default_values(struct insert_data *idata)
 	(COUNT_SRC_HOST|COUNT_SUM_HOST|COUNT_DST_HOST|COUNT_SRC_NET|COUNT_SUM_NET|COUNT_DST_NET) &&
 	config.sql_table_version < 6) {
 	Log(LOG_ERR, "ERROR ( %s/%s ): 'typed' PostgreSQL table in use: unable to mix HOST/NET and AS aggregations.\n", config.name, config.type);
-	exit_plugin(1);
+	exit_gracefully(1);
       }
       typed = TRUE;
     }
     else if (!strcmp(config.sql_data, "unified")) typed = FALSE;
     else {
       Log(LOG_ERR, "ERROR ( %s/%s ): Ignoring unknown 'sql_data' value '%s'.\n", config.name, config.type, config.sql_data);
-      exit_plugin(1);
+      exit_gracefully(1);
     }
 
     if (typed) {

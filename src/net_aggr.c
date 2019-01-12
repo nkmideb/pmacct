@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -159,8 +159,6 @@ void load_networks4(char *filename, struct networks_table *nt, struct networks_c
 #endif
 
 	  if (fields >= 2) {
-            char *endptr;
-
             delim = strchr(bufptr, ',');
             nh = bufptr;
             *delim = '\0';
@@ -392,7 +390,7 @@ void load_networks4(char *filename, struct networks_table *nt, struct networks_c
       nt->timestamp = st.st_mtime;
     }
   }
-  else exit_plugin(1);
+  else exit_gracefully(1);
 }
 
 /* sort the (sub)array v from start to end */
@@ -431,7 +429,10 @@ void merge(char *filename, struct networks_table_entry *table, int start, int mi
   v1 = malloc(v1_n*s);
   v2 = malloc(v2_n*s);
 
-  if ((!v1) || (!v2)) Log(LOG_ERR, "ERROR ( %s/%s ): [%s] memory sold out.\n", config.name, config.type, filename); 
+  if ((!v1) || (!v2)) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): [%s] malloc() failed in merge().\n", config.name, config.type, filename); 
+    exit_gracefully(1);
+  }
 
   for (i=0; i<v1_n; i++) memcpy(&v1[i], &table[start+i], s);
   for (i=0; i<v2_n; i++) memcpy(&v2[i], &table[middle+i], s);
@@ -1459,7 +1460,7 @@ void load_networks6(char *filename, struct networks_table *nt, struct networks_c
       }
 
       Log(LOG_ERR, "ERROR ( %s/%s ): [%s] file not found.\n", config.name, config.type, filename);
-      exit_plugin(1);
+      exit_gracefully(1);
     }
     else {
       rows = 0;
@@ -1530,8 +1531,6 @@ void load_networks6(char *filename, struct networks_table *nt, struct networks_c
 #endif
 
           if (fields >= 2) {
-            char *endptr;
-
             delim = strchr(bufptr, ',');
             nh = bufptr;
             *delim = '\0';
@@ -1707,7 +1706,6 @@ void load_networks6(char *filename, struct networks_table *nt, struct networks_c
       index = 0;
       while (!fake_row && index < tmpt->num6) {
         if (config.debug) {
-          int j;
           struct host_addr net_bin;
           char nh_string[INET6_ADDRSTRLEN];
           char net_string[INET6_ADDRSTRLEN];
@@ -1774,7 +1772,7 @@ void load_networks6(char *filename, struct networks_table *nt, struct networks_c
       nt->timestamp = st.st_mtime;
     }
   }
-  else exit_plugin(1);
+  else exit_gracefully(1);
 }
 
 /* sort the (sub)array v from start to end */
@@ -1922,7 +1920,6 @@ void networks_cache_insert6(struct networks_cache *nc, void *key, struct network
   struct networks6_cache_entry *ptr;
   unsigned int hash;
   u_int32_t *keyptr = key;
-  int chunk;
 
   hash = networks_cache_hash6(key); 
   ptr = &nc->cache6[hash % nc->num6];

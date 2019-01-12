@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -41,7 +41,7 @@ struct channels_list_entry channels_list[MAX_N_PLUGINS]; /* communication channe
 /* Functions */
 void usage_daemon(char *prog_name)
 {
-  printf("%s (%s)\n", PMBMPD_USAGE_HEADER, PMACCT_BUILD);
+  printf("%s %s (%s)\n", PMBMPD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
   printf("Usage: %s [ -D | -d ] [ -L IP address ] [ -l port ] ]\n", prog_name);
   printf("       %s [ -f config_file ]\n", prog_name);
   printf("       %s [ -h ]\n", prog_name);
@@ -161,6 +161,8 @@ int main(int argc,char **argv, char **envp)
     }
   }
 
+  Log(LOG_INFO, "INFO ( %s/core ): %s %s (%s)\n", config.name, PMBMPD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
+  Log(LOG_INFO, "INFO ( %s/core ): %s\n", config.name, PMACCT_COMPILE_ARGS);
 
   /* post-checks and resolving conflicts */
   if (strlen(config_file)) {

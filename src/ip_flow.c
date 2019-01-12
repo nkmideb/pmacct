@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -23,6 +23,7 @@
 
 /* includes */
 #include "pmacct.h"
+#include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "ip_flow.h"
@@ -537,7 +538,6 @@ void find_flow6(struct timeval *now, struct packet_ptrs *pptrs)
     last_seen = fp;
   }
 
-  create:
   if (candidate) create_flow6(now, candidate, TRUE, bucket, pptrs, iphp, tlhp, idx);
   else create_flow6(now, last_seen, FALSE, bucket, pptrs, iphp, tlhp, idx);
 }

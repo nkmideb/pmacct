@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -26,24 +26,25 @@
 #define TELEMETRY_TCP_PORT		1620
 #define TELEMETRY_UDP_PORT		1620
 #define TELEMETRY_MAX_PEERS_DEFAULT	100
-#define TELEMETRY_UDP_TIMEOUT_DEFAULT	300
-#define TELEMETRY_UDP_TIMEOUT_INTERVAL	60
+#define TELEMETRY_PEER_TIMEOUT_DEFAULT	300
+#define TELEMETRY_PEER_TIMEOUT_INTERVAL	60
 #define TELEMETRY_UDP_MAXMSG		65535
-#define TELEMETRY_CISCO_HDR_LEN		12
 #define TELEMETRY_LOG_STATS_INTERVAL	120	
 
 #define TELEMETRY_DECODER_UNKNOWN	0
 #define TELEMETRY_DECODER_JSON		1
-#define TELEMETRY_DECODER_ZJSON		2
-#define TELEMETRY_DECODER_CISCO		3
-#define TELEMETRY_DECODER_CISCO_JSON	4
-#define TELEMETRY_DECODER_CISCO_ZJSON	5
-#define TELEMETRY_DECODER_CISCO_GPB	6
-#define TELEMETRY_DECODER_CISCO_GPB_KV	7
+#define TELEMETRY_DECODER_GPB		2
+#define TELEMETRY_DECODER_CISCO_V0	3
+#define TELEMETRY_DECODER_CISCO_V1	4
 
 #define TELEMETRY_DATA_DECODER_UNKNOWN	0
 #define TELEMETRY_DATA_DECODER_JSON	1
 #define TELEMETRY_DATA_DECODER_GPB	2
+
+#define TELEMETRY_CISCO_VERSION_0		0
+#define TELEMETRY_CISCO_HDR_LEN_V0		12
+#define TELEMETRY_CISCO_VERSION_1		1
+#define TELEMETRY_CISCO_HDR_LEN_V1		6
 
 #define TELEMETRY_CISCO_RESET_COMPRESSOR	1
 #define TELEMETRY_CISCO_JSON			2
@@ -54,29 +55,39 @@
 #define TELEMETRY_LOGDUMP_ET_LOG	BGP_LOGDUMP_ET_LOG
 #define TELEMETRY_LOGDUMP_ET_DUMP	BGP_LOGDUMP_ET_DUMP
 
+struct telemetry_cisco_hdr_v0 {
+  u_int32_t type;
+  u_int32_t flags;
+  u_int32_t len;
+} __attribute__ ((packed));
+
+struct telemetry_cisco_hdr_v1 {
+  u_int8_t version;
+  u_int8_t type;
+  u_int16_t len;
+  u_int8_t secure;
+  u_int8_t padding;
+} __attribute__ ((packed));
+
 typedef struct bgp_peer_stats telemetry_stats;
 
 struct telemetry_data {
   int is_thread;
   char *log_str;
+#if defined WITH_ZMQ
+  void *zmq_host;
+#endif
 
   telemetry_stats global_stats;
   time_t now;
 };
 
-struct _telemetry_peer_z {
-  char inflate_buf[BGP_BUFFER_SIZE];
-#if defined (HAVE_ZLIB)
-  z_stream stm;
-#endif
-};
-
-struct _telemetry_peer_udp_cache {
+struct _telemetry_peer_cache {
   struct host_addr addr;
   int index;
 };
 
-struct _telemetry_peer_udp_timeout {
+struct _telemetry_peer_timeout {
   time_t last_msg;
 };
 
@@ -102,9 +113,8 @@ typedef struct bgp_peer_log telemetry_peer_log;
 typedef struct bgp_misc_structs telemetry_misc_structs;
 typedef struct _telemetry_dump_se_ll telemetry_dump_se_ll;
 typedef struct _telemetry_dump_se_ll_elem telemetry_dump_se_ll_elem;
-typedef struct _telemetry_peer_z telemetry_peer_z;
-typedef struct _telemetry_peer_udp_cache telemetry_peer_udp_cache;
-typedef struct _telemetry_peer_udp_timeout telemetry_peer_udp_timeout;
+typedef struct _telemetry_peer_cache telemetry_peer_cache;
+typedef struct _telemetry_peer_timeout telemetry_peer_timeout;
 
 /* more includes */
 #include "telemetry_logdump.h"
@@ -132,7 +142,6 @@ EXT void telemetry_prepare_daemon(struct telemetry_data *);
 EXT telemetry_misc_structs *telemetry_misc_db; 
 
 EXT telemetry_peer *telemetry_peers;
-EXT telemetry_peer_z *telemetry_peers_z;
-EXT void *telemetry_peers_udp_cache;
-EXT telemetry_peer_udp_timeout *telemetry_peers_udp_timeout; 
+EXT void *telemetry_peers_cache;
+EXT telemetry_peer_timeout *telemetry_peers_timeout; 
 #undef EXT

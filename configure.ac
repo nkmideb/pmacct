@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl configuration file for pmacct 
 
-AC_INIT([pmacct], [1.7.0], [paolo@pmacct.net])
+AC_INIT([pmacct], [1.7.2-git], [paolo@pmacct.net])
 AM_INIT_AUTOMAKE([foreign])
 AC_CONFIG_MACRO_DIR([m4])
 LT_INIT
@@ -528,6 +528,14 @@ dnl Unfortunately, no pkg-config support for MySQL
     USING_MYSQL="yes"
     PMACCT_CFLAGS="$PMACCT_CFLAGS $MYSQL_CFLAGS"
     AC_DEFINE(WITH_MYSQL, 1)
+    _save_LIBS="$LIBS"
+    LIBS="$LIBS $MYSQL_LIBS"
+    AC_CHECK_LIB([mysqlclient], [mysql_query])
+    LIBS="$_save_LIBS"
+    _save_CFLAGS="$CFLAGS"
+    CFLAGS="$CFLAGS $MYSQL_CFLAGS"
+    AC_CHECK_HEADERS([mysql.h mysql/mysql.h])
+    CFLAGS="$_save_CFLAGS"
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -546,54 +554,23 @@ AC_ARG_ENABLE(pgsql,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([PGSQL], [libpq],, [
-	AC_MSG_CHECKING([default locations for libpq])
-	if test -r /usr/lib/libpq.a -o -r /usr/lib/libpq.so; then
-		PGSQL_LIBS="-L/usr/lib -lpq"
-		AC_MSG_RESULT([found in /usr/lib])
-	elif test -r /usr/lib64/libpq.a -o -r /usr/lib64/libpq.so; then
-		PGSQL_LIBS="-L/usr/lib64 -lpq"
-		AC_MSG_RESULT([found in /usr/lib64])
-	elif test -r /usr/local/lib/libpq.a -o -r /usr/local/lib/libpq.so; then
-		PGSQL_LIBS="-L/usr/local/lib -lpq"
-		AC_MSG_RESULT([found in /usr/local/lib])
-	elif test -r /usr/local/pgsql/lib/libpq.a -o -r /usr/local/pgsql/lib/libpq.so; then
-		PGSQL_LIBS="-L/usr/local/pgsql/lib -lpq"
-		AC_MSG_RESULT([found in /usr/local/pgsql/lib])
-	else
-		AC_MSG_RESULT([not found])
-		_save_LIBS="$LIBS"
-		LIBS="$LIBS $PGSQL_LIBS"
-		AC_CHECK_LIB([pq], [PQconnectdb], [], [AC_MSG_ERROR([ERROR: missing PQ library. Refer to: http://www.postgresql.org/])])
-		LIBS="$_save_LIBS"
-	fi
-
-	AC_MSG_CHECKING([default locations for libpq-fe.h])
-	if test -r /usr/include/libpq-fe.h; then
-		PGSQL_CFLAGS="-I/usr/include"
-		AC_MSG_RESULT([found in /usr/include])
-	elif test -r /usr/include/postgresql/libpq-fe.h; then
-		PGSQL_CFLAGS="-I/usr/include/postgresql"
-		AC_MSG_RESULT([found in /usr/include/postgresql])
-	elif test -r /usr/local/include/libpq-fe.h; then
-		PGSQL_CFLAGS="-I/usr/local/include"
-		AC_MSG_RESULT([found in /usr/local/include])
-	elif test -r /usr/local/pgsql/include/libpq-fe.h; then
-		PGSQL_CFLAGS="-I/usr/local/pgsql/include"
-		AC_MSG_RESULT([found in /usr/local/pgsql/include])
-	else
-		AC_MSG_RESULT([not found])
-		_save_CFLAGS="$CFLAGS"
-		CFLAGS="$CFLAGS $PGSQL_CFLAGS"
-		AC_CHECK_HEADER([libpq-fe.h], [], [AC_MSG_ERROR(ERROR: missing PostgreSQL headers)])
-		CFLAGS="$_save_CFLAGS"
-	fi
+    PKG_CHECK_MODULES([PGSQL], [libpq >= 9.3], [
+      PLUGINS="${PLUGINS} pgsql"
+      USING_SQL="yes"
+      USING_PGSQL="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $PGSQL_CFLAGS"
+      AC_DEFINE(WITH_PGSQL, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $PGSQL_LIBS"
+      AC_CHECK_LIB([pq], [PQexec])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $PGSQL_CFLAGS"
+      AC_CHECK_HEADER([libpq-fe.h])
+      CFLAGS="$_save_CFLAGS"
+    ], [
+      AC_MSG_ERROR([Missing PQ library. Refer to: http://www.postgresql.org/download/])
     ])
-    PLUGINS="${PLUGINS} pgsql"
-    USING_SQL="yes"
-    USING_PGSQL="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $PGSQL_CFLAGS"
-    AC_DEFINE(WITH_PGSQL, 1)
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -671,12 +648,21 @@ AC_ARG_ENABLE(sqlite3,
   yes)
     AC_MSG_RESULT(yes)
     dnl reasonably old libsqlite3 already support pkg-config
-    PKG_CHECK_MODULES([SQLITE3], [sqlite3])
-    PLUGINS="${PLUGINS} sqlite3"
-    USING_SQL="yes"
-    USING_SQLITE3="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $SQLITE3_CFLAGS"
-    AC_DEFINE(WITH_SQLITE3, 1)
+    PKG_CHECK_MODULES([SQLITE3], [sqlite3 >= 3.7.13], [
+      PLUGINS="${PLUGINS} sqlite3"
+      USING_SQL="yes"
+      USING_SQLITE3="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $SQLITE3_CFLAGS"
+      AC_DEFINE(WITH_SQLITE3, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $SQLITE3_LIBS"
+      AC_CHECK_LIB([sqlite3], [sqlite3_exec])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $SQLITE3_CFLAGS"
+      AC_CHECK_HEADER([sqlite3.h])
+      CFLAGS="$_save_CFLAGS"
+    ])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -696,11 +682,22 @@ AC_ARG_ENABLE(rabbitmq,
   yes)
     AC_MSG_RESULT(yes)
     dnl reasonably old librabbitmq already support pkg-config
-    PKG_CHECK_MODULES([RABBITMQ], [librabbitmq >= 0.8.0])
-    PLUGINS="${PLUGINS} rabbitmq"
-    USING_RABBITMQ="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $RABBITMQ_CFLAGS"
-    AC_DEFINE(WITH_RABBITMQ, 1)
+    PKG_CHECK_MODULES([RABBITMQ], [librabbitmq >= 0.8.0], [
+      PLUGINS="${PLUGINS} rabbitmq"
+      USING_RABBITMQ="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $RABBITMQ_CFLAGS"
+      AC_DEFINE(WITH_RABBITMQ, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $RABBITMQ_LIBS"
+      AC_CHECK_LIB([rabbitmq], [amqp_basic_publish])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $RABBITMQ_CFLAGS"
+      AC_CHECK_HEADER([amqp.h])
+      CFLAGS="$_save_CFLAGS"
+    ], [
+      AC_MSG_ERROR([Missing RabbitMQ C API. Refer to: https://github.com/alanxz/rabbitmq-c/])
+    ])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -712,18 +709,29 @@ AC_ARG_ENABLE(rabbitmq,
 )
 dnl finish: RabbitMQ/AMQP handling
 
-dnl start: ZMQ/AMQP handling
-AC_MSG_CHECKING(whether to enable ZMQ/AMQP support)
+dnl start: ZeroMQ handling
+AC_MSG_CHECKING(whether to enable ZeroMQ support)
 AC_ARG_ENABLE(zmq,
-  [  --enable-zmq                     Enable ZMQ/AMQP support (default: no)],
+  [  --enable-zmq                     Enable ZeroMQ support (default: no)],
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([ZMQ], [libzmq >= 4.2.0])
-    SUPPORTS="${SUPPORTS} zmq"
-    USING_ZMQ="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $ZMQ_CFLAGS"
-    AC_DEFINE(WITH_ZMQ, 1)
+    PKG_CHECK_MODULES([ZMQ], [libzmq >= 4.2.0], [
+      SUPPORTS="${SUPPORTS} zmq"
+      USING_ZMQ="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $ZMQ_CFLAGS"
+      AC_DEFINE(WITH_ZMQ, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $ZMQ_LIBS"
+      AC_CHECK_LIB([zmq], [zmq_send])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $ZMQ_CFLAGS"
+      AC_CHECK_HEADER([zmq.h])
+      CFLAGS="$_save_CFLAGS"
+    ], [
+      AC_MSG_ERROR([Missing ZeroMQ. Refer to: http://zeromq.org/intro:get-the-software])
+    ])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -733,7 +741,7 @@ AC_ARG_ENABLE(zmq,
     AC_MSG_RESULT(no)
   ]
 )
-dnl finish: ZMQ/AMQP handling
+dnl finish: ZeroMQ handling
 
 dnl start: Kafka handling
 AC_MSG_CHECKING(whether to enable Kafka support)
@@ -742,46 +750,22 @@ AC_ARG_ENABLE(kafka,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([KAFKA], [rdkafka >= 0.9.2],, [
-	AC_MSG_CHECKING([default locations for librdkafka])
-	if test -r /usr/lib/librdkafka.a -o -r /usr/lib/librdkafka.so; then
-		KAFKA_LIBS="-L/usr/lib -lrdkafka"
-		AC_MSG_RESULT([found in /usr/lib])
-	elif test -r /usr/lib64/librdkafka.a -o -r /usr/lib64/librdkafka.so; then
-		KAFKA_LIBS="-L/usr/lib64 -lrdkafka"
-		AC_MSG_RESULT([found in /usr/lib64])
-	elif test -r /usr/local/lib/librdkafka.a -o -r /usr/local/lib/librdkafka.so; then
-		KAFKA_LIBS="-L/usr/local/lib -lrdkafka"
-		AC_MSG_RESULT([found in /usr/local/lib])
-	else
-		AC_MSG_RESULT([not found])
-                _save_LIBS="$LIBS"
-                LIBS="$LIBS $KAFKA_LIBS"
-		AC_CHECK_LIB([rdkafka], [rd_kafka_new], [], [AC_MSG_ERROR([
-			ERROR: missing Kafka library. Refer to: https://github.com/edenhill/librdkafka/
-		])])
-                LIBS="$_save_LIBS"
-	fi
-
-	AC_MSG_CHECKING([default locations for rdkafka.h])
-	if test -r /usr/include/librdkafka/rdkafka.h; then
-		KAFKA_CFLAGS="-I/usr/include"
-		AC_MSG_RESULT([found in /usr/include])
-	elif test -r /usr/local/include/librdkafka/rdkafka.h; then
-		KAFKA_CFLAGS="-I/usr/local/include"
-		AC_MSG_RESULT([found in /usr/local/include])
-	else
-		AC_MSG_RESULT([not found])
-                _save_CFLAGS="$CFLAGS"
-                CFLAGS="$CFLAGS $KAFKA_CFLAGS"
-		AC_CHECK_HEADER([rdkafka.h], [], [AC_MSG_ERROR(ERROR: missing Kafka headers)])
-                CFLAGS="$_save_CFLAGS"
-	fi
+    PKG_CHECK_MODULES([KAFKA], [rdkafka >= 0.9.2], [
+      PLUGINS="${PLUGINS} kafka"
+      USING_KAFKA="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $KAFKA_CFLAGS"
+      AC_DEFINE(WITH_KAFKA, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $KAFKA_LIBS"
+      AC_CHECK_LIB([rdkafka], [rd_kafka_produce])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $KAFKA_CFLAGS"
+      AC_CHECK_HEADER([librdkafka/rdkafka.h])
+      CFLAGS="$_save_CFLAGS"
+    ], [
+      AC_MSG_ERROR([Missing librdkafka. Refer to: https://github.com/edenhill/librdkafka/])
     ])
-    PLUGINS="${PLUGINS} kafka"
-    USING_KAFKA="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $KAFKA_CFLAGS"
-    AC_DEFINE(WITH_KAFKA, 1)
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -801,11 +785,12 @@ AC_ARG_ENABLE(geoip,
   yes)
     AC_MSG_RESULT(yes)
     dnl reasonably old Maxmind GeoIP v1 already support pkg-config
-    PKG_CHECK_MODULES([GEOIP], [geoip >= 1.0.0])
-    SUPPORTS="${SUPPORTS} geoip"
-    USING_MMGEOIP="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $GEOIP_CFLAGS"
-    AC_DEFINE(WITH_GEOIP, 1)
+    PKG_CHECK_MODULES([GEOIP], [geoip >= 1.0.0], [
+      SUPPORTS="${SUPPORTS} geoip"
+      USING_MMGEOIP="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $GEOIP_CFLAGS"
+      AC_DEFINE(WITH_GEOIP, 1)
+    ])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -822,46 +807,22 @@ AC_ARG_ENABLE(geoipv2,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([GEOIPV2], [libmaxminddb >= 1.2.0],, [
-	AC_MSG_CHECKING([default locations for libmaxminddb])
-	if test -r /usr/lib/libmaxminddb.a -o -r /usr/lib/libmaxminddb.so; then
-		GEOIPV2_LIBS="-L/usr/lib -lmaxminddb"
-		AC_MSG_RESULT([found in /usr/lib])
-	elif test -r /usr/lib64/libmaxminddb.a -o -r /usr/lib64/libmaxminddb.so; then
-		GEOIPV2_LIBS="-L/usr/lib64 -lmaxminddb"
-		AC_MSG_RESULT([found in /usr/lib64])
-	elif test -r /usr/local/lib/libmaxminddb.a -o -r /usr/local/lib/libmaxminddb.so; then
-		GEOIPV2_LIBS="-L/usr/local/lib -lmaxminddb"
-		AC_MSG_RESULT([found in /usr/local/lib])
-	else
-		AC_MSG_RESULT([not found])
-                _save_LIBS="$LIBS"
-                LIBS="$LIBS $GEOIPV2_LIBS"
-		AC_CHECK_LIB([maxminddb], [MMDB_open], [], [AC_MSG_ERROR([
-			ERROR: missing Maxmind libmaxminddb library. Refer to: http://www.maxmind.com/download/geoip/api/c/
-		])])
-                LIBS="$_save_LIBS"
-	fi
-
-	AC_MSG_CHECKING([default locations for maxminddb.h])
-	if test -r /usr/include/maxminddb.h; then
-		GEOIPV2_CFLAGS="-I/usr/include"
-		AC_MSG_RESULT([found in /usr/include])
-	elif test -r /usr/local/include/maxminddb.h; then
-		GEOIPV2_CFLAGS="-I/usr/local/include"
-		AC_MSG_RESULT([found in /usr/local/include])
-	else
-		AC_MSG_RESULT([not found])
-                _save_CFLAGS="$CFLAGS"
-                CFLAGS="$CFLAGS $GEOIPV2_CFLAGS"
-		AC_CHECK_HEADER([maxminddb.h], [], [AC_MSG_ERROR(ERROR: missing Maxmind libmaxminddb headers)])
-                CFLAGS="$_save_CFLAGS"
-	fi
+    PKG_CHECK_MODULES([GEOIPV2], [libmaxminddb >= 1.2], [
+      SUPPORTS="${SUPPORTS} geoipv2"
+      USING_MMGEOIPV2="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $GEOIPV2_CFLAGS"
+      AC_DEFINE(WITH_GEOIPV2, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $GEOIPV2_LIBS"
+      AC_CHECK_LIB([maxminddb], [MMDB_open])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $GEOIPV2_CFLAGS"
+      AC_CHECK_HEADER([maxminddb.h])
+      CFLAGS="$_save_CFLAGS"
+    ], [
+      AC_MSG_ERROR([Missing Maxmind libmaxminddb C library. Refer to: http://www.maxmind.com/download/geoip/api/c/])
     ])
-    SUPPORTS="${SUPPORTS} geoipv2"
-    USING_MMGEOIPV2="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $GEOIPV2_CFLAGS"
-    AC_DEFINE(WITH_GEOIPV2, 1)
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -881,16 +842,23 @@ AC_ARG_ENABLE(jansson,
   yes)
     AC_MSG_RESULT(yes)
     dnl reasonably old Jansson already support pkg-config
-    PKG_CHECK_MODULES([JANSSON], [jansson >= 2.5])
-    SUPPORTS="${SUPPORTS} jansson"
-    USING_JANSSON="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $JANSSON_CFLAGS"
-    AC_DEFINE(WITH_JANSSON, 1)
-    _save_LIBS="$LIBS"
-    LIBS="$LIBS $JANSSON_LIBS"
-    AC_CHECK_LIB(jansson, json_object, [], [])
-    AC_CHECK_FUNCS([json_object_update_missing])
-    LIBS="$_save_LIBS"
+    PKG_CHECK_MODULES([JANSSON], [jansson >= 2.5], [
+      SUPPORTS="${SUPPORTS} jansson"
+      USING_JANSSON="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $JANSSON_CFLAGS"
+      AC_DEFINE(WITH_JANSSON, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $JANSSON_LIBS"
+      AC_CHECK_LIB([jansson], [json_object])
+      AC_CHECK_FUNCS([json_object_update_missing])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $JANSSON_CFLAGS"
+      AC_CHECK_HEADER([jansson.h])
+      CFLAGS="$_save_CFLAGS"
+    ], [
+      AC_MSG_ERROR([Missing libjansson. Refer to: http://www.digip.org/jansson/])
+    ])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -909,15 +877,22 @@ AC_ARG_ENABLE(avro,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([AVRO], [avro-c >= 1.8])
-    SUPPORTS="${SUPPORTS} avro"
-    USING_AVRO="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $AVRO_CFLAGS"
-    AC_DEFINE(WITH_AVRO, 1)
-    _save_LIBS="$LIBS"
-    LIBS="$LIBS $AVRO_LIBS"
-    AC_CHECK_LIB(avro, avro_record_get, [], [])
-    LIBS="$_save_LIBS"
+    PKG_CHECK_MODULES([AVRO], [avro-c >= 1.8], [
+      SUPPORTS="${SUPPORTS} avro"
+      USING_AVRO="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $AVRO_CFLAGS"
+      AC_DEFINE(WITH_AVRO, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $AVRO_LIBS"
+      AC_CHECK_LIB([avro], [avro_record_get])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $AVRO_CFLAGS"
+      AC_CHECK_HEADER([avro.h])
+      CFLAGS="$_save_CFLAGS"
+    ], [
+      AC_MSG_ERROR([Missing Apache Avro C library. Refer to: http://www.apache.org/dyn/closer.cgi/avro/])
+    ])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -928,6 +903,40 @@ AC_ARG_ENABLE(avro,
   ]
 )
 dnl finish: Avro handling
+
+dnl start: libserdes handling
+AC_MSG_CHECKING(whether to enable Confluent schema-registry support)
+AC_ARG_ENABLE(serdes,
+  [  --enable-serdes                  Enable Confluent schema-registry support (default: no)],
+  [ case "$enableval" in
+  yes)
+    AC_MSG_RESULT(yes)
+
+    PKG_CHECK_MODULES([SERDES], [serdes],, [
+      SUPPORTS="${SUPPORTS} serdes"
+      USING_SERDES="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $SERDES_CFLAGS"
+      SERDES_LIBS="$SERDES_LIBS -lserdes"
+      AC_DEFINE(WITH_SERDES, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $SERDES_LIBS"
+      AC_CHECK_LIB([serdes], [serdes_new])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $SERDES_CFLAGS"
+      AC_CHECK_HEADER([libserdes/serdes.h])
+      CFLAGS="$_save_CFLAGS"
+    ])
+    ;;
+  no)
+    AC_MSG_RESULT(no)
+    ;;
+  esac ],
+  [
+    AC_MSG_RESULT(no)
+  ]
+)
+dnl finish: libserdes handling
 
 dnl start: nDPI handling
 AC_ARG_WITH(ndpi-static-lib,
@@ -954,38 +963,43 @@ AC_ARG_ENABLE(ndpi,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([NDPI], [libndpi >= 2.0])
-    SUPPORTS="${SUPPORTS} ndpi"
-    USING_NDPI="yes"
+    PKG_CHECK_MODULES([NDPI], [libndpi >= 2.2], [
+      SUPPORTS="${SUPPORTS} ndpi"
+      USING_NDPI="yes"
 
-    if test x"$NDPI_CFLAGS" != x""; then
-      NDPI_CFLAGS_INST=`echo $NDPI_CFLAGS | sed 's/ $//'`
-      NDPI_CFLAGS_INST="$NDPI_CFLAGS_INST/libndpi"
-    else
-      NDPI_CFLAGS_INST=""
-    fi
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $NDPI_CFLAGS $NDPI_CFLAGS_INST"
+      if test x"$NDPI_CFLAGS" != x""; then
+        NDPI_CFLAGS_INST=`echo $NDPI_CFLAGS | sed 's/ $//'`
+        NDPI_CFLAGS_INST="$NDPI_CFLAGS_INST/libndpi"
+      else
+        NDPI_CFLAGS_INST=""
+      fi
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $NDPI_CFLAGS $NDPI_CFLAGS_INST"
 
-    AC_DEFINE(WITH_NDPI, 1)
-    _save_LIBS="$LIBS"
-    LIBS="$LIBS $NDPI_LIBS"
-    AC_CHECK_LIB(ndpi, ndpi_init_detection_module, [], [])
-    LIBS="$_save_LIBS"
+      AC_DEFINE(WITH_NDPI, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $NDPI_LIBS"
+      AC_CHECK_LIB([ndpi], [ndpi_init_detection_module])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $NDPI_CFLAGS"
+      AC_CHECK_HEADER([libndpi/ndpi_main.h])
+      CFLAGS="$_save_CFLAGS"
 
-    dnl XXX: to be improved: avoid linking both static and dynamic libs
-    if test x"$NDPI_CUST_STATIC_LIB_FOUND" = x"yes"; then
-      NDPI_LIBS_STATIC="$NDPI_CUST_STATIC_LIB/libndpi.a"
-    elif test -r /usr/lib/libndpi.a; then
-      NDPI_LIBS_STATIC="/usr/lib/libndpi.a"
-    elif test -r /usr/local/lib/libndpi.a; then
-      NDPI_LIBS_STATIC="/usr/local/lib/libndpi.a"
-    elif test -r /usr/local/nDPI/lib/libndpi.a; then
-      NDPI_LIBS_STATIC="/usr/local/nDPI/lib/libndpi.a"
-    else
-      AC_MSG_ERROR([ERROR: missing nDPI static library])
-    fi
+      dnl XXX: to be improved: avoid linking both static and dynamic libs
+      if test x"$NDPI_CUST_STATIC_LIB_FOUND" = x"yes"; then
+        NDPI_LIBS_STATIC="$NDPI_CUST_STATIC_LIB/libndpi.a"
+      elif test -r /usr/lib/libndpi.a; then
+        NDPI_LIBS_STATIC="/usr/lib/libndpi.a"
+      elif test -r /usr/local/lib/libndpi.a; then
+        NDPI_LIBS_STATIC="/usr/local/lib/libndpi.a"
+      elif test -r /usr/local/nDPI/lib/libndpi.a; then
+        NDPI_LIBS_STATIC="/usr/local/nDPI/lib/libndpi.a"
+      else
+        AC_MSG_ERROR([ERROR: missing nDPI static library])
+      fi
 
-    AC_SUBST([NDPI_LIBS_STATIC])
+      AC_SUBST([NDPI_LIBS_STATIC])
+    ])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -1008,10 +1022,7 @@ else
 	fi
 fi
 
-AC_CHECK_LIB([z], [deflate], [
-	LIBS="${LIBS} -lz"
-	AC_DEFINE(HAVE_ZLIB, 1)]
-)
+LIBS="${LIBS} -lpthread"
 
 dnl Checks for header files.
 AC_HEADER_STDC
@@ -1046,55 +1057,17 @@ AC_ARG_ENABLE(64bit,
 	]
 )
 
-AC_MSG_CHECKING([whether to enable multithreading in pmacct])
-AC_ARG_ENABLE(threads,
-        [  --enable-threads                 Enable multi-threading in pmacct (default: yes)],
-	[
-          if test x$enableval = x"yes" ; then
-            AC_MSG_RESULT(yes)
-            AC_DEFINE(ENABLE_THREADS, 1)
-	  
-	    dnl OS Specifics
-	    case "$host" in
-	    *-linux-*)
-	        AC_DEFINE(_XOPEN_SOURCE, 600)
-	        AC_DEFINE(_GNU_SOURCE, 1)
-	      ;;
-	    esac
-
-	    LIBS="${LIBS} -lpthread"
-            USING_THREADPOOL=yes
-	  else
-            AC_MSG_RESULT(no)
-          fi
-        ],
-	[
-          AC_MSG_RESULT(yes)
-          AC_DEFINE(ENABLE_THREADS, 1)
-
-          dnl OS Specifics
-          case "$host" in
-          *-linux-*)
-              AC_DEFINE(_XOPEN_SOURCE, 600)
-              AC_DEFINE(_GNU_SOURCE, 1)
-            ;;
-          esac
-
-          LIBS="${LIBS} -lpthread"
-          USING_THREADPOOL=yes
-	  COMPILE_ARGS="${COMPILE_ARGS} '--enable-threads'"
-	]
-)
-
 AC_MSG_CHECKING(whether to enable NFLOG support)
 AC_ARG_ENABLE(nflog,
   [  --enable-nflog                   Enable NFLOG support (default: no)],
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([NFLOG], [libnetfilter_log >= 1])
-    USING_NFLOG="yes"
-    AC_DEFINE(WITH_NFLOG, 1)
+    PKG_CHECK_MODULES([NFLOG], [libnetfilter_log >= 1], [
+      SUPPORTS="${SUPPORTS} nflog"
+      USING_NFLOG="yes"
+      AC_DEFINE(WITH_NFLOG, 1)
+    ])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -1187,6 +1160,15 @@ AC_TYPE_SIGNAL
 
 AC_CHECK_FUNCS([strlcpy vsnprintf setproctitle mallopt tdestroy])
 
+dnl Check for SO_REUSEPORT
+AC_CHECK_DECL([SO_REUSEPORT],
+	AC_DEFINE(HAVE_SO_REUSEPORT, 1, [Check if kernel supports SO_REUSEPORT]),,
+		[
+		  #include <sys/types.h>
+		  #include <sys/socket.h>
+		]
+)
+
 dnl final checks
 dnl trivial solution to portability issue 
 AC_DEFINE_UNQUOTED(COMPILE_ARGS, "$COMPILE_ARGS")
@@ -1227,8 +1209,8 @@ AM_CONDITIONAL([WITH_RABBITMQ], [test x"$USING_RABBITMQ" = x"yes"])
 AM_CONDITIONAL([WITH_ZMQ], [test x"$USING_ZMQ" = x"yes"])
 AM_CONDITIONAL([WITH_KAFKA], [test x"$USING_KAFKA" = x"yes"])
 AM_CONDITIONAL([USING_SQL], [test x"$USING_SQL" = x"yes"])
-AM_CONDITIONAL([USING_THREADPOOL], [test x"$USING_THREADPOOL" = x"yes"])
 AM_CONDITIONAL([WITH_AVRO], [test x"$USING_AVRO" = x"yes"])
+AM_CONDITIONAL([WITH_SERDES], [test x"$USING_SERDES" = x"yes"])
 AM_CONDITIONAL([WITH_NDPI], [test x"$USING_NDPI" = x"yes"])
 AM_CONDITIONAL([WITH_NFLOG], [test x"$USING_NFLOG" = x"yes"])
 AM_CONDITIONAL([USING_TRAFFIC_BINS], [test x"$USING_TRAFFIC_BINS" = x"yes"])
@@ -1240,4 +1222,4 @@ AC_OUTPUT([ Makefile \
 	    src/sfprobe_plugin/Makefile src/bgp/Makefile \
 	    src/tee_plugin/Makefile src/isis/Makefile \
 	    src/bmp/Makefile src/telemetry/Makefile \
-	    src/ndpi/Makefile ])
+	    src/ndpi/Makefile examples/lg/Makefile ])

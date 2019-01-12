@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -69,7 +69,6 @@ int telemetry_log_msg(telemetry_peer *peer, struct telemetry_data *t_data, void 
   if (output == PRINT_OUTPUT_JSON) {
 #ifdef WITH_JANSSON
     json_t *obj = json_object();
-    char tstamp_str[SRVBUFLEN];
 
     json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
 
@@ -101,6 +100,9 @@ int telemetry_log_msg(telemetry_peer *peer, struct telemetry_data *t_data, void 
            // XXX: kv = json_pack("{sn}", "telemetry_data");
 
       json_object_set_new_nocheck(obj, "serialization", json_string("gpb"));
+    }
+    else if (data_decoder == TELEMETRY_DATA_DECODER_UNKNOWN) {
+      json_object_set_new_nocheck(obj, "serialization", json_string("unknown"));
     }
 
     if ((config.telemetry_msglog_file && etype == TELEMETRY_LOGDUMP_ET_LOG) ||
@@ -147,7 +149,7 @@ void telemetry_dump_se_ll_append(telemetry_peer *peer, struct telemetry_data *t_
   se_ll_elem = malloc(sizeof(telemetry_dump_se_ll_elem));
   if (!se_ll_elem) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() se_ll_elem structure. Terminating.\n", config.name, t_data->log_str);
-    exit_all(1);
+    exit_gracefully(1);
   }
 
   memset(se_ll_elem, 0, sizeof(telemetry_dump_se_ll_elem));
@@ -155,12 +157,12 @@ void telemetry_dump_se_ll_append(telemetry_peer *peer, struct telemetry_data *t_
   se_ll_elem->rec.data = malloc(peer->msglen);
   if (!se_ll_elem->rec.data) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() se_ll_elem->rec.data structure. Terminating.\n", config.name, t_data->log_str);
-    exit_all(1);
+    exit_gracefully(1);
   }
   memcpy(se_ll_elem->rec.data, peer->buf.base, peer->msglen); 
   se_ll_elem->rec.len = peer->msglen;
   se_ll_elem->rec.decoder = data_decoder;
-  se_ll_elem->rec.seq = tms->log_seq;
+  se_ll_elem->rec.seq = telemetry_log_seq_get(&tms->log_seq);
 
   se_ll = (telemetry_dump_se_ll *) peer->bmp_se;
 
@@ -190,6 +192,21 @@ void telemetry_log_seq_increment(u_int64_t *seq)
   bgp_peer_log_seq_increment(seq);
 }
 
+u_int64_t telemetry_log_seq_get(u_int64_t *seq)
+{
+  return bgp_peer_log_seq_get(seq);
+}
+
+void telemetry_log_seq_set(u_int64_t *seq, u_int64_t value)
+{
+  bgp_peer_log_seq_set(seq, value);
+}
+
+int telemetry_log_seq_has_ro_bit(u_int64_t *seq)
+{
+  return bgp_peer_log_seq_has_ro_bit(seq);
+}
+
 int telemetry_peer_log_init(telemetry_peer *peer, int output, int type)
 {
   return bgp_peer_log_init(peer, output, type);
@@ -202,12 +219,12 @@ void telemetry_peer_log_dynname(char *new, int newlen, char *old, telemetry_peer
 
 int telemetry_peer_dump_init(telemetry_peer *peer, int output, int type)
 {
-  return bgp_peer_dump_init(peer, output, type);
+  return bgp_peer_dump_init(peer, output, type, FALSE);
 }
 
 int telemetry_peer_dump_close(telemetry_peer *peer, int output, int type)
 {
-  return bgp_peer_dump_close(peer, NULL, output, type);
+  return bgp_peer_dump_close(peer, NULL, output, type, FALSE);
 }
 
 void telemetry_dump_init_peer(telemetry_peer *peer)
@@ -269,14 +286,14 @@ void telemetry_handle_dump_event(struct telemetry_data *t_data)
     if (config.telemetry_dump_amqp_routing_key) {
       telemetry_dump_init_amqp_host();
       ret = p_amqp_connect_to_publish(&telemetry_dump_amqp_host);
-      if (ret) exit(ret);
+      if (ret) exit_gracefully(ret);
     }
 #endif
 
 #ifdef WITH_KAFKA
     if (config.telemetry_dump_kafka_topic) {
       ret = telemetry_dump_init_kafka_host();
-      if (ret) exit(ret);
+      if (ret) exit_gracefully(ret);
     }
 #endif
 
@@ -295,12 +312,12 @@ void telemetry_handle_dump_event(struct telemetry_data *t_data)
         if (config.telemetry_dump_amqp_routing_key) telemetry_peer_log_dynname(current_filename, SRVBUFLEN, config.telemetry_dump_amqp_routing_key, peer);
         if (config.telemetry_dump_kafka_topic) telemetry_peer_log_dynname(current_filename, SRVBUFLEN, config.telemetry_dump_kafka_topic, peer);
 
-        strftime_same(current_filename, SRVBUFLEN, tmpbuf, &tms->dump.tstamp.tv_sec);
+        pm_strftime_same(current_filename, SRVBUFLEN, tmpbuf, &tms->dump.tstamp.tv_sec, config.timestamps_utc);
 
         /*
-          we close last_filename and open current_filename in case they differ;
-          we are safe with this approach until $peer_src_ip is the only variable
-          supported as part of telemetry_dump_file configuration directive.
+	   we close last_filename and open current_filename in case they differ;
+	   we are safe with this approach until time and Streaming Telemetry node
+	   (IP, port) are the only variables supported as part of telemetry_dump_file.
         */
         if (config.telemetry_dump_file) {
           if (strcmp(last_filename, current_filename)) {
@@ -379,7 +396,7 @@ void telemetry_handle_dump_event(struct telemetry_data *t_data)
     Log(LOG_INFO, "INFO ( %s/%s ): *** Dumping telemetry data - END (PID: %u, PEERS: %u ET: %u) ***\n",
                 config.name, t_data->log_str, dumper_pid, tables_num, duration);
 
-    exit(0);
+    exit_gracefully(0);
   default: /* Parent */
     if (ret == -1) { /* Something went wrong */
       Log(LOG_WARNING, "WARN ( %s/%s ): Unable to fork telemetry dump writer: %s\n", config.name, t_data->log_str, strerror(errno));

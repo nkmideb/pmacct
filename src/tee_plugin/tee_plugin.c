@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -23,23 +23,26 @@
 
 #include "pmacct.h"
 #include "addr.h"
-#include "tee_plugin.h"
+#ifdef WITH_KAFKA
+#include "kafka_common.h"
+#endif
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
+#include "plugin_common.h"
+#include "tee_plugin.h"
 
 void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 {
   struct pkt_msg *msg;
   unsigned char *pipebuf;
   struct pollfd pfd;
-  int timeout, refresh_timeout, err, ret, num;
-  int fd, pool_idx, recv_idx;
+  int refresh_timeout, ret, pool_idx, recv_idx, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
   u_int32_t bufsz = ((struct channels_list_entry *)ptr)->bufsize;
   pid_t core_pid = ((struct channels_list_entry *)ptr)->core_pid;
-  char *dataptr, dest_addr[256], dest_serv[256];
+  char *dataptr;
   struct tee_receiver *target = NULL;
   struct plugin_requests req;
 
@@ -50,6 +53,8 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
 #ifdef WITH_ZMQ
   struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host = NULL;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -78,12 +83,12 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
   if (config.tee_transparent && getuid() != 0) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Transparent mode requires super-user permissions. Exiting ...\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   if (!config.tee_receivers) {
     Log(LOG_ERR, "ERROR ( %s/%s ): No receivers specified: tee_receivers is required. Exiting ...\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   memset(&receivers, 0, sizeof(receivers));
@@ -96,7 +101,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   receivers.pools = malloc((config.tee_max_receiver_pools+1)*sizeof(struct tee_receivers_pool));
   if (!receivers.pools) {
     Log(LOG_ERR, "ERROR ( %s/%s ): unable to allocate receiver pools. Exiting ...\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
   else memset(receivers.pools, 0, (config.tee_max_receiver_pools+1)*sizeof(struct tee_receivers_pool));
 
@@ -104,12 +109,12 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   if (!config.tee_max_receivers) config.tee_max_receivers = MAX_TEE_RECEIVERS;
 
   for (pool_idx = 0; pool_idx < config.tee_max_receiver_pools; pool_idx++) { 
-    receivers.pools[pool_idx].receivers = malloc(config.tee_max_receivers*sizeof(struct tee_receivers));
+    receivers.pools[pool_idx].receivers = malloc(config.tee_max_receivers*sizeof(struct tee_receiver));
     if (!receivers.pools[pool_idx].receivers) {
       Log(LOG_ERR, "ERROR ( %s/%s ): unable to allocate receivers for pool #%u. Exiting ...\n", config.name, config.type, pool_idx);
-      exit_plugin(1);
+      exit_gracefully(1);
     }
-    else memset(receivers.pools[pool_idx].receivers, 0, config.tee_max_receivers*sizeof(struct tee_receivers));
+    else memset(receivers.pools[pool_idx].receivers, 0, config.tee_max_receivers*sizeof(struct tee_receiver));
   }
 
   if (config.tee_receivers) {
@@ -124,16 +129,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
   pipebuf = (unsigned char *) pm_malloc(config.buffer_size);
 
-  if (config.pipe_zmq) {
-    plugin_pipe_zmq_compile_check();
-#ifdef WITH_ZMQ
-    p_zmq_plugin_pipe_init_plugin(zmq_host);
-    p_zmq_plugin_pipe_consume(zmq_host);
-    p_zmq_set_retry_timeout(zmq_host, config.pipe_zmq_retry);
-    pipe_fd = p_zmq_get_fd(zmq_host);
-    seq = 0;
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   now = time(NULL);
@@ -148,6 +144,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   for (;;) {
     poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
 
     pfd.fd = pipe_fd;
     pfd.events = POLLIN;
@@ -156,6 +153,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
     if (ret < 0) goto poll_again;
 
+    poll_ops:
     if (reload_map) {
       if (config.tee_receivers) {
         int recvs_allocated = FALSE;
@@ -171,12 +169,23 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
     now = time(NULL);
 
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
+    }
+
     switch (ret) {
     case 0: /* timeout */
       /* reserved for future since we don't currently cache/batch/etc */
       break;
     default: /* we received data */
       read_data:
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+	poll_bypass = TRUE;
+	goto poll_ops;
+      }
+
       if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
@@ -185,7 +194,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         }
         else {
           if ((ret = read(pipe_fd, &rgptr, sizeof(rgptr))) == 0)
-            exit_plugin(1); /* we exit silently; something happened at the write end */
+            exit_gracefully(1); /* we exit silently; something happened at the write end */
         }
   
         if ((rg->ptr + bufsz) > rg->end) rg->ptr = rg->base;
@@ -215,7 +224,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
 #ifdef WITH_ZMQ
       else if (config.pipe_zmq) {
-	ret = p_zmq_plugin_pipe_recv(zmq_host, pipebuf, config.buffer_size);
+	ret = p_zmq_topic_recv(zmq_host, pipebuf, config.buffer_size);
 	if (ret > 0) {
 	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
 	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
@@ -232,19 +241,32 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       msg->payload = (pipebuf+sizeof(struct ch_buf_hdr)+PmsgSz);
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
-                seq, ((struct ch_buf_hdr *)pipebuf)->num);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%llu seq=%u num_entries=%u\n",
+                config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->len, seq,
+                ((struct ch_buf_hdr *)pipebuf)->num);
 
-      if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
 	for (pool_idx = 0; pool_idx < receivers.num; pool_idx++) {
-	  if (!evaluate_tags(&receivers.pools[pool_idx].tag_filter, msg->tag)) {
+	  if (msg->bcast || !evaluate_tags(&receivers.pools[pool_idx].tag_filter, msg->tag)) {
 	    if (!receivers.pools[pool_idx].balance.func) {
 	      for (recv_idx = 0; recv_idx < receivers.pools[pool_idx].num; recv_idx++) {
 	        target = &receivers.pools[pool_idx].receivers[recv_idx];
 	        Tee_send(msg, (struct sockaddr *) &target->dest, target->fd);
 	      }
+
+#ifdef WITH_KAFKA
+	      /* Checking the handler is the most light weight op we can perform
+		 in order to ensure we are in business with the Kafka broker */
+	      if (p_kafka_get_handler(&receivers.pools[pool_idx].kafka_host)) {
+		Tee_kafka_send(msg, &receivers.pools[pool_idx]);
+	      }
+#endif
+
+#ifdef WITH_ZMQ
+	      if (p_zmq_get_sock(&receivers.pools[pool_idx].zmq_host)) {
+		Tee_zmq_send(msg, &receivers.pools[pool_idx]);
+	      }
+#endif
 	    }
 	    else {
 	      target = receivers.pools[pool_idx].balance.func(&receivers.pools[pool_idx], msg);
@@ -261,8 +283,8 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 	  msg->payload = (dataptr + PmsgSz);
 	}
       }
-      }
 
+      recv_budget++;
       goto read_data;
     }
   }  
@@ -271,7 +293,94 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 void Tee_exit_now(int signum)
 {
   wait(NULL);
-  exit_plugin(0);
+  exit_gracefully(0);
+}
+
+int Tee_craft_transparent_msg(struct pkt_msg *msg, struct sockaddr *target)
+{
+  char *buf_ptr = tee_send_buf;
+  struct sockaddr_in *sa = (struct sockaddr_in *) &msg->agent;
+  struct pm_iphdr *i4h = (struct pm_iphdr *) buf_ptr;
+#if defined ENABLE_IPV6
+  struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) &msg->agent;
+  struct ip6_hdr *i6h = (struct ip6_hdr *) buf_ptr;
+#endif
+  struct pm_udphdr *uh;
+  int msglen = 0;
+
+  if (msg->agent.sa_family == target->sa_family) {
+    /* UDP header first */
+    if (target->sa_family == AF_INET) {
+      buf_ptr += IP4HdrSz;
+      uh = (struct pm_udphdr *) buf_ptr;
+      uh->uh_sport = sa->sin_port;
+      uh->uh_dport = ((struct sockaddr_in *)target)->sin_port;
+    }
+#if defined ENABLE_IPV6
+    else if (target->sa_family == AF_INET6) {
+      buf_ptr += IP6HdrSz;
+      uh = (struct pm_udphdr *) buf_ptr;
+      uh->uh_sport = sa6->sin6_port;
+      uh->uh_dport = ((struct sockaddr_in6 *)target)->sin6_port;
+    }
+#endif
+
+    uh->uh_ulen = htons(msg->len+UDPHdrSz);
+    uh->uh_sum = 0;
+
+    /* IP header then */
+    if (target->sa_family == AF_INET) {
+      i4h->ip_vhl = 4;
+      i4h->ip_vhl <<= 4;
+      i4h->ip_vhl |= (IP4HdrSz/4);
+
+      if (config.nfprobe_ipprec) {
+	int opt = config.nfprobe_ipprec << 5;
+        i4h->ip_tos = opt;
+      }
+      else i4h->ip_tos = 0;
+
+#if !defined BSD
+      i4h->ip_len = htons(IP4HdrSz+UDPHdrSz+msg->len);
+#else
+      i4h->ip_len = IP4HdrSz+UDPHdrSz+msg->len;
+#endif
+      i4h->ip_id = 0;
+      i4h->ip_off = 0;
+      i4h->ip_ttl = 255;
+      i4h->ip_p = IPPROTO_UDP;
+      i4h->ip_sum = 0;
+      i4h->ip_src.s_addr = sa->sin_addr.s_addr;
+      i4h->ip_dst.s_addr = ((struct sockaddr_in *)target)->sin_addr.s_addr;
+    }
+#if defined ENABLE_IPV6
+    else if (target->sa_family == AF_INET6) {
+      i6h->ip6_vfc = 6;
+      i6h->ip6_vfc <<= 4;
+      i6h->ip6_plen = htons(UDPHdrSz+msg->len);
+      i6h->ip6_nxt = IPPROTO_UDP;
+      i6h->ip6_hlim = 255;
+      memcpy(&i6h->ip6_src, &sa6->sin6_addr, IP6AddrSz);
+      memcpy(&i6h->ip6_dst, &((struct sockaddr_in6 *)target)->sin6_addr, IP6AddrSz);
+    }
+#endif
+
+    /* Put everything together and send */
+    buf_ptr += UDPHdrSz;
+    memcpy(buf_ptr, msg->payload, msg->len);
+
+    msglen = (IP4HdrSz + UDPHdrSz + msg->len);
+  }
+  else {
+    time_t now = time(NULL);
+
+    if (now > err_cant_bridge_af + 60) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Can't bridge Address Families when in transparent mode\n", config.name, config.type);
+      err_cant_bridge_af = now;
+    }
+  }
+
+  return msglen;
 }
 
 void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
@@ -318,102 +427,114 @@ void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
     }
   }
   else {
-    char *buf_ptr = tee_send_buf;
-    struct sockaddr_in *sa = (struct sockaddr_in *) &msg->agent;
-    struct pm_iphdr *i4h = (struct pm_iphdr *) buf_ptr;
-#if defined ENABLE_IPV6
-    struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) &msg->agent;
-    struct ip6_hdr *i6h = (struct ip6_hdr *) buf_ptr;
-#endif
-    struct pm_udphdr *uh;
+    int msglen;
 
-    if (msg->agent.sa_family == target->sa_family) {
-      /* UDP header first */
-      if (target->sa_family == AF_INET) {
-        buf_ptr += IP4HdrSz;
-        uh = (struct pm_udphdr *) buf_ptr;
-        uh->uh_sport = sa->sin_port;
-        uh->uh_dport = ((struct sockaddr_in *)target)->sin_port;
-      }
-#if defined ENABLE_IPV6
-      else if (target->sa_family == AF_INET6) {
-        buf_ptr += IP6HdrSz;
-        uh = (struct pm_udphdr *) buf_ptr;
-        uh->uh_sport = sa6->sin6_port;
-        uh->uh_dport = ((struct sockaddr_in6 *)target)->sin6_port;
-      }
-#endif
+    msglen = Tee_craft_transparent_msg(msg, target);
 
-      uh->uh_ulen = htons(msg->len+UDPHdrSz);
-      uh->uh_sum = 0;
+    if (msglen && send(fd, tee_send_buf, msglen, 0) == -1) {
+      struct host_addr a;
+      u_char agent_addr[50];
+      u_int16_t agent_port;
 
-      /* IP header then */
-      if (target->sa_family == AF_INET) {
-        i4h->ip_vhl = 4;
-        i4h->ip_vhl <<= 4;
-        i4h->ip_vhl |= (IP4HdrSz/4);
+      sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
+      addr_to_str(agent_addr, &a);
 
-	if (config.nfprobe_ipprec) {
-	  int opt = config.nfprobe_ipprec << 5;
-          i4h->ip_tos = opt;
-	}
-	else i4h->ip_tos = 0;
+      sa_to_addr((struct sockaddr *)target, &r, &recv_port);
+      addr_to_str(recv_addr, &r);
 
-#if !defined BSD
-        i4h->ip_len = htons(IP4HdrSz+UDPHdrSz+msg->len);
-#else
-        i4h->ip_len = IP4HdrSz+UDPHdrSz+msg->len;
-#endif
-        i4h->ip_id = 0;
-        i4h->ip_off = 0;
-        i4h->ip_ttl = 255;
-        i4h->ip_p = IPPROTO_UDP;
-        i4h->ip_sum = 0;
-        i4h->ip_src.s_addr = sa->sin_addr.s_addr;
-        i4h->ip_dst.s_addr = ((struct sockaddr_in *)target)->sin_addr.s_addr;
-      }
-#if defined ENABLE_IPV6
-      else if (target->sa_family == AF_INET6) {
-        i6h->ip6_vfc = 6;
-        i6h->ip6_vfc <<= 4;
-        i6h->ip6_plen = htons(UDPHdrSz+msg->len);
-        i6h->ip6_nxt = IPPROTO_UDP;
-        i6h->ip6_hlim = 255;
-        memcpy(&i6h->ip6_src, &sa6->sin6_addr, IP6AddrSz);
-        memcpy(&i6h->ip6_dst, &((struct sockaddr_in6 *)target)->sin6_addr, IP6AddrSz);
-      }
-#endif
-
-      /* Put everything together and send */
-      buf_ptr += UDPHdrSz;
-      memcpy(buf_ptr, msg->payload, msg->len);
-
-      if (send(fd, tee_send_buf, IP4HdrSz+UDPHdrSz+msg->len, 0) == -1) {
-        struct host_addr a;
-        u_char agent_addr[50];
-        u_int16_t agent_port;
-
-        sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
-        addr_to_str(agent_addr, &a);
-
-	sa_to_addr((struct sockaddr *)target, &r, &recv_port);
-	addr_to_str(recv_addr, &r);
-
-        Log(LOG_ERR, "ERROR ( %s/%s ): raw send() from [%s:%u] seqno [%u] to [%s:%u] failed (%s)\n",
-			config.name, config.type, agent_addr, agent_port, msg->seqno, recv_addr,
-			recv_port, strerror(errno));
-      }
-    }
-    else {
-      time_t now = time(NULL);
-
-      if (now > err_cant_bridge_af + 60) {
-        Log(LOG_ERR, "ERROR ( %s/%s ): Can't bridge Address Families when in transparent mode\n", config.name, config.type);
-	err_cant_bridge_af = now;
-      }
+      Log(LOG_ERR, "ERROR ( %s/%s ): raw send() from [%s:%u] seqno [%u] to [%s:%u] failed (%s)\n",
+	  config.name, config.type, agent_addr, agent_port, msg->seqno, recv_addr,
+	  recv_port, strerror(errno));
     }
   }
 }
+
+#ifdef WITH_KAFKA
+void Tee_kafka_send(struct pkt_msg *msg, struct tee_receivers_pool *pool)
+{
+  struct p_kafka_host *kafka_host = &pool->kafka_host; 
+  struct sockaddr target;
+  time_t last_fail, now;
+  int msglen = 0;
+
+  memset(&target, 0, sizeof(target));
+  target.sa_family = msg->agent.sa_family;
+
+  if (config.debug) {
+    char *flow = NULL, netflow[] = "NetFlow/IPFIX", sflow[] = "sFlow";
+    char *broker, *topic;
+    struct host_addr a;
+    u_char agent_addr[50];
+    u_int16_t agent_port;
+
+    sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
+    addr_to_str(agent_addr, &a);
+
+    broker = p_kafka_get_broker(kafka_host);
+    topic = p_kafka_get_topic(kafka_host);
+
+    if (config.acct_type == ACCT_NF) flow = netflow;
+    else if (config.acct_type == ACCT_SF) flow = sflow;
+
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): Sending %s packet from [%s:%u] seqno [%u] to Kafka [%s-%s]\n",
+                        config.name, config.type, flow, agent_addr, agent_port, msg->seqno,
+                        broker, topic);
+  }
+
+  last_fail = P_broker_timers_get_last_fail(&kafka_host->btimers);
+  if (last_fail) {
+    now = time(NULL);
+
+    if ((last_fail + P_broker_timers_get_retry_interval(&kafka_host->btimers)) <= now) {
+      Tee_init_kafka_host(kafka_host, pool->kafka_broker, pool->kafka_topic, pool->id);
+    }
+  }
+
+  if (config.tee_transparent) {
+    msglen = Tee_craft_transparent_msg(msg, &target);
+
+    if (msglen) p_kafka_produce_data(kafka_host, tee_send_buf, msglen);
+  }
+}
+#endif
+
+#ifdef WITH_ZMQ
+void Tee_zmq_send(struct pkt_msg *msg, struct tee_receivers_pool *pool)
+{
+  struct p_zmq_host *zmq_host = &pool->zmq_host; 
+  struct sockaddr target;
+  time_t last_fail, now;
+  int msglen = 0;
+
+  memset(&target, 0, sizeof(target));
+  target.sa_family = msg->agent.sa_family;
+
+  if (config.debug) {
+    char *flow = NULL, netflow[] = "NetFlow/IPFIX", sflow[] = "sFlow";
+    char *address;
+    struct host_addr a;
+    u_char agent_addr[50];
+    u_int16_t agent_port;
+
+    sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
+    addr_to_str(agent_addr, &a);
+
+    address = p_zmq_get_address(zmq_host);
+
+    if (config.acct_type == ACCT_NF) flow = netflow;
+    else if (config.acct_type == ACCT_SF) flow = sflow;
+
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): Sending %s packet from [%s:%u] seqno [%u] via ZeroMQ [%s]\n",
+	config.name, config.type, flow, agent_addr, agent_port, msg->seqno, address);
+  }
+
+  if (config.tee_transparent) {
+    msglen = Tee_craft_transparent_msg(msg, &target);
+
+    if (msglen) p_zmq_send_bin(&zmq_host->sock, tee_send_buf, msglen);
+  }
+}
+#endif
 
 void Tee_destroy_recvs()
 {
@@ -426,11 +547,26 @@ void Tee_destroy_recvs()
       if (target->fd) close(target->fd);
     }
 
-    memset(receivers.pools[pool_idx].receivers, 0, config.tee_max_receivers*sizeof(struct tee_receivers));
+    memset(receivers.pools[pool_idx].receivers, 0, config.tee_max_receivers*sizeof(struct tee_receiver));
     memset(&receivers.pools[pool_idx].tag_filter, 0, sizeof(struct pretag_filter));
     memset(&receivers.pools[pool_idx].balance, 0, sizeof(struct tee_balance));
     receivers.pools[pool_idx].id = 0;
     receivers.pools[pool_idx].num = 0;
+
+#ifdef WITH_KAFKA
+    if (strlen(receivers.pools[pool_idx].kafka_broker)) {
+      p_kafka_close(&receivers.pools[pool_idx].kafka_host, FALSE);
+      memset(receivers.pools[pool_idx].kafka_broker, 0, sizeof(receivers.pools[pool_idx].kafka_broker));
+      memset(receivers.pools[pool_idx].kafka_topic, 0, sizeof(receivers.pools[pool_idx].kafka_topic));
+    }
+#endif
+
+#ifdef WITH_ZMQ
+    if (strlen(receivers.pools[pool_idx].zmq_address)) {
+      p_zmq_close(&receivers.pools[pool_idx].zmq_host);
+      memset(receivers.pools[pool_idx].zmq_address, 0, sizeof(receivers.pools[pool_idx].zmq_address));
+    }
+#endif
   }
 
   receivers.num = 0;
@@ -453,7 +589,7 @@ void Tee_init_socks()
         if ((err = getnameinfo(sa, target->dest_len, dest_addr, sizeof(dest_addr),
             dest_serv, sizeof(dest_serv), NI_NUMERICHOST)) == -1) {
           Log(LOG_ERR, "ERROR ( %s/%s ): getnameinfo: %d\n", config.name, config.type, err);
-          exit_plugin(1);
+          exit_gracefully(1);
         }
       }
 
@@ -466,12 +602,66 @@ void Tee_init_socks()
 
 	sa_to_addr((struct sockaddr *)&target->dest, &recv_addr, &recv_port); 
         addr_to_str(recv_addr_str, &recv_addr);
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): pool ID: %u :: receiver: %s :: fd: %d.\n",
-                config.name, config.type, receivers.pools[pool_idx].id, recv_addr_str, target->fd);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): PoolID=%u receiver=%s fd=%d\n",
+	    config.name, config.type, receivers.pools[pool_idx].id, recv_addr_str, target->fd);
       }
     }
+
+#ifdef WITH_KAFKA
+    if (strlen(receivers.pools[pool_idx].kafka_broker)) {
+      Tee_init_kafka_host(&receivers.pools[pool_idx].kafka_host, receivers.pools[pool_idx].kafka_broker,
+			  receivers.pools[pool_idx].kafka_topic, receivers.pools[pool_idx].id);
+    }
+#endif
+
+#ifdef WITH_ZMQ
+    if (strlen(receivers.pools[pool_idx].zmq_address)) {
+      Tee_init_zmq_host(&receivers.pools[pool_idx].zmq_host, receivers.pools[pool_idx].zmq_address,
+			receivers.pools[pool_idx].id);
+    }
+#endif
   }
 }
+
+#ifdef WITH_KAFKA
+void Tee_init_kafka_host(struct p_kafka_host *kafka_host, char *kafka_broker, char *kafka_topic, u_int32_t pool_id)
+{
+  p_kafka_init_host(kafka_host, config.tee_kafka_config_file);
+  p_kafka_connect_to_produce(kafka_host);
+  p_kafka_set_broker(kafka_host, kafka_broker, FALSE);
+  p_kafka_set_topic(kafka_host, kafka_topic);
+  p_kafka_set_content_type(kafka_host, PM_KAFKA_CNT_TYPE_BIN);
+  P_broker_timers_set_retry_interval(&kafka_host->btimers, PM_KAFKA_DEFAULT_RETRY);
+
+  if (config.debug) {
+    char *broker, *topic;
+
+    broker = p_kafka_get_broker(kafka_host);
+    topic = p_kafka_get_topic(kafka_host);
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): PoolID=%u KafkaBroker=%s KafkaTopic=%s\n",
+	config.name, config.type, pool_id, broker, topic);
+  }
+}
+#endif
+
+#ifdef WITH_ZMQ
+void Tee_init_zmq_host(struct p_zmq_host *zmq_host, char *zmq_address, u_int32_t pool_id)
+{
+  char log_id[SHORTBUFLEN];
+
+  p_zmq_init_push(zmq_host, zmq_address);
+  snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+  p_zmq_set_log_id(zmq_host, log_id);
+  p_zmq_push_setup(zmq_host);
+
+  if (config.debug) {
+    char *broker;
+
+    broker = p_zmq_get_address(zmq_host);
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): PoolID=%u ZmqAddress=%s\n", config.name, config.type, pool_id, broker);
+  }
+}
+#endif
 
 int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port)
 {
@@ -501,7 +691,7 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port)
 
     if ((s = socket(addr->sa_family, SOCK_DGRAM, 0)) == -1) {
       Log(LOG_ERR, "ERROR ( %s/%s ): socket() error: %s\n", config.name, config.type, strerror(errno));
-      exit_plugin(1);
+      exit_gracefully(1);
     }
 
     if (config.nfprobe_ipprec) {
@@ -516,11 +706,9 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port)
       Log(LOG_WARNING, "WARN ( %s/%s ): bind() error: %s\n", config.name, config.type, strerror(errno));
   }
   else {
-    int hincl = TRUE;
-
     if ((s = socket(addr->sa_family, SOCK_RAW, IPPROTO_RAW)) == -1) {
       Log(LOG_ERR, "ERROR ( %s/%s ): socket() error: %s\n", config.name, config.type, strerror(errno));
-      exit_plugin(1);
+      exit_gracefully(1);
     }
 
 
@@ -546,15 +734,15 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port)
 
   if (connect(s, (struct sockaddr *)addr, len) == -1) {
     Log(LOG_ERR, "ERROR ( %s/%s ): connect() error: %s\n", config.name, config.type, strerror(errno));
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   return(s);
 }
 
-int Tee_parse_hostport(const char *s, struct sockaddr *addr, socklen_t *len)
+int Tee_parse_hostport(const char *s, struct sockaddr *addr, socklen_t *len, int dont_check_port)
 {
-  char *orig, *host, *port;
+  char *orig, *host, *port, zero_port[] = "]:0";
   struct addrinfo hints, *res;
   int herr;
 
@@ -562,17 +750,26 @@ int Tee_parse_hostport(const char *s, struct sockaddr *addr, socklen_t *len)
 
   if ((host = orig = strdup(s)) == NULL) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Tee_parse_hostport() out of memory. Exiting ..\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   trim_spaces(host);
   trim_spaces(orig);
 
-  if ((port = strrchr(host, ':')) == NULL || *(++port) == '\0' || *host == '\0') return TRUE;
+  if ((port = strrchr(host, ':')) == NULL || *(++port) == '\0') {
+    if (dont_check_port) {
+      port = zero_port;
+      ++port; ++port;
+    }
+    else return TRUE;
+  }
+
+  if (*host == '\0') return TRUE;
 
   *(port - 1) = '\0';
 
-  /* Accept [host]:port for numeric IPv6 addresses */
+  /* Accept [host]:port for numeric IPv6 addresses;
+     XXX: if dont_check_port is set to true, check for ']' will be inaccurate */
   if (*host == '[' && *(port - 2) == ']') {
     host++;
     *(port - 2) = '\0';

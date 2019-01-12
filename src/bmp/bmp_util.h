@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -30,6 +30,7 @@
 #define EXT
 #endif
 EXT char *bmp_get_and_check_length(char **, u_int32_t *, u_int32_t);
+EXT int bmp_get_tlv_and_check_length(char **, u_int32_t *, struct bmp_rm_tlv *);
 EXT void bmp_jump_offset(char **, u_int32_t *, u_int32_t);
 EXT u_int32_t bmp_packet_adj_offset(char *, u_int32_t, u_int32_t, u_int32_t, char *);
 EXT void bmp_link_misc_structs(struct bgp_misc_structs *);
@@ -40,7 +41,7 @@ EXT void bmp_peer_close(struct bmp_peer *, int);
 EXT void bgp_peer_log_msg_extras_bmp(struct bgp_peer *, int, void *);
 EXT void bgp_peer_logdump_initclose_extras_bmp(struct bgp_peer *, int, void *);
 
-EXT void bgp_msg_data_set_data_bmp(struct bgp_msg_extra_data_bmp *, struct bmp_data *);
+EXT void bgp_msg_data_set_data_bmp(struct bmp_chars *, struct bmp_data *);
 EXT int bgp_extra_data_cmp_bmp(struct bgp_msg_extra_data *, struct bgp_msg_extra_data *);
 EXT int bgp_extra_data_process_bmp(struct bgp_msg_extra_data *, struct bgp_info *);
 EXT void bgp_extra_data_free_bmp(struct bgp_msg_extra_data *);
