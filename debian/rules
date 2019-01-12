@@ -31,7 +31,6 @@ override_dh_auto_configure:
 		--enable-bmp-bins     \
 		--enable-st-bins      \
 		--enable-ndpi         \
-		--enable-mongodb      \
 		$(extra_confflags)
 
 		# build-deps not available in debian
