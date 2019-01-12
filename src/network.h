@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -23,7 +23,6 @@
 #include "../include/llc.h"
 #include "../include/sll.h"
 #include "../include/ieee802_11.h"
-#include "../include/fddi.h"
 
 #if defined ENABLE_IPV6
 #include "../include/ip6.h"
@@ -265,7 +264,7 @@ struct rd_as4
 {
   u_int16_t type;
   as_t as;
-  u_int32_t val;
+  u_int16_t val;
 } __attribute__ ((packed));
 
 /* Picking one of the three structures as rd_t for simplicity */
@@ -347,14 +346,16 @@ struct packet_ptrs {
   struct class_st cst; /* classifiers: class status */
   u_int8_t shadow; /* 0=the packet is being distributed for the 1st time
 		      1=the packet is being distributed for the 2nd+ time */
-  u_int32_t ifindex_in;  /* input ifindex; only used by NFLOG for the time being */
-  u_int32_t ifindex_out; /* output ifindex; only used by NFLOG for the time being */
+  u_int32_t ifindex_in;  /* input ifindex; used by pmacctd/uacctd */
+  u_int32_t ifindex_out; /* output ifindex; used by pmacctd/uacctd */
+  u_int8_t direction; /* packet sampling direction; used by pmacctd/uacctd */
   u_int8_t tun_stack; /* tunnelling stack */
   u_int8_t tun_layer; /* tunnelling layer count */
   u_int32_t sample_type; /* sFlow sample type */
   u_int32_t seqno; /* sFlow/NetFlow sequence number */
   u_int16_t f_len; /* sFlow/NetFlow payload length */
-  char *tee_dissect; /* pointer to sFlow tee dissection structure */
+  char *tee_dissect; /* pointer to flow tee dissection structure */
+  int tee_dissect_bcast; /* is the tee dissected element to be broadcasted? */
   u_int8_t renormalized; /* Is it renormalized yet ? */
   char *pkt_data_ptrs[CUSTOM_PRIMITIVE_MAX_PPTRS_IDX]; /* indexed packet pointers */
   u_int16_t pkt_proto[CUSTOM_PRIMITIVE_MAX_PPTRS_IDX]; /* indexed packet protocols */
@@ -382,10 +383,11 @@ struct host_addr {
 
 struct host_mask {
   u_int8_t family;
+  u_int8_t len;
   union {
     u_int32_t m4;
 #if defined ENABLE_IPV6
-    u_int32_t m6[4];
+    u_int8_t m6[16];
 #endif
   } mask;
 };
@@ -417,6 +419,10 @@ struct pkt_primitives {
   pm_country_t dst_ip_country;
   pm_pocode_t src_ip_pocode;
   pm_pocode_t dst_ip_pocode;
+  double src_ip_lat;
+  double src_ip_lon;
+  double dst_ip_lat;
+  double dst_ip_lon;
 #endif
 #if defined (WITH_NDPI)
   pm_class2_t ndpi_class;
@@ -425,9 +431,10 @@ struct pkt_primitives {
   pm_id_t tag2;
   pm_class_t class;
   u_int32_t sampling_rate;
-  u_int16_t pkt_len_distrib;
+  char sampling_direction[2]; /* 'i' = ingress, 'e' = egress, 'u' = unknown */
   u_int32_t export_proto_seqno;
   u_int16_t export_proto_version;
+  u_int32_t export_proto_sysid;
 };
 
 struct pkt_data {
@@ -475,11 +482,8 @@ struct pkt_vlen_hdr_primitives {
 // XXX: eventually deprecate pkt_extras
 struct pkt_extras {
   u_int8_t tcp_flags;
-  u_int32_t mpls_top_label;
-  struct host_addr bgp_next_hop;
 };
 
-// #define PKT_MSG_SIZE 1550
 #define PKT_MSG_SIZE 10000
 struct pkt_msg {
   struct sockaddr agent;
@@ -488,6 +492,7 @@ struct pkt_msg {
   char *payload;
   pm_id_t tag;
   pm_id_t tag2;
+  u_int8_t bcast;
   u_int16_t pad;
 };
 
@@ -602,9 +607,15 @@ struct packet_ptrs_vector {
 #endif
 };
 
+struct hosts_table_entry {
+  struct host_addr addr;
+  struct host_mask mask;
+};
+
 struct hosts_table {
   int num;
-  struct host_addr table[MAX_MAP_ENTRIES];
+  time_t timestamp;
+  struct hosts_table_entry table[MAX_MAP_ENTRIES];
 };
 
 struct bgp_md5_table_entry {

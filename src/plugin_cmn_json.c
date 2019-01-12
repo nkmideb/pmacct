@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -29,6 +29,7 @@
 #include "plugin_cmn_json.h"
 #include "ip_flow.h"
 #include "classifier.h"
+#include "bgp/bgp.h"
 #if defined (WITH_NDPI)
 #include "ndpi/ndpi.h"
 #endif
@@ -276,6 +277,17 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
     cjhandler[idx] = compose_json_dst_host_pocode;
     idx++;
   }
+
+  if (wtc_2 & COUNT_SRC_HOST_COORDS) {
+    cjhandler[idx] = compose_json_src_host_coords;
+    idx++;
+  }
+
+  if (wtc_2 & COUNT_DST_HOST_COORDS) {
+    cjhandler[idx] = compose_json_dst_host_coords;
+    idx++;
+  }
+
 #endif
 
   if (wtc & COUNT_TCPFLAGS) {
@@ -298,8 +310,8 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
     idx++;
   }
 
-  if (wtc_2 & COUNT_PKT_LEN_DISTRIB) {
-    cjhandler[idx] = compose_json_pkt_len_distrib;
+  if (wtc_2 & COUNT_SAMPLING_DIRECTION) {
+    cjhandler[idx] = compose_json_sampling_direction;
     idx++;
   }
 
@@ -393,6 +405,11 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
     idx++;
   }
 
+  if (wtc_2 & COUNT_EXPORT_PROTO_SYSID) {
+    cjhandler[idx] = compose_json_export_proto_sysid;
+    idx++;
+  }
+
   if (config.cpptrs.num) {
     cjhandler[idx] = compose_json_custom_primitives;
     idx++;
@@ -440,7 +457,6 @@ void compose_json_label(json_t *obj, struct chained_cache *cc)
 
 void compose_json_class(json_t *obj, struct chained_cache *cc)
 {
-  char empty_string[] = "", *str_ptr;
   struct pkt_primitives *pbase = &cc->primitives;
 
   json_object_set_new_nocheck(obj, "class", json_string((pbase->class && class[(pbase->class)-1].id) ? class[(pbase->class)-1].protocol : "unknown"));
@@ -460,6 +476,7 @@ void compose_json_ndpi_class(json_t *obj, struct chained_cache *cc)
 }
 #endif
 
+#if defined (HAVE_L2)
 void compose_json_src_mac(json_t *obj, struct chained_cache *cc)
 {
   char mac[18];
@@ -493,6 +510,7 @@ void compose_json_etype(json_t *obj, struct chained_cache *cc)
   sprintf(misc_str, "%x", cc->primitives.etype);
   json_object_set_new_nocheck(obj, "etype", json_string(misc_str));
 }
+#endif
 
 void compose_json_src_as(json_t *obj, struct chained_cache *cc)
 {
@@ -817,6 +835,18 @@ void compose_json_dst_host_pocode(json_t *obj, struct chained_cache *cc)
   else
     json_object_set_new_nocheck(obj, "pocode_ip_dst", json_string(empty_string));
 }
+
+void compose_json_src_host_coords(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "lat_ip_src", json_real(cc->primitives.src_ip_lat));
+  json_object_set_new_nocheck(obj, "lon_ip_src", json_real(cc->primitives.src_ip_lon));
+}
+
+void compose_json_dst_host_coords(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "lat_ip_dst", json_real(cc->primitives.dst_ip_lat));
+  json_object_set_new_nocheck(obj, "lon_ip_dst", json_real(cc->primitives.dst_ip_lon));
+}
 #endif
 
 void compose_json_tcp_flags(json_t *obj, struct chained_cache *cc)
@@ -829,8 +859,6 @@ void compose_json_tcp_flags(json_t *obj, struct chained_cache *cc)
 
 void compose_json_proto(json_t *obj, struct chained_cache *cc)
 {
-  char misc_str[VERYSHORTBUFLEN];
-
   if (!config.num_protos && (cc->primitives.proto < protocols_number))
     json_object_set_new_nocheck(obj, "ip_proto", json_string(_protocols[cc->primitives.proto].name));
   else
@@ -847,9 +875,9 @@ void compose_json_sampling_rate(json_t *obj, struct chained_cache *cc)
   json_object_set_new_nocheck(obj, "sampling_rate", json_integer((json_int_t)cc->primitives.sampling_rate));
 }
 
-void compose_json_pkt_len_distrib(json_t *obj, struct chained_cache *cc)
+void compose_json_sampling_direction(json_t *obj, struct chained_cache *cc)
 {
-  json_object_set_new_nocheck(obj, "pkt_len_distrib", json_string(config.pkt_len_distrib_bins[cc->primitives.pkt_len_distrib]));
+  json_object_set_new_nocheck(obj, "sampling_direction", json_string(cc->primitives.sampling_direction));
 }
 
 void compose_json_post_nat_src_host(json_t *obj, struct chained_cache *cc)
@@ -916,8 +944,6 @@ void compose_json_tunnel_dst_host(json_t *obj, struct chained_cache *cc)
 
 void compose_json_tunnel_proto(json_t *obj, struct chained_cache *cc)
 {
-  char misc_str[VERYSHORTBUFLEN];
-
   if (!config.num_protos && (cc->ptun->tunnel_proto < protocols_number))
     json_object_set_new_nocheck(obj, "tunnel_ip_proto", json_string(_protocols[cc->ptun->tunnel_proto].name));
   else
@@ -933,7 +959,9 @@ void compose_json_timestamp_start(json_t *obj, struct chained_cache *cc)
 {
   char tstamp_str[VERYSHORTBUFLEN];
 
-  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->pnat->timestamp_start, TRUE, config.timestamps_since_epoch);
+  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->pnat->timestamp_start, TRUE,
+		    config.timestamps_since_epoch, config.timestamps_rfc3339,
+		    config.timestamps_utc);
   json_object_set_new_nocheck(obj, "timestamp_start", json_string(tstamp_str));
 }
 
@@ -941,7 +969,9 @@ void compose_json_timestamp_end(json_t *obj, struct chained_cache *cc)
 {
   char tstamp_str[VERYSHORTBUFLEN];
 
-  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->pnat->timestamp_end, TRUE, config.timestamps_since_epoch);
+  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->pnat->timestamp_end, TRUE,
+		    config.timestamps_since_epoch, config.timestamps_rfc3339,
+		    config.timestamps_utc);
   json_object_set_new_nocheck(obj, "timestamp_end", json_string(tstamp_str));
 }
 
@@ -949,7 +979,9 @@ void compose_json_timestamp_arrival(json_t *obj, struct chained_cache *cc)
 {
   char tstamp_str[VERYSHORTBUFLEN];
 
-  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->pnat->timestamp_arrival, TRUE, config.timestamps_since_epoch);
+  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->pnat->timestamp_arrival, TRUE,
+		    config.timestamps_since_epoch, config.timestamps_rfc3339,
+		    config.timestamps_utc);
   json_object_set_new_nocheck(obj, "timestamp_arrival", json_string(tstamp_str));
 }
 
@@ -957,10 +989,14 @@ void compose_json_timestamp_stitching(json_t *obj, struct chained_cache *cc)
 {
   char tstamp_str[VERYSHORTBUFLEN];
 
-  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->stitch->timestamp_min, TRUE, config.timestamps_since_epoch);
+  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->stitch->timestamp_min, TRUE,
+		    config.timestamps_since_epoch, config.timestamps_rfc3339,
+		    config.timestamps_utc);
   json_object_set_new_nocheck(obj, "timestamp_min", json_string(tstamp_str));
 
-  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->stitch->timestamp_max, TRUE, config.timestamps_since_epoch);
+  compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &cc->stitch->timestamp_max, TRUE,
+		    config.timestamps_since_epoch, config.timestamps_rfc3339,
+		    config.timestamps_utc);
   json_object_set_new_nocheck(obj, "timestamp_max", json_string(tstamp_str));
 }
 
@@ -972,6 +1008,11 @@ void compose_json_export_proto_seqno(json_t *obj, struct chained_cache *cc)
 void compose_json_export_proto_version(json_t *obj, struct chained_cache *cc)
 {
   json_object_set_new_nocheck(obj, "export_proto_version", json_integer((json_int_t)cc->primitives.export_proto_version));
+}
+
+void compose_json_export_proto_sysid(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "export_proto_sysid", json_integer((json_int_t)cc->primitives.export_proto_sysid));
 }
 
 void compose_json_custom_primitives(json_t *obj, struct chained_cache *cc)
@@ -1004,12 +1045,16 @@ void compose_json_history(json_t *obj, struct chained_cache *cc)
 
     tv.tv_sec = cc->basetime.tv_sec;
     tv.tv_usec = 0;
-    compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &tv, FALSE, config.timestamps_since_epoch);
+    compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &tv, FALSE,
+		      config.timestamps_since_epoch, config.timestamps_rfc3339,
+		      config.timestamps_utc);
     json_object_set_new_nocheck(obj, "stamp_inserted", json_string(tstamp_str));
 
     tv.tv_sec = time(NULL);
     tv.tv_usec = 0;
-    compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &tv, FALSE, config.timestamps_since_epoch);
+    compose_timestamp(tstamp_str, VERYSHORTBUFLEN, &tv, FALSE,
+		      config.timestamps_since_epoch, config.timestamps_rfc3339,
+		      config.timestamps_utc);
     json_object_set_new_nocheck(obj, "stamp_updated", json_string(tstamp_str));
   }
 }

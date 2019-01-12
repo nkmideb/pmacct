@@ -112,8 +112,12 @@ CHAR fields because making use of IP prefix labels, transparently to pmacct.
   * dst_host_country => country_ip_dst (CHAR (2) NOT NULL DEFAULT '--', see README.GeoIP)
   * src_host_pocode => pocode_ip_src (CHAR (12) NOT NULL DEFAULT ' ', see README.GeoIP)
   * dst_host_pocode => pocode_ip_dst (CHAR (12) NOT NULL DEFAULT ' ', see README.GeoIP)
-  * sampling_rate => sampling_rate (BIGINT NOT NULL DEFAULT 0, see README.sampling_rate)
-  * pkt_len_distrib => pkt_len_distrib (CHAR(10) NOT NULL DEFAULT ' ', see README.pkt_len_distrib)
+  * src_host_coords => lat_ip_src (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * src_host_coords => lon_ip_src (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * dst_host_coords => lat_ip_dst (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * dst_host_coords => lon_ip_dst (REAL NOT NULL DEFAULT 0, see README.GeoIP)
+  * sampling_rate => sampling_rate (BIGINT NOT NULL DEFAULT 0, see README.sampling)
+  * sampling_direction => sampling_direction (CHAR (1) NOT NULL DEFAULT ' ', see README.sampling)
   * class => class_id (CHAR(16) NOT NOT NULL DEFAULT ' ')
   * src_mac => mac_src (macaddr NOT NULL DEFAULT '0:0:0:0:0:0')
   * dst_mac => mac_dst (macaddr NOT NULL DEFAULT '0:0:0:0:0:0')
@@ -156,6 +160,9 @@ CHAR fields because making use of IP prefix labels, transparently to pmacct.
   * timestamp_max => timestamp_max, timestamp_max_residual:
     - timestamp_max timestamp without time zone NOT NULL DEFAULT '0000-01-01 00:00:00', see README.timestamp)
     - timestamp_max_residual INT NOT NULL DEFAULT 0, see README.timestamp)
+  * export_proto_seqno => export_proto_seqno (INT NOT NULL DEFAULT 0, see README.export_proto)
+  * export_proto_version => export_proto_version (SMALLINT NOT NULL DEFAULT 0, see README.export_proto)
+  * export_proto_sysid => export_proto_sysid (INT NOT NULL DEFAULT 0, see README.export_proto)
 
 - If not using COPY statements (sql_use_copy, sql_dont_try_update both enabled)
   'packets' and 'bytes' counters need to be defined as part of the SQL schema
@@ -165,6 +172,7 @@ CHAR fields because making use of IP prefix labels, transparently to pmacct.
   'stamp_updated' time references are mandatory only if temporal aggregation
   (sql_history) is enabled:
   * packets (INT NOT NULL)
+    - or (packets BIGINT NOT NULL, see README.64bit)
   * bytes (BIGINT NOT NULL)
   * stamp_inserted (timestamp without time zone NOT NULL DEFAULT '0000-01-01 00:00:00')
   * stamp_updated (timestamp without time zone)
@@ -187,14 +195,10 @@ in looking up protocol names by their number and viceversa. Because joins are ex
 'proto' table has been created *only* for your personal reference. 
 
 NOTE: mind to specify EVERYTIME which SQL table version you
-intend to adhere to by using either of the following rules:
+intend to adhere to by using the following config directives:
 
-When using commandline options:
-  * -v [ 1 | 2 | 3 | 4 | 5 | 6 | 7 ]
-
-When using configuration directives:
-  * sql_table_version: [ 1 | 2 | 3 | 4 | 5 | 6 | 7 ]
-  * sql_table_type: [ bgp ]
+* sql_table_version: [ 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 ]
+* sql_table_type: [ bgp ]
 
 NOTE: specifying a non-documented SQL table profile will result
 in an non-determined behaviour. Unless this will create crashes

@@ -14,6 +14,7 @@
 # PARTICULAR PURPOSE.
 
 @SET_MAKE@
+
 VPATH = @srcdir@
 am__make_dryrun = \
   { \
@@ -50,6 +51,7 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
+@USING_SQL_TRUE@am__append_1 = src/sql_common_m.c
 subdir = .
 DIST_COMMON = $(am__configure_deps) $(srcdir)/Makefile.am \
 	$(srcdir)/Makefile.in $(top_srcdir)/configure AUTHORS COPYING \
@@ -88,6 +90,45 @@ am__can_run_installinfo = \
     n|no|NO) false;; \
     *) (install-info --version) >/dev/null 2>&1;; \
   esac
+am__vpath_adj_setup = srcdirstrip=`echo "$(srcdir)" | sed 's|.|.|g'`;
+am__vpath_adj = case $$p in \
+    $(srcdir)/*) f=`echo "$$p" | sed "s|^$$srcdirstrip/||"`;; \
+    *) f=$$p;; \
+  esac;
+am__strip_dir = f=`echo $$p | sed -e 's|^.*/||'`;
+am__install_max = 40
+am__nobase_strip_setup = \
+  srcdirstrip=`echo "$(srcdir)" | sed 's/[].[^$$\\*|]/\\\\&/g'`
+am__nobase_strip = \
+  for p in $$list; do echo "$$p"; done | sed -e "s|$$srcdirstrip/||"
+am__nobase_list = $(am__nobase_strip_setup); \
+  for p in $$list; do echo "$$p $$p"; done | \
+  sed "s| $$srcdirstrip/| |;"' / .*\//!s/ .*/ ./; s,\( .*\)/[^/]*$$,\1,' | \
+  $(AWK) 'BEGIN { files["."] = "" } { files[$$2] = files[$$2] " " $$1; \
+    if (++n[$$2] == $(am__install_max)) \
+      { print $$2, files[$$2]; n[$$2] = 0; files[$$2] = "" } } \
+    END { for (dir in files) print dir, files[dir] }'
+am__base_list = \
+  sed '$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;$$!N;s/\n/ /g' | \
+  sed '$$!N;$$!N;$$!N;$$!N;s/\n/ /g'
+am__uninstall_files_from_dir = { \
+  test -z "$$files" \
+    || { test ! -d "$$dir" && test ! -f "$$dir" && test ! -r "$$dir"; } \
+    || { echo " ( cd '$$dir' && rm -f" $$files ")"; \
+         $(am__cd) "$$dir" && rm -f $$files; }; \
+  }
+am__installdirs = "$(DESTDIR)$(pmacct_dir)" \
+	"$(DESTDIR)$(pmacct_docs_dir)" \
+	"$(DESTDIR)$(pmacct_examples_dir)" \
+	"$(DESTDIR)$(pmacct_examples_amqp_dir)" \
+	"$(DESTDIR)$(pmacct_examples_avro_dir)" \
+	"$(DESTDIR)$(pmacct_examples_kafka_dir)" \
+	"$(DESTDIR)$(pmacct_examples_lg_dir)" \
+	"$(DESTDIR)$(pmacct_sql_dir)"
+DATA = $(pmacct__DATA) $(pmacct_docs__DATA) $(pmacct_examples__DATA) \
+	$(pmacct_examples_amqp__DATA) $(pmacct_examples_avro__DATA) \
+	$(pmacct_examples_kafka__DATA) $(pmacct_examples_lg__DATA) \
+	$(pmacct_sql__DATA)
 RECURSIVE_CLEAN_TARGETS = mostlyclean-recursive clean-recursive	\
   distclean-recursive maintainer-clean-recursive
 AM_RECURSIVE_TARGETS = $(RECURSIVE_TARGETS:-recursive=) \
@@ -225,6 +266,8 @@ RABBITMQ_CFLAGS = @RABBITMQ_CFLAGS@
 RABBITMQ_LIBS = @RABBITMQ_LIBS@
 RANLIB = @RANLIB@
 SED = @SED@
+SERDES_CFLAGS = @SERDES_CFLAGS@
+SERDES_LIBS = @SERDES_LIBS@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
 SQLITE3_CFLAGS = @SQLITE3_CFLAGS@
@@ -285,10 +328,58 @@ target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-SUBDIRS = src
+SUBDIRS = src examples/lg
 ACLOCAL_AMFLAGS = -I m4
-EXTRA_DIST = include sql examples docs \
-	CONFIG-KEYS FAQS QUICKSTART README.md TOOLS UPGRADE
+EXTRA_DIST = include sql examples docs CONFIG-KEYS FAQS QUICKSTART \
+	UPGRADE $(am__append_1)
+pmacct_dir = $(datarootdir)/pmacct
+pmacct_docs_dir = $(pmacct_dir)/docs
+pmacct_examples_dir = $(pmacct_dir)/examples
+pmacct_examples_kafka_dir = $(pmacct_examples_dir)/kafka
+pmacct_examples_amqp_dir = $(pmacct_examples_dir)/amqp
+pmacct_examples_avro_dir = $(pmacct_examples_dir)/avro
+pmacct_examples_lg_dir = $(pmacct_examples_dir)/lg
+@USING_SQL_TRUE@pmacct_sql_dir = $(pmacct_dir)/sql
+pmacct__DATA = CONFIG-KEYS FAQS QUICKSTART UPGRADE
+pmacct_docs__DATA = docs/IPFIX docs/LOOKING_GLASS_FORMAT docs/SIGNALS \
+	docs/MSGLOG_DUMP_FORMATS docs/TRIGGER_VARS
+
+pmacct_examples__DATA = examples/allow.lst.example examples/bgp_agent.map.example \
+	examples/bgp_md5.lst.example examples/bgp_xconnects.map.example \
+	examples/flow_to_rd.map.example examples/networks.lst.example \
+	examples/peers.map.example examples/pcap_interfaces.map.example \
+	examples/pmacctd-imt.conf.example examples/pmacctd-multiple-plugins.conf.example \
+	examples/ports.lst.example examples/pretag.map.example \
+	examples/primitives.lst.example examples/probe_netflow.conf.example \
+	examples/probe_sflow.conf.example examples/sampling.map.example \
+	examples/tee_receivers.lst.example examples/nfacctd-sql.conf.example \
+	examples/pmacctd-sql.conf.example examples/pmacctd-sqlite3.conf.example 
+
+pmacct_examples_kafka__DATA = examples/kafka/kafka_consumer.py
+pmacct_examples_amqp__DATA = examples/amqp/amqp_receiver.py
+pmacct_examples_avro__DATA = examples/avro/avro_file_decoder.py
+pmacct_examples_lg__DATA = examples/lg/pmbgp.py examples/lg/pmbgp
+@USING_SQL_TRUE@pmacct_sql__DATA = sql/pmacct-create-db_bgp_v1.mysql sql/pmacct-create-db.pgsql \
+@USING_SQL_TRUE@	sql/pmacct-create-db_v1.mysql sql/pmacct-create-db_v2.mysql \
+@USING_SQL_TRUE@	sql/pmacct-create-db_v3.mysql sql/pmacct-create-db_v4.mysql \
+@USING_SQL_TRUE@	sql/pmacct-create-db_v5.mysql sql/pmacct-create-db_v6.mysql \
+@USING_SQL_TRUE@	sql/pmacct-create-db_v7.mysql sql/pmacct-create-db_v8.mysql \
+@USING_SQL_TRUE@	sql/pmacct-create-db_v9.mysql sql/pmacct-create-table_bgp_v1.pgsql \
+@USING_SQL_TRUE@	sql/pmacct-create-table_bgp_v1.sqlite3 sql/pmacct-grant-db.mysql \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v1.pgsql sql/pmacct-create-table_v1.sqlite3 \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v2.pgsql sql/pmacct-create-table_v2.sqlite3 \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v3.pgsql sql/pmacct-create-table_v3.sqlite3 \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v4.pgsql sql/pmacct-create-table_v4.sqlite3 \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v5.pgsql sql/pmacct-create-table_v5.sqlite3 \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v6.pgsql sql/pmacct-create-table_v6.sqlite3 \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v7.pgsql sql/pmacct-create-table_v7.sqlite3 \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v8.sqlite3 sql/pmacct-create-table_v9.pgsql \
+@USING_SQL_TRUE@	sql/pmacct-create-table_v9.sqlite3 sql/README.64bit sql/README.cos \
+@USING_SQL_TRUE@	sql/README.custom_primitives sql/README.etype sql/README.export_proto \
+@USING_SQL_TRUE@	sql/README.GeoIP sql/README.iface sql/README.IPv6 sql/README.label \
+@USING_SQL_TRUE@	sql/README.mask sql/README.mpls sql/README.mysql sql/README.nat \
+@USING_SQL_TRUE@	sql/README.pgsql sql/README.sampling sql/README.sqlite3 \
+@USING_SQL_TRUE@	sql/README.tag2 sql/README.tunnel sql/README.timestamp
 
 all: all-recursive
 
@@ -336,6 +427,174 @@ clean-libtool:
 
 distclean-libtool:
 	-rm -f libtool config.lt
+install-pmacct_DATA: $(pmacct__DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(pmacct__DATA)'; test -n "$(pmacct_dir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(pmacct_dir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(pmacct_dir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pmacct_dir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pmacct_dir)" || exit $$?; \
+	done
+
+uninstall-pmacct_DATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(pmacct__DATA)'; test -n "$(pmacct_dir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(pmacct_dir)'; $(am__uninstall_files_from_dir)
+install-pmacct_docs_DATA: $(pmacct_docs__DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(pmacct_docs__DATA)'; test -n "$(pmacct_docs_dir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(pmacct_docs_dir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(pmacct_docs_dir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pmacct_docs_dir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pmacct_docs_dir)" || exit $$?; \
+	done
+
+uninstall-pmacct_docs_DATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(pmacct_docs__DATA)'; test -n "$(pmacct_docs_dir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(pmacct_docs_dir)'; $(am__uninstall_files_from_dir)
+install-pmacct_examples_DATA: $(pmacct_examples__DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(pmacct_examples__DATA)'; test -n "$(pmacct_examples_dir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(pmacct_examples_dir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(pmacct_examples_dir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pmacct_examples_dir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pmacct_examples_dir)" || exit $$?; \
+	done
+
+uninstall-pmacct_examples_DATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(pmacct_examples__DATA)'; test -n "$(pmacct_examples_dir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(pmacct_examples_dir)'; $(am__uninstall_files_from_dir)
+install-pmacct_examples_amqp_DATA: $(pmacct_examples_amqp__DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(pmacct_examples_amqp__DATA)'; test -n "$(pmacct_examples_amqp_dir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(pmacct_examples_amqp_dir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(pmacct_examples_amqp_dir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pmacct_examples_amqp_dir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pmacct_examples_amqp_dir)" || exit $$?; \
+	done
+
+uninstall-pmacct_examples_amqp_DATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(pmacct_examples_amqp__DATA)'; test -n "$(pmacct_examples_amqp_dir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(pmacct_examples_amqp_dir)'; $(am__uninstall_files_from_dir)
+install-pmacct_examples_avro_DATA: $(pmacct_examples_avro__DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(pmacct_examples_avro__DATA)'; test -n "$(pmacct_examples_avro_dir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(pmacct_examples_avro_dir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(pmacct_examples_avro_dir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pmacct_examples_avro_dir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pmacct_examples_avro_dir)" || exit $$?; \
+	done
+
+uninstall-pmacct_examples_avro_DATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(pmacct_examples_avro__DATA)'; test -n "$(pmacct_examples_avro_dir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(pmacct_examples_avro_dir)'; $(am__uninstall_files_from_dir)
+install-pmacct_examples_kafka_DATA: $(pmacct_examples_kafka__DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(pmacct_examples_kafka__DATA)'; test -n "$(pmacct_examples_kafka_dir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(pmacct_examples_kafka_dir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(pmacct_examples_kafka_dir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pmacct_examples_kafka_dir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pmacct_examples_kafka_dir)" || exit $$?; \
+	done
+
+uninstall-pmacct_examples_kafka_DATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(pmacct_examples_kafka__DATA)'; test -n "$(pmacct_examples_kafka_dir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(pmacct_examples_kafka_dir)'; $(am__uninstall_files_from_dir)
+install-pmacct_examples_lg_DATA: $(pmacct_examples_lg__DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(pmacct_examples_lg__DATA)'; test -n "$(pmacct_examples_lg_dir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(pmacct_examples_lg_dir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(pmacct_examples_lg_dir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pmacct_examples_lg_dir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pmacct_examples_lg_dir)" || exit $$?; \
+	done
+
+uninstall-pmacct_examples_lg_DATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(pmacct_examples_lg__DATA)'; test -n "$(pmacct_examples_lg_dir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(pmacct_examples_lg_dir)'; $(am__uninstall_files_from_dir)
+install-pmacct_sql_DATA: $(pmacct_sql__DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(pmacct_sql__DATA)'; test -n "$(pmacct_sql_dir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(pmacct_sql_dir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(pmacct_sql_dir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(pmacct_sql_dir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(pmacct_sql_dir)" || exit $$?; \
+	done
+
+uninstall-pmacct_sql_DATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(pmacct_sql__DATA)'; test -n "$(pmacct_sql_dir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(pmacct_sql_dir)'; $(am__uninstall_files_from_dir)
 
 # This directory's subdirectories are mostly independent; you can cd
 # into them and run `make' without going through this Makefile.
@@ -661,9 +920,12 @@ distcleancheck: distclean
 	       exit 1; } >&2
 check-am: all-am
 check: check-recursive
-all-am: Makefile
+all-am: Makefile $(DATA)
 installdirs: installdirs-recursive
 installdirs-am:
+	for dir in "$(DESTDIR)$(pmacct_dir)" "$(DESTDIR)$(pmacct_docs_dir)" "$(DESTDIR)$(pmacct_examples_dir)" "$(DESTDIR)$(pmacct_examples_amqp_dir)" "$(DESTDIR)$(pmacct_examples_avro_dir)" "$(DESTDIR)$(pmacct_examples_kafka_dir)" "$(DESTDIR)$(pmacct_examples_lg_dir)" "$(DESTDIR)$(pmacct_sql_dir)"; do \
+	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
+	done
 install: install-recursive
 install-exec: install-exec-recursive
 install-data: install-data-recursive
@@ -716,7 +978,11 @@ info: info-recursive
 
 info-am:
 
-install-data-am:
+install-data-am: install-pmacct_DATA install-pmacct_docs_DATA \
+	install-pmacct_examples_DATA install-pmacct_examples_amqp_DATA \
+	install-pmacct_examples_avro_DATA \
+	install-pmacct_examples_kafka_DATA \
+	install-pmacct_examples_lg_DATA install-pmacct_sql_DATA
 
 install-dvi: install-dvi-recursive
 
@@ -762,7 +1028,12 @@ ps: ps-recursive
 
 ps-am:
 
-uninstall-am:
+uninstall-am: uninstall-pmacct_DATA uninstall-pmacct_docs_DATA \
+	uninstall-pmacct_examples_DATA \
+	uninstall-pmacct_examples_amqp_DATA \
+	uninstall-pmacct_examples_avro_DATA \
+	uninstall-pmacct_examples_kafka_DATA \
+	uninstall-pmacct_examples_lg_DATA uninstall-pmacct_sql_DATA
 
 .MAKE: $(RECURSIVE_CLEAN_TARGETS) $(RECURSIVE_TARGETS) ctags-recursive \
 	install-am install-strip tags-recursive
@@ -777,11 +1048,22 @@ uninstall-am:
 	install install-am install-data install-data-am install-dvi \
 	install-dvi-am install-exec install-exec-am install-html \
 	install-html-am install-info install-info-am install-man \
-	install-pdf install-pdf-am install-ps install-ps-am \
-	install-strip installcheck installcheck-am installdirs \
-	installdirs-am maintainer-clean maintainer-clean-generic \
-	mostlyclean mostlyclean-generic mostlyclean-libtool pdf pdf-am \
-	ps ps-am tags tags-recursive uninstall uninstall-am
+	install-pdf install-pdf-am install-pmacct_DATA \
+	install-pmacct_docs_DATA install-pmacct_examples_DATA \
+	install-pmacct_examples_amqp_DATA \
+	install-pmacct_examples_avro_DATA \
+	install-pmacct_examples_kafka_DATA \
+	install-pmacct_examples_lg_DATA install-pmacct_sql_DATA \
+	install-ps install-ps-am install-strip installcheck \
+	installcheck-am installdirs installdirs-am maintainer-clean \
+	maintainer-clean-generic mostlyclean mostlyclean-generic \
+	mostlyclean-libtool pdf pdf-am ps ps-am tags tags-recursive \
+	uninstall uninstall-am uninstall-pmacct_DATA \
+	uninstall-pmacct_docs_DATA uninstall-pmacct_examples_DATA \
+	uninstall-pmacct_examples_amqp_DATA \
+	uninstall-pmacct_examples_avro_DATA \
+	uninstall-pmacct_examples_kafka_DATA \
+	uninstall-pmacct_examples_lg_DATA uninstall-pmacct_sql_DATA
 
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.

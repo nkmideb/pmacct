@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -32,6 +32,11 @@
     } \
 } while (0)
 #endif
+
+struct p_broker_timers {
+  time_t last_fail;
+  int retry_interval;
+};
 
 /* prototypes */
 #if (!defined __UTIL_C)
@@ -67,14 +72,19 @@ EXT void evaluate_sums(u_int64_t *, u_int64_t *, char *, char *);
 EXT void stop_all_childs();
 EXT int file_lock(int);
 EXT int file_unlock(int);
-EXT void strftime_same(char *, int, char *, const time_t *);
+EXT void pm_strftime(char *, int, char *, const time_t *, int);
+EXT void pm_strftime_same(char *, int, char *, const time_t *, int);
+EXT void insert_rfc3339_timezone(char *, int, const struct tm *);
+EXT void append_rfc3339_timezone(char *, int, const struct tm *);
 EXT int read_SQLquery_from_file(char *, char *, int);
 EXT void stick_bosbit(u_char *);
 EXT int check_bosbit(u_char *);
 EXT u_int32_t decode_mpls_label(char *);
+EXT void encode_mpls_label(char *, u_int32_t);
 EXT int timeval_cmp(struct timeval *, struct timeval *);
 EXT void exit_all(int);
 EXT void exit_plugin(int);
+EXT void exit_gracefully(int);
 EXT void reset_tag_label_status(struct packet_ptrs_vector *);
 EXT void reset_net_status(struct packet_ptrs *);
 EXT void reset_net_status_v(struct packet_ptrs_vector *);
@@ -84,10 +94,12 @@ EXT void set_sampling_table(struct packet_ptrs_vector *, u_char *);
 EXT void set_shadow_status(struct packet_ptrs *);
 EXT void set_default_preferences(struct configuration *);
 EXT FILE *open_output_file(char *, char *, int);
+EXT void open_pcap_savefile(struct pcap_device *, char *);
 EXT void link_latest_output_file(char *, char *);
 EXT void close_output_file(FILE *);
-EXT void handle_dynname_internal_strings(char *, int, char *, struct primitives_ptrs *);
-EXT void handle_dynname_internal_strings_same(char *, int, char *, struct primitives_ptrs *);
+EXT int handle_dynname_internal_strings(char *, int, char *, struct primitives_ptrs *, int);
+EXT int handle_dynname_internal_strings_same(char *, int, char *, struct primitives_ptrs *, int);
+EXT int have_dynname_nontime(char *);
 EXT void escape_ip_uscores(char *);
 EXT int sql_history_to_secs(int, int);
 EXT void *pm_malloc(size_t);
@@ -100,8 +112,6 @@ EXT int load_tags(char *, struct pretag_filter *, char *);
 EXT int load_labels(char *, struct pretag_label_filter *, char *);
 EXT int evaluate_tags(struct pretag_filter *, pm_id_t);
 EXT int evaluate_labels(struct pretag_label_filter *, pt_label_t *);
-EXT void load_pkt_len_distrib_bins();
-EXT void evaluate_pkt_len_distrib(struct pkt_data *);
 EXT char *write_sep(char *, int *);
 EXT void version_daemon(char *);
 EXT void set_truefalse_nonzero(int *);
@@ -110,12 +120,7 @@ EXT char *compose_json_str(void *);
 EXT void write_and_free_json(FILE *, void *);
 EXT void add_writer_name_and_pid_json(void *, char *, pid_t);
 
-#ifdef WITH_AVRO
-EXT void write_avro_schema_to_file(char *, avro_schema_t);
-EXT char *compose_avro_purge_schema(avro_schema_t, char *);
-#endif
-
-EXT void compose_timestamp(char *, int, struct timeval *, int, int);
+EXT void compose_timestamp(char *, int, struct timeval *, int, int, int, int);
 
 EXT void print_primitives(int, char *);
 EXT int mkdir_multilevel(const char *, int, uid_t, gid_t);
@@ -180,4 +185,11 @@ EXT void replace_string(char *, int, char *, char *);
 EXT int delete_line_from_file(int, char *);
 
 EXT void generate_random_string(char *, const int);
+
+EXT void P_broker_timers_set_last_fail(struct p_broker_timers *, time_t);
+EXT void P_broker_timers_set_retry_interval(struct p_broker_timers *, int);
+EXT void P_broker_timers_unset_last_fail(struct p_broker_timers *);
+EXT time_t P_broker_timers_get_last_fail(struct p_broker_timers *);
+EXT int P_broker_timers_get_retry_interval(struct p_broker_timers *);
+EXT time_t P_broker_timers_get_last_fail(struct p_broker_timers *);
 #undef EXT

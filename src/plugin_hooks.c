@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -40,7 +40,7 @@
 void load_plugins(struct plugin_requests *req)
 {
   u_int64_t buf_pipe_ratio_sz = 0, pipe_idx = 0;
-  int snd_buflen = 0, rcv_buflen = 0, socklen = 0, target_buflen = 0, ret;
+  int snd_buflen = 0, rcv_buflen = 0, socklen = 0, target_buflen = 0;
 
   int nfprobe_id = 0, min_sz = 0, extra_sz = 0;
   struct plugins_list_entry *list = plugins_list;
@@ -55,7 +55,7 @@ void load_plugins(struct plugin_requests *req)
       if (list->cfg.data_type & (PIPE_TYPE_METADATA|PIPE_TYPE_PAYLOAD|PIPE_TYPE_MSG));
       else {
 	Log(LOG_ERR, "ERROR ( %s/%s ): Data type not supported: %d\n", list->name, list->type.string, list->cfg.data_type);
-	exit(1);
+	exit_gracefully(1);
       }
 
       min_sz = ChBufHdrSz;
@@ -119,7 +119,7 @@ void load_plugins(struct plugin_requests *req)
         if (buf_pipe_ratio_sz > INT_MAX) {
 	  Log(LOG_ERR, "ERROR ( %s/%s ): Current plugin_buffer_size elems per plugin_pipe_size: %d. Max: %d.\nExiting.\n",
 		list->name, list->type.string, (list->cfg.pipe_size/list->cfg.buffer_size), (INT_MAX/sizeof(char *)));
-          exit_all(1);
+          exit_gracefully(1);
         }
         else target_buflen = buf_pipe_ratio_sz;
 
@@ -165,7 +165,7 @@ void load_plugins(struct plugin_requests *req)
       chptr = insert_pipe_channel(list->type.id, &list->cfg, list->pipe[1]);
       if (!chptr) {
 	Log(LOG_ERR, "ERROR ( %s/%s ): Unable to setup a new Core Process <-> Plugin channel.\nExiting.\n", list->name, list->type.string);
-	exit_all(1);
+	exit_gracefully(1);
       }
       else chptr->plugin = list;
 
@@ -244,8 +244,12 @@ void load_plugins(struct plugin_requests *req)
       /* ZMQ inits, if required */
 #ifdef WITH_ZMQ
       if (list->cfg.pipe_zmq) {
+	char log_id[SHORTBUFLEN];
+
 	p_zmq_plugin_pipe_init_core(&chptr->zmq_host, list->id);
-	p_zmq_plugin_pipe_publish(&chptr->zmq_host);
+	snprintf(log_id, sizeof(log_id), "%s/%s", list->name, list->type.string);
+	p_zmq_set_log_id(&chptr->zmq_host, log_id);
+	p_zmq_pub_setup(&chptr->zmq_host);
       }
 #endif
       
@@ -271,7 +275,7 @@ void load_plugins(struct plugin_requests *req)
 	close(config.bgp_sock);
 	if (!list->cfg.pipe_zmq) close(list->pipe[1]);
 	(*list->type.func)(list->pipe[0], &list->cfg, chptr);
-	exit(0);
+	exit_gracefully(0);
       default: /* Parent */
 	if (!list->cfg.pipe_zmq) {
 	  close(list->pipe[0]);
@@ -363,8 +367,12 @@ void exec_plugins(struct packet_ptrs *pptrs, struct plugin_requests *req)
 
     if (p->cfg.pre_tag_map && find_id_func) {
       if (p->cfg.type_id == PLUGIN_ID_TEE) {
-	if ((req->ptm_c.exec_ptm_res && !p->cfg.ptm_complex) ||
-	    ((!req->ptm_c.exec_ptm_res && p->cfg.ptm_complex) && !p->cfg.tee_dissect_send_full_pkt)) 
+	/*
+	   replicate and compute tagging if:
+	   - a dissected flow hits a complex pre_tag_map or
+	   - a non-dissected (full) packet hits a simple pre_tag_map
+	*/
+	if ((req->ptm_c.exec_ptm_res && !p->cfg.ptm_complex) || (!req->ptm_c.exec_ptm_res && p->cfg.ptm_complex))
 	  continue;
       }
 
@@ -378,19 +386,28 @@ void exec_plugins(struct packet_ptrs *pptrs, struct plugin_requests *req)
         pptrs->have_label = saved_have_label;
       }
       else {
-        find_id_func(&p->cfg.ptm, pptrs, &pptrs->tag, &pptrs->tag2);
+	if (p->cfg.type_id == PLUGIN_ID_TEE && req->ptm_c.exec_ptm_res && pptrs->tee_dissect_bcast) /* noop */;
+        else {
+	  find_id_func(&p->cfg.ptm, pptrs, &pptrs->tag, &pptrs->tag2);
 
-	if (p->cfg.ptm_global) {
-	  saved_tag = pptrs->tag;
-	  saved_tag2 = pptrs->tag2;
-	  pretag_copy_label(&saved_label, &pptrs->label);
+	  if (p->cfg.ptm_global) {
+	    saved_tag = pptrs->tag;
+	    saved_tag2 = pptrs->tag2;
+	    pretag_copy_label(&saved_label, &pptrs->label);
 
-	  saved_have_tag = pptrs->have_tag;
-	  saved_have_tag2 = pptrs->have_tag2;
-	  saved_have_label = pptrs->have_label;
+	    saved_have_tag = pptrs->have_tag;
+	    saved_have_tag2 = pptrs->have_tag2;
+	    saved_have_label = pptrs->have_label;
 
-          got_tags = TRUE;
+            got_tags = TRUE;
+	  }
         }
+      }
+    }
+    else {
+      if (p->cfg.type_id == PLUGIN_ID_TEE) {
+        /* stop dissected flows from being replicated in case of no pre_tag_map */
+        if (req->ptm_c.exec_ptm_res) continue;
       }
     }
 
@@ -431,7 +448,7 @@ reprocess:
           struct plugins_list_entry *list = channels_list[index].plugin;
 
           Log(LOG_ERR, "ERROR ( %s/%s ): plugin_buffer_size is too short.\n", list->name, list->type.string);
-          exit_all(1);
+          exit_gracefully(1);
         }
 
         channels_list[index].already_reprocessed = TRUE;
@@ -453,15 +470,14 @@ reprocess:
 	((struct ch_buf_hdr *)channels_list[index].rg.ptr)->len = channels_list[index].bufptr;
 	((struct ch_buf_hdr *)channels_list[index].rg.ptr)->seq = channels_list[index].hdr.seq;
 	((struct ch_buf_hdr *)channels_list[index].rg.ptr)->num = channels_list[index].hdr.num;
-	((struct ch_buf_hdr *)channels_list[index].rg.ptr)->core_pid = channels_list[index].core_pid;
 
 	channels_list[index].status->last_buf_off = (u_int64_t)(channels_list[index].rg.ptr - channels_list[index].rg.base);
 
         if (config.debug_internal_msg) {
 	  struct plugins_list_entry *list = channels_list[index].plugin;
-	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer released cpid=%u len=%llu seq=%u num_entries=%u off=%llu\n",
-		list->name, list->type.string, channels_list[index].core_pid, channels_list[index].bufptr,
-		channels_list[index].hdr.seq, channels_list[index].hdr.num, channels_list[index].status->last_buf_off);
+	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer released len=%llu seq=%u num_entries=%u off=%llu\n",
+		list->name, list->type.string, channels_list[index].bufptr, channels_list[index].hdr.seq,
+		channels_list[index].hdr.num, channels_list[index].status->last_buf_off);
 	}
 
 	/* sending buffer to connected ZMQ subscriber(s) */
@@ -469,7 +485,7 @@ reprocess:
 #ifdef WITH_ZMQ
           struct channels_list_entry *chptr = &channels_list[index];
 
-	  ret = p_zmq_plugin_pipe_send(&chptr->zmq_host, chptr->rg.ptr, chptr->bufsize);
+	  ret = p_zmq_topic_send(&chptr->zmq_host, chptr->rg.ptr, chptr->bufsize);
 #endif
 	}
 	else {
@@ -490,7 +506,6 @@ reprocess:
 	/* let's protect the buffer we are going to write */
         ((struct ch_buf_hdr *)channels_list[index].rg.ptr)->seq = -1;
         ((struct ch_buf_hdr *)channels_list[index].rg.ptr)->num = 0;
-        ((struct ch_buf_hdr *)channels_list[index].rg.ptr)->core_pid = 0;
 
         /* rewind pointer */
         channels_list[index].bufptr = channels_list[index].buf;
@@ -543,7 +558,7 @@ reprocess:
 struct channels_list_entry *insert_pipe_channel(int plugin_type, struct configuration *cfg, int pipe)
 {
   struct channels_list_entry *chptr; 
-  int index = 0, x;  
+  int index = 0;  
 
   while (index < MAX_N_PLUGINS) {
     chptr = &channels_list[index]; 
@@ -578,7 +593,7 @@ struct channels_list_entry *insert_pipe_channel(int plugin_type, struct configur
       chptr->rg.base = map_shared(0, cfg->pipe_size+PKT_MSG_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
       if (chptr->rg.base == MAP_FAILED) {
         Log(LOG_ERR, "ERROR ( %s/%s ): unable to allocate pipe buffer. Exiting ...\n", cfg->name, cfg->type); 
-	exit_all(1);
+	exit_gracefully(1);
       }
       memset(chptr->rg.base, 0, cfg->pipe_size);
       chptr->rg.ptr = chptr->rg.base;
@@ -587,7 +602,7 @@ struct channels_list_entry *insert_pipe_channel(int plugin_type, struct configur
       chptr->status = map_shared(0, sizeof(struct ch_status), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
       if (chptr->status == MAP_FAILED) {
         Log(LOG_ERR, "ERROR ( %s/%s ): unable to allocate status buffer. Exiting ...\n", cfg->name, cfg->type);
-        exit_all(1);
+        exit_gracefully(1);
       }
       memset(chptr->status, 0, sizeof(struct ch_status));
 
@@ -789,11 +804,10 @@ void fill_pipe_buffer()
 
     ((struct ch_buf_hdr *)chptr->rg.ptr)->seq = chptr->hdr.seq;
     ((struct ch_buf_hdr *)chptr->rg.ptr)->num = chptr->hdr.num;
-    ((struct ch_buf_hdr *)chptr->rg.ptr)->core_pid = chptr->core_pid;
 
     if (chptr->plugin->cfg.pipe_zmq) {
 #ifdef WITH_ZMQ
-      p_zmq_plugin_pipe_send(&chptr->zmq_host, chptr->rg.ptr, chptr->bufsize);
+      p_zmq_topic_send(&chptr->zmq_host, chptr->rg.ptr, chptr->bufsize);
 #endif
     }
     else {
@@ -869,7 +883,7 @@ void load_plugin_filters(int link_type)
 
 	dev_desc = pcap_open_dead(link_type, 128); /* 128 bytes should be long enough */
 
-	if (config.dev) pcap_lookupnet(config.dev, &localnet, &netmask, errbuf);
+	if (config.pcap_if) pcap_lookupnet(config.pcap_if, &localnet, &netmask, errbuf);
 
 	list->cfg.bpfp_a_table[idx] = malloc(sizeof(struct bpf_program));
 	while ( (count_token = extract_token(&list->cfg.a_filter, ',')) && idx < AGG_FILTER_ENTRIES ) {
@@ -922,11 +936,35 @@ void plugin_pipe_zmq_compile_check()
 {
 #ifndef WITH_ZMQ
   Log(LOG_ERR, "ERROR ( %s/%s ): 'plugin_pipe_zmq' requires compiling with --enable-zmq. Exiting ..\n", config.name, config.type);
-  exit_plugin(1);
+  exit_gracefully(1);
 #endif
 }
 
 void plugin_pipe_check(struct configuration *cfg)
 {
   if (!cfg->pipe_zmq) cfg->pipe_homegrown = TRUE;
+}
+
+void P_zmq_pipe_init(void *zh, int *pipe_fd, int *seq)
+{
+  plugin_pipe_zmq_compile_check();
+
+#ifdef WITH_ZMQ
+  if (zh) {
+    struct p_zmq_host *zmq_host = zh;
+    char log_id[SHORTBUFLEN];
+
+    p_zmq_plugin_pipe_init_plugin(zmq_host);
+
+    snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+    p_zmq_set_log_id(zmq_host, log_id);
+
+    p_zmq_set_hwm(zmq_host, config.pipe_zmq_hwm);
+    p_zmq_sub_setup(zmq_host);
+    p_zmq_set_retry_timeout(zmq_host, config.pipe_zmq_retry);
+
+    if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
+    if (seq) (*seq) = 0;
+  }
+#endif
 }

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -27,6 +27,11 @@
 #include "zmq_common.h"
 
 /* Functions */
+void p_zmq_set_address(struct p_zmq_host *zmq_host, char *address)
+{
+  if (zmq_host && address) snprintf(zmq_host->sock.str, sizeof(zmq_host->sock.str), "tcp://%s", address);
+}
+
 void p_zmq_set_topic(struct p_zmq_host *zmq_host, u_int8_t topic)
 {
   if (zmq_host) zmq_host->topic = topic;
@@ -37,23 +42,76 @@ void p_zmq_set_retry_timeout(struct p_zmq_host *zmq_host, int tout)
   int ret;
 
   if (zmq_host) {
-    zmq_setsockopt(zmq_host->sock, ZMQ_RECONNECT_IVL, &tout, sizeof(tout));
+    ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_RECONNECT_IVL, &tout, sizeof(tout));
     if (ret != 0) {
-      Log(LOG_ERR, "ERROR ( %s/%s ): zmq_setsockopt() RECONNECT_IVL failed for topic %u: %s\nExiting.\n",
-	config.name, config.type, zmq_host->topic, zmq_strerror(errno));
-      exit_plugin(1);
+      Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() RECONNECT_IVL failed for topic %u: %s\nExiting.\n",
+	  zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+      exit_gracefully(1);
     }
   }
 }
 
-void p_zmq_set_username(struct p_zmq_host *zmq_host)
+void p_zmq_set_username(struct p_zmq_host *zmq_host, char *username)
+{
+  if (zmq_host) {
+    if (strlen(username) >= sizeof(zmq_host->zap.username)) {
+      Log(LOG_ERR, "ERROR ( %s ): p_zmq_set_username(): username '%s' too long (maximum %u chars). Exiting.\n",
+	  zmq_host->log_id, username, (sizeof(zmq_host->zap.username) - 1));
+      exit_gracefully(1);
+    }
+    else strlcpy(zmq_host->zap.username, username, sizeof(zmq_host->zap.username));
+  }
+}
+
+void p_zmq_set_password(struct p_zmq_host *zmq_host, char *password)
+{
+  if (zmq_host) {
+    if (strlen(password) >= sizeof(zmq_host->zap.password)) {
+      Log(LOG_ERR, "ERROR ( %s ): p_zmq_set_password(): password '%s' too long (maximum %u chars). Exiting.\n",
+	  zmq_host->log_id, password, (sizeof(zmq_host->zap.password) - 1));
+      exit_gracefully(1);
+    }
+    else strlcpy(zmq_host->zap.password, password, sizeof(zmq_host->zap.password));
+  }
+}
+
+void p_zmq_set_random_username(struct p_zmq_host *zmq_host)
 {
   if (zmq_host) generate_random_string(zmq_host->zap.username, (sizeof(zmq_host->zap.username) - 1));
 }
 
-void p_zmq_set_password(struct p_zmq_host *zmq_host)
+void p_zmq_set_random_password(struct p_zmq_host *zmq_host)
 {
   if (zmq_host) generate_random_string(zmq_host->zap.password, (sizeof(zmq_host->zap.password) - 1));
+}
+
+void p_zmq_set_hwm(struct p_zmq_host *zmq_host, int hwm)
+{
+  if (zmq_host) zmq_host->hwm = hwm;  
+}
+
+void p_zmq_set_log_id(struct p_zmq_host *zmq_host, char *log_id)
+{
+  if (zmq_host) strlcpy(zmq_host->log_id, log_id, sizeof(zmq_host->log_id));
+}
+
+char *p_zmq_get_address(struct p_zmq_host *zmq_host)
+{
+  if (zmq_host && strlen(zmq_host->sock.str)) return zmq_host->sock.str;
+
+  return NULL;
+}
+
+u_int8_t p_zmq_get_topic(struct p_zmq_host *zmq_host)
+{
+  if (zmq_host) return zmq_host->topic;
+
+  return 0;
+}
+
+void *p_zmq_get_sock(struct p_zmq_host *zmq_host)
+{
+  if (zmq_host) return zmq_host->sock.obj; 
 }
 
 int p_zmq_get_fd(struct p_zmq_host *zmq_host)
@@ -62,33 +120,57 @@ int p_zmq_get_fd(struct p_zmq_host *zmq_host)
   size_t len = sizeof(fd);
 
   if (zmq_host) {
-    zmq_getsockopt(zmq_host->sock, ZMQ_FD, &fd, &len);
+    zmq_getsockopt(zmq_host->sock.obj, ZMQ_FD, &fd, &len);
   }
 
   return fd;
 }
 
-void p_zmq_plugin_pipe_init_core(struct p_zmq_host *zmq_host, u_int8_t plugin_id)
+void p_zmq_init_push(struct p_zmq_host *zmq_host, char *address)
 {
-  int ret;
-
   if (zmq_host) {
     memset(zmq_host, 0, sizeof(struct p_zmq_host));
-    p_zmq_set_topic(zmq_host, plugin_id);
-    p_zmq_set_username(zmq_host);
-    p_zmq_set_password(zmq_host);
+    p_zmq_set_address(zmq_host, address);
   }
+}
+
+void p_zmq_init_pub(struct p_zmq_host *zmq_host, char *address, u_int8_t topic)
+{
+  if (zmq_host) {
+    memset(zmq_host, 0, sizeof(struct p_zmq_host));
+    p_zmq_set_address(zmq_host, address);
+    p_zmq_set_topic(zmq_host, topic);
+  }
+}
+
+void p_zmq_plugin_pipe_init_core(struct p_zmq_host *zmq_host, u_int8_t plugin_id)
+{
+  if (zmq_host) {
+    p_zmq_init_pub(zmq_host, NULL, plugin_id);
+    p_zmq_set_random_username(zmq_host);
+    p_zmq_set_random_password(zmq_host);
+  }
+}
+
+void p_zmq_init_sub(struct p_zmq_host *zmq_host)
+{
+  p_zmq_plugin_pipe_init_plugin(zmq_host);
+}
+
+void p_zmq_init_pull(struct p_zmq_host *zmq_host)
+{
+  p_zmq_plugin_pipe_init_plugin(zmq_host);
 }
 
 void p_zmq_plugin_pipe_init_plugin(struct p_zmq_host *zmq_host)
 {
   if (zmq_host) {
-    if (zmq_host->sock) {
-      zmq_unbind(zmq_host->sock, zmq_host->bind_str);
-      zmq_close(zmq_host->sock);
+    if (zmq_host->sock.obj) {
+      zmq_unbind(zmq_host->sock.obj, zmq_host->sock.str);
+      zmq_close(zmq_host->sock.obj);
     }
 
-    if (zmq_host->zap.sock) zmq_close(zmq_host->zap.sock);
+    if (zmq_host->zap.sock.obj) zmq_close(zmq_host->zap.sock.obj);
     if (zmq_host->zap.thread) zmq_threadclose(zmq_host->zap.thread);
 
     if (zmq_host->ctx) {
@@ -126,154 +208,223 @@ int p_zmq_plugin_pipe_set_profile(struct configuration *cfg, char *value)
   return SUCCESS;
 }
 
-void p_zmq_plugin_pipe_publish(struct p_zmq_host *zmq_host)
+void p_zmq_zap_setup(struct p_zmq_host *zmq_host)
 {
-  int ret, as_server = TRUE, only_one = 1, no_hwm = 0;
-  size_t bind_strlen;
+  zmq_host->zap.thread = zmq_threadstart(&p_zmq_zap_handler, zmq_host);
+}
+
+void p_zmq_pub_setup(struct p_zmq_host *zmq_host)
+{
+  p_zmq_send_setup(zmq_host, ZMQ_PUB);
+}
+
+void p_zmq_push_setup(struct p_zmq_host *zmq_host)
+{
+  p_zmq_send_setup(zmq_host, ZMQ_PUSH);
+}
+
+void p_zmq_send_setup(struct p_zmq_host *zmq_host, int type)
+{
+  int ret, as_server = TRUE, only_one = 1;
+  size_t sock_strlen;
+
+  if (!zmq_host) return;
+  if (type != ZMQ_PUB && type != ZMQ_PUSH) return;
 
   if (!zmq_host->ctx) zmq_host->ctx = zmq_ctx_new();
 
-  if (!zmq_host->zap.sock) {
-    zmq_host->zap.sock = zmq_socket(zmq_host->ctx, ZMQ_REP);
+  if (strlen(zmq_host->zap.username) && strlen(zmq_host->zap.password)) {
+    p_zmq_zap_setup(zmq_host);
+  }
 
-    ret = zmq_bind(zmq_host->zap.sock, "inproc://zeromq.zap.01");
+  zmq_host->sock.obj = zmq_socket(zmq_host->ctx, type);
+  if (!zmq_host->sock.obj) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_socket() failed for topic %u: %s\nExiting.\n",
+        zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_SNDHWM, &zmq_host->hwm, sizeof(int));
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() ZMQ_SNDHWM failed for topic %u: %s\nExiting.\n",
+	zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_BACKLOG, &only_one, sizeof(int));
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() ZMQ_BACKLOG failed for topic %u: %s\nExiting.\n",
+	zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  if (strlen(zmq_host->zap.username) && strlen(zmq_host->zap.password)) {
+    ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_PLAIN_SERVER, &as_server, sizeof(int));
     if (ret == ERR) {
-      Log(LOG_ERR, "ERROR ( %s/%s ): zmq_bind() failed binding ZAP (%s)\nExiting.\n",
-	config.name, config.type, zmq_strerror(errno));
-      exit(1);
+      Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() ZMQ_PLAIN_SERVER failed for topic %u: %s\nExiting.\n",
+	  zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+      exit_gracefully(1);
     }
-
-    zmq_host->zap.thread = zmq_threadstart(&p_zmq_zap_handler, zmq_host);
   }
 
-  zmq_host->sock = zmq_socket(zmq_host->ctx, ZMQ_PUB);
-
-  ret = zmq_setsockopt(zmq_host->sock, ZMQ_SNDHWM, &no_hwm, sizeof(int));
+  if (!strlen(zmq_host->sock.str)) ret = zmq_bind(zmq_host->sock.obj, "tcp://127.0.0.1:*");
+  else ret = zmq_bind(zmq_host->sock.obj, zmq_host->sock.str);
   if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_setsockopt() ZMQ_SNDHWM failed for topic %u: %s\nExiting.\n",
-        config.name, config.type, zmq_host->topic, zmq_strerror(errno));
-    exit(1);
+    Log(LOG_ERR, "ERROR ( %s ): zmq_bind() failed for topic %u: %s\nExiting.\n",
+	zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+    exit_gracefully(1);
   }
 
-  ret = zmq_setsockopt(zmq_host->sock, ZMQ_BACKLOG, &only_one, sizeof(int));
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_setsockopt() ZMQ_BACKLOG failed for topic %u: %s\nExiting.\n",
-        config.name, config.type, zmq_host->topic, zmq_strerror(errno));
-    exit(1);
-  }
-
-  ret = zmq_setsockopt(zmq_host->sock, ZMQ_PLAIN_SERVER, &as_server, sizeof(int));
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_setsockopt() ZMQ_PLAIN_SERVER failed for topic %u: %s\nExiting.\n",
-	config.name, config.type, zmq_host->topic, zmq_strerror(errno));
-    exit(1);
-  }
-
-  ret = zmq_bind(zmq_host->sock, "tcp://127.0.0.1:*");
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_bind() failed for topic %u: %s\nExiting.\n",
-	config.name, config.type, zmq_host->topic, zmq_strerror(errno));
-    exit(1);
-  }
-
-  bind_strlen = sizeof(zmq_host->bind_str);
-  ret = zmq_getsockopt(zmq_host->sock, ZMQ_LAST_ENDPOINT, zmq_host->bind_str, &bind_strlen);
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_getsockopt() ZMQ_LAST_ENDPOINT failed for topic %u: %s\nExiting.\n",
-        config.name, config.type, zmq_host->topic, zmq_strerror(errno));
-    exit(1);
+  if (!strlen(zmq_host->sock.str)) {
+    sock_strlen = sizeof(zmq_host->sock.str);
+    ret = zmq_getsockopt(zmq_host->sock.obj, ZMQ_LAST_ENDPOINT, zmq_host->sock.str, &sock_strlen);
+    if (ret == ERR) {
+      Log(LOG_ERR, "ERROR ( %s ): zmq_getsockopt() ZMQ_LAST_ENDPOINT failed for topic %u: %s\nExiting.\n",
+	  zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+      exit_gracefully(1);
+    }
   }
 }
 
-void p_zmq_plugin_pipe_consume(struct p_zmq_host *zmq_host)
+void p_zmq_sub_setup(struct p_zmq_host *zmq_host)
 {
-  int ret, no_hwm = 0;
-
-  if (!zmq_host->ctx) zmq_host->ctx = zmq_ctx_new();
-
-  zmq_host->sock = zmq_socket(zmq_host->ctx, ZMQ_SUB);
-
-  ret = zmq_setsockopt(zmq_host->sock, ZMQ_RCVHWM, &no_hwm, sizeof(int));
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_setsockopt() ZMQ_RCVHWM failed for topic %u: %s\nExiting.\n",
-        config.name, config.type, zmq_host->topic, zmq_strerror(errno));
-    exit(1);
-  }
-
-  ret = zmq_setsockopt(zmq_host->sock, ZMQ_PLAIN_USERNAME, zmq_host->zap.username, strlen(zmq_host->zap.username));
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_setsockopt() ZMQ_PLAIN_USERNAME failed: %s\nExiting.\n",
-	config.name, config.type, zmq_strerror(errno));
-    exit_plugin(1);
-  }
-
-  ret = zmq_setsockopt(zmq_host->sock, ZMQ_PLAIN_PASSWORD, zmq_host->zap.password, strlen(zmq_host->zap.password));
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_setsockopt() ZMQ_PLAIN_PASSWORD failed: %s\nExiting.\n",
-	config.name, config.type, zmq_strerror(errno));
-    exit_plugin(1);
-  }
-
-  ret = zmq_connect(zmq_host->sock, zmq_host->bind_str);
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_connect() failed: %s (%s)\nExiting.\n",
-	config.name, config.type, zmq_host->bind_str, zmq_strerror(errno));
-    exit_plugin(1);
-  }
-
-  ret = zmq_setsockopt(zmq_host->sock, ZMQ_SUBSCRIBE, &zmq_host->topic, sizeof(zmq_host->topic));
-  if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): zmq_setsockopt() SUBSCRIBE failed for topic %u: %s\nExiting.\n",
-        config.name, config.type, zmq_host->topic, zmq_strerror(errno));
-    exit_plugin(1);
-  }
+  p_zmq_recv_setup(zmq_host, ZMQ_SUB);
 }
 
-int p_zmq_plugin_pipe_send(struct p_zmq_host *zmq_host, void *buf, u_int64_t len)
+void p_zmq_pull_setup(struct p_zmq_host *zmq_host)
 {
-  zmq_msg_t topic, msg;
+  p_zmq_recv_setup(zmq_host, ZMQ_PULL);
+}
+
+void p_zmq_recv_setup(struct p_zmq_host *zmq_host, int type)
+{
   int ret;
 
-  ret = zmq_send(zmq_host->sock, &zmq_host->topic, sizeof(zmq_host->topic), ZMQ_SNDMORE);
+  if (!zmq_host) return;
+  if (type != ZMQ_SUB && type != ZMQ_PULL) return;
+
+  if (!zmq_host->ctx) zmq_host->ctx = zmq_ctx_new();
+
+  zmq_host->sock.obj = zmq_socket(zmq_host->ctx, type);
+  if (!zmq_host->sock.obj) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_socket() failed for topic %u: %s\nExiting.\n",
+        zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_RCVHWM, &zmq_host->hwm, sizeof(int));
   if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): publishing topic to ZMQ: p_zmq_send(): %s [topic=%u]\n",
-		config.name, config.type, zmq_strerror(errno), zmq_host->topic);
+    Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() ZMQ_RCVHWM failed for topic %u: %s\nExiting.\n",
+        zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  if (strlen(zmq_host->zap.username) && strlen(zmq_host->zap.password)) {
+    ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_PLAIN_USERNAME, zmq_host->zap.username, strlen(zmq_host->zap.username));
+    if (ret == ERR) {
+      Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() ZMQ_PLAIN_USERNAME failed: %s\nExiting.\n",
+	  zmq_host->log_id, zmq_strerror(errno));
+      exit_gracefully(1);
+    }
+
+    ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_PLAIN_PASSWORD, zmq_host->zap.password, strlen(zmq_host->zap.password));
+    if (ret == ERR) {
+      Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() ZMQ_PLAIN_PASSWORD failed: %s\nExiting.\n",
+	  zmq_host->log_id, zmq_strerror(errno));
+      exit_gracefully(1);
+    }
+  }
+
+  ret = zmq_connect(zmq_host->sock.obj, zmq_host->sock.str);
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_connect() failed: %s (%s)\nExiting.\n",
+	zmq_host->log_id, zmq_host->sock.str, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  if (type == ZMQ_SUB) {
+    if (zmq_host->topic) {
+      ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_SUBSCRIBE, &zmq_host->topic, sizeof(zmq_host->topic));
+      if (ret == ERR) {
+	Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() SUBSCRIBE failed for topic %u: %s\nExiting.\n",
+	    zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+	exit_gracefully(1);
+      }
+    }
+    /* subscribe to all topics */
+    else zmq_setsockopt(zmq_host->sock.obj, ZMQ_SUBSCRIBE, NULL, 0);
+  }
+}
+
+int p_zmq_topic_send(struct p_zmq_host *zmq_host, void *buf, u_int64_t len)
+{
+  int ret;
+
+  ret = zmq_send(zmq_host->sock.obj, &zmq_host->topic, sizeof(zmq_host->topic), ZMQ_SNDMORE);
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): publishing topic to ZMQ: zmq_send(): %s [topic=%u]\n",
+	zmq_host->log_id, zmq_strerror(errno), zmq_host->topic);
     return ret;
   }
 
-  ret = zmq_send(zmq_host->sock, buf, len, 0);
+  ret = zmq_send(zmq_host->sock.obj, buf, len, 0);
   if (ret == ERR) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): publishing data to ZMQ: p_zmq_send(): %s [topic=%u]\n",
-		config.name, config.type, zmq_strerror(errno), zmq_host->topic);
+    Log(LOG_ERR, "ERROR ( %s ): publishing data to ZMQ: zmq_send(): %s [topic=%u]\n",
+	zmq_host->log_id, zmq_strerror(errno), zmq_host->topic);
     return ret;
   }
 
   return ret;
 }
 
-int p_zmq_plugin_pipe_recv(struct p_zmq_host *zmq_host, void *buf, u_int64_t len)
+int p_zmq_recv_poll(struct p_zmq_host *zmq_host, int timeout)
+{
+  zmq_pollitem_t item[1];
+
+  item[0].socket = zmq_host->sock.obj;
+  item[0].events = ZMQ_POLLIN;
+
+  return zmq_poll(item, 1, timeout);
+}
+
+int p_zmq_topic_recv(struct p_zmq_host *zmq_host, void *buf, u_int64_t len)
 {
   int ret = 0, events;
   size_t elen = sizeof(events);
-  u_int8_t topic;
+  u_int8_t topic, retries = 0;
 
-  zmq_getsockopt(zmq_host->sock, ZMQ_EVENTS, &events, &elen); 
+  zmq_events_again:
+  ret = zmq_getsockopt(zmq_host->sock.obj, ZMQ_EVENTS, &events, &elen); 
+  if (ret == ERR) {
+    if (retries < PM_ZMQ_EVENTS_RETRIES) {
+      Log(LOG_DEBUG, "DEBUG ( %s ): consuming topic from ZMQ: zmq_getsockopt() for ZMQ_EVENTS: %s [topic=%u]\n",
+	zmq_host->log_id, zmq_strerror(errno), zmq_host->topic);
+      retries++;
+      goto zmq_events_again;
+    }
+    else {
+      Log(LOG_ERR, "ERROR ( %s ): consuming topic from ZMQ: zmq_getsockopt() for ZMQ_EVENTS: %s [topic=%u]\n",
+	zmq_host->log_id, zmq_strerror(errno), zmq_host->topic);
+
+      return ret;
+    }
+  }
 
   if (events & ZMQ_POLLIN) {
-    ret = zmq_recv(zmq_host->sock, &topic, 1, 0); /* read topic first */
+    ret = zmq_recv(zmq_host->sock.obj, &topic, 1, 0); /* read topic first */
     if (ret == ERR) {
-      Log(LOG_ERR, "ERROR ( %s/%s ): consuming topic from ZMQ: p_zmq_recv(): %s [topic=%u]\n",
-		config.name, config.type, zmq_strerror(errno), zmq_host->topic);
+      Log(LOG_ERR, "ERROR ( %s ): consuming topic from ZMQ: zmq_recv(): %s [topic=%u]\n",
+	  zmq_host->log_id, zmq_strerror(errno), zmq_host->topic);
       return ret;
     }
 
-    ret = zmq_recv(zmq_host->sock, buf, len, 0); /* read actual data then */
+    ret = zmq_recv(zmq_host->sock.obj, buf, len, 0); /* read actual data then */
     if (ret == ERR)
-      Log(LOG_ERR, "ERROR ( %s/%s ): consuming data from ZMQ: p_zmq_recv(): %s [topic=%u]\n",
-		config.name, config.type, zmq_strerror(errno), zmq_host->topic);
+      Log(LOG_ERR, "ERROR ( %s ): consuming data from ZMQ: zmq_recv(): %s [topic=%u]\n",
+	  zmq_host->log_id, zmq_strerror(errno), zmq_host->topic);
     else if (ret > len) {
-      Log(LOG_ERR, "ERROR ( %s/%s ): consuming data from ZMQ: p_zmq_recv(): buffer overrun [topic=%u]\n",
-		config.name, config.type, zmq_host->topic);
+      Log(LOG_ERR, "ERROR ( %s ): consuming data from ZMQ: zmq_recv(): buffer overrun [topic=%u]\n",
+	  zmq_host->log_id, zmq_host->topic);
       ret = ERR;
     }
   }
@@ -281,83 +432,126 @@ int p_zmq_plugin_pipe_recv(struct p_zmq_host *zmq_host, void *buf, u_int64_t len
   return ret;
 }
 
-char *p_zmq_recv_str(void *sock)
+char *p_zmq_recv_str(struct p_zmq_sock *sock)
 {
   char buf[SRVBUFLEN];
   int len;
 
   memset(buf, 0, sizeof(buf)); 
-  len = zmq_recv(sock, buf, (sizeof(buf) - 1), 0);
+  len = zmq_recv(sock->obj, buf, (sizeof(buf) - 1), 0);
   if (len == ERR) return NULL;
   else return strndup(buf, sizeof(buf));
 }
 
-int p_zmq_send_str(void *sock, char *buf)
+int p_zmq_send_str(struct p_zmq_sock *sock, char *buf)
 {
   int len;
 
-  len = zmq_send(sock, buf, strlen(buf), 0);
+  len = zmq_send(sock->obj, buf, strlen(buf), 0);
 
   return len;
 }
 
-int p_zmq_sendmore_str(void *sock, char *buf)
+int p_zmq_sendmore_str(struct p_zmq_sock *sock, char *buf)
 {
   int len;
 
-  len = zmq_send(sock, buf, strlen(buf), ZMQ_SNDMORE);
+  len = zmq_send(sock->obj, buf, strlen(buf), ZMQ_SNDMORE);
 
   return len;
+}
+
+int p_zmq_recv_bin(struct p_zmq_sock *sock, void *buf, int len)
+{
+  int rcvlen;
+
+  rcvlen = zmq_recv(sock->obj, buf, len, 0);
+
+  return rcvlen;
+}
+
+int p_zmq_send_bin(struct p_zmq_sock *sock, void *buf, int len)
+{
+  int sndlen;
+
+  sndlen = zmq_send(sock->obj, buf, len, 0);
+
+  return sndlen;
+}
+
+int p_zmq_sendmore_bin(struct p_zmq_sock *sock, void *buf, int len)
+{
+  int sndlen;
+
+  sndlen = zmq_send(sock->obj, buf, len, ZMQ_SNDMORE);
+
+  return sndlen;
 }
 
 void p_zmq_zap_handler(void *zh)
 {
   struct p_zmq_host *zmq_host = (struct p_zmq_host *) zh;
+  int ret;
+
+  zmq_host->zap.sock.obj = zmq_socket(zmq_host->ctx, ZMQ_REP);
+  if (!zmq_host->zap.sock.obj) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_socket() ZAP failed (%s)\nExiting.\n",
+        zmq_host->log_id, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  snprintf(zmq_host->zap.sock.str, sizeof(zmq_host->zap.sock.str), "%s", "inproc://zeromq.zap.01");
+  ret = zmq_bind(zmq_host->zap.sock.obj, zmq_host->zap.sock.str);
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_bind() ZAP failed (%s)\nExiting.\n",
+        zmq_host->log_id, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
 
   while (TRUE) {
     char *version, *sequence, *domain, *address, *identity;
     char *mechanism, *username, *password;
 
-    version = p_zmq_recv_str(zmq_host->zap.sock);
+    version = p_zmq_recv_str(&zmq_host->zap.sock);
     if (!version) break;
 
-    sequence = p_zmq_recv_str(zmq_host->zap.sock);
-    domain = p_zmq_recv_str(zmq_host->zap.sock);
-    address = p_zmq_recv_str(zmq_host->zap.sock);
-    identity = p_zmq_recv_str(zmq_host->zap.sock);
-    mechanism = p_zmq_recv_str(zmq_host->zap.sock);
+    sequence = p_zmq_recv_str(&zmq_host->zap.sock);
+    domain = p_zmq_recv_str(&zmq_host->zap.sock);
+    address = p_zmq_recv_str(&zmq_host->zap.sock);
+    identity = p_zmq_recv_str(&zmq_host->zap.sock);
+    mechanism = p_zmq_recv_str(&zmq_host->zap.sock);
 
     if (!strcmp(version, "1.0") && !strcmp(mechanism, "PLAIN")) {
-      username = p_zmq_recv_str(zmq_host->zap.sock);
-      password = p_zmq_recv_str(zmq_host->zap.sock);
+      username = p_zmq_recv_str(&zmq_host->zap.sock);
+      password = p_zmq_recv_str(&zmq_host->zap.sock);
 
-      p_zmq_sendmore_str(zmq_host->zap.sock, version);
-      p_zmq_sendmore_str(zmq_host->zap.sock, sequence);
+      p_zmq_sendmore_str(&zmq_host->zap.sock, version);
+      p_zmq_sendmore_str(&zmq_host->zap.sock, sequence);
 
       if (!strcmp(username, zmq_host->zap.username) &&
 	  !strcmp(password, zmq_host->zap.password)) {
-        p_zmq_sendmore_str(zmq_host->zap.sock, "200");
-        p_zmq_sendmore_str(zmq_host->zap.sock, "OK");
-        p_zmq_sendmore_str(zmq_host->zap.sock, "anonymous");
-        p_zmq_send_str(zmq_host->zap.sock, "");
+        p_zmq_sendmore_str(&zmq_host->zap.sock, "200");
+        p_zmq_sendmore_str(&zmq_host->zap.sock, "OK");
+        p_zmq_sendmore_str(&zmq_host->zap.sock, "anonymous");
+        p_zmq_send_str(&zmq_host->zap.sock, "");
       }
       else {
-        p_zmq_sendmore_str(zmq_host->zap.sock, "400");
-        p_zmq_sendmore_str(zmq_host->zap.sock, "Invalid username or password");
-        p_zmq_sendmore_str(zmq_host->zap.sock, "");
-        p_zmq_send_str(zmq_host->zap.sock, "");
+        p_zmq_sendmore_str(&zmq_host->zap.sock, "400");
+        p_zmq_sendmore_str(&zmq_host->zap.sock, "Invalid username or password");
+        p_zmq_sendmore_str(&zmq_host->zap.sock, "");
+        p_zmq_send_str(&zmq_host->zap.sock, "");
       }
 
       free(username);
       free(password);
     }
     else {
-      p_zmq_sendmore_str(zmq_host->zap.sock, version);
-      p_zmq_sendmore_str(zmq_host->zap.sock, sequence);
-      p_zmq_sendmore_str(zmq_host->zap.sock, "400");
-      p_zmq_sendmore_str(zmq_host->zap.sock, "Unsupported auth mechanism");
-      p_zmq_sendmore_str(zmq_host->zap.sock, "");
-      p_zmq_send_str(zmq_host->zap.sock, "");
+      p_zmq_sendmore_str(&zmq_host->zap.sock, version);
+      p_zmq_sendmore_str(&zmq_host->zap.sock, sequence);
+      p_zmq_sendmore_str(&zmq_host->zap.sock, "400");
+      p_zmq_sendmore_str(&zmq_host->zap.sock, "Unsupported auth mechanism");
+      p_zmq_sendmore_str(&zmq_host->zap.sock, "");
+      p_zmq_send_str(&zmq_host->zap.sock, "");
     }
 
     free(version);
@@ -368,5 +562,119 @@ void p_zmq_zap_handler(void *zh)
     free(mechanism);
   }
 
-  zmq_close(zmq_host->zap.sock);
+  zmq_close(zmq_host->zap.sock.obj);
+}
+
+void p_zmq_router_setup(struct p_zmq_host *zmq_host, char *host, int port)
+{
+  char server_str[SHORTBUFLEN];
+  int ret, as_server = TRUE;
+
+  if (!zmq_host->ctx) zmq_host->ctx = zmq_ctx_new();
+
+  zmq_host->sock.obj = zmq_socket(zmq_host->ctx, ZMQ_ROUTER);
+  if (!zmq_host->sock.obj) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_socket() failed for ZMQ_ROUTER: %s\nExiting.\n",
+	zmq_host->log_id, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  if (strlen(zmq_host->zap.username) && strlen(zmq_host->zap.password)) {
+    p_zmq_zap_setup(zmq_host);
+
+    ret = zmq_setsockopt(zmq_host->sock.obj, ZMQ_PLAIN_SERVER, &as_server, sizeof(int));
+    if (ret == ERR) {
+      Log(LOG_ERR, "ERROR ( %s ): zmq_setsockopt() ZMQ_PLAIN_SERVER failed for topic %u: %s\nExiting.\n",
+	  zmq_host->log_id, zmq_host->topic, zmq_strerror(errno));
+      exit_gracefully(1);
+    }
+  }
+
+  snprintf(server_str, SHORTBUFLEN, "tcp://%s:%u", host, port);
+
+  ret = zmq_bind(zmq_host->sock.obj, server_str);
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_bind() failed for ZMQ_ROUTER: %s\nExiting.\n",
+	zmq_host->log_id, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+}
+
+void p_zmq_dealer_inproc_setup(struct p_zmq_host *zmq_host, char *inproc_str)
+{
+  int ret;
+
+  if (!zmq_host->ctx) zmq_host->ctx = zmq_ctx_new();
+
+  zmq_host->sock_inproc.obj = zmq_socket(zmq_host->ctx, ZMQ_DEALER);
+  if (!zmq_host->sock_inproc.obj) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_socket() failed for ZMQ_DEALER: %s\nExiting.\n",
+	zmq_host->log_id, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  ret = zmq_bind(zmq_host->sock_inproc.obj, inproc_str);
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_bind() failed for ZMQ_DEALER: %s\nExiting.\n",
+	zmq_host->log_id, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+  
+  strlcpy(zmq_host->sock_inproc.str, inproc_str, sizeof(zmq_host->sock_inproc.str));
+}
+
+void p_zmq_proxy_setup(struct p_zmq_host *zmq_host)
+{
+  int ret;
+
+  ret = zmq_proxy(zmq_host->sock.obj, zmq_host->sock_inproc.obj, NULL);
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): zmq_proxy() failed: %s\nExiting.\n",
+	zmq_host->log_id, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+}
+
+void p_zmq_router_backend_setup(struct p_zmq_host *zmq_host, int thread_nbr, char *inproc_str)
+{
+  int idx;
+
+  p_zmq_dealer_inproc_setup(zmq_host, inproc_str);
+  zmq_host->router_worker.threads = malloc(sizeof(void *) * thread_nbr);
+
+  for (idx = 0; idx < thread_nbr; idx++) {
+    zmq_host->router_worker.threads[thread_nbr] = zmq_threadstart(&p_zmq_router_worker, zmq_host);
+  }
+
+  p_zmq_proxy_setup(zmq_host);
+}
+
+void p_zmq_router_worker(void *zh)
+{
+  struct p_zmq_host *zmq_host = (struct p_zmq_host *) zh;
+  struct p_zmq_sock sock;
+  int ret;
+
+  assert(zmq_host);
+
+  sock.obj = zmq_socket(zmq_host->ctx, ZMQ_REP);
+  if (!sock.obj) {
+    Log(LOG_ERR, "ERROR ( %s ): p_zmq_router_worker zmq_socket() failed: %s (%s)\nExiting.\n",
+        zmq_host->log_id, zmq_host->sock_inproc.str, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  ret = zmq_connect(sock.obj, zmq_host->sock_inproc.str);
+  if (ret == ERR) {
+    Log(LOG_ERR, "ERROR ( %s ): p_zmq_router_worker zmq_connect() failed: %s (%s)\nExiting.\n",
+        zmq_host->log_id, zmq_host->sock_inproc.str, zmq_strerror(errno));
+    exit_gracefully(1);
+  }
+
+  zmq_host->router_worker.func(zmq_host, &sock);
+}
+
+void p_zmq_close(struct p_zmq_host *zmq_host)
+{
+  p_zmq_plugin_pipe_init_plugin(zmq_host);
 }

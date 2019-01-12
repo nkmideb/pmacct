@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -42,9 +42,9 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   unsigned char *pipebuf;
   struct pollfd pfd;
   struct insert_data idata;
-  time_t t, avro_schema_deadline = 0;
-  int timeout, refresh_timeout, amqp_timeout = 0, avro_schema_timeout = 0;
-  int ret, num; 
+  time_t avro_schema_deadline = 0;
+  int timeout, refresh_timeout, avro_schema_timeout = 0;
+  int ret, num, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
   struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
@@ -67,6 +67,8 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
 #ifdef WITH_ZMQ
   struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
+#else
+  void *zmq_host = NULL;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -116,12 +118,12 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
   if ((config.sql_table && strchr(config.sql_table, '$')) && config.sql_multi_values) {
     Log(LOG_ERR, "ERROR ( %s/%s ): dynamic 'amqp_routing_key' is not compatible with 'amqp_multi_values'. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   if ((config.sql_table && strchr(config.sql_table, '$')) && config.amqp_routing_key_rr) {
     Log(LOG_ERR, "ERROR ( %s/%s ): dynamic 'amqp_routing_key' is not compatible with 'amqp_routing_key_rr'. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   p_amqp_init_host(&amqpp_amqp_host);
@@ -147,28 +149,12 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   set_net_funcs(&nt);
 
   if (config.ports_file) load_ports(config.ports_file, &pt);
-  if (config.pkt_len_distrib_bins_str) load_pkt_len_distrib_bins();
-  else {
-    if (config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB) {
-      Log(LOG_ERR, "ERROR ( %s/%s ): 'aggregate' contains pkt_len_distrib but no 'pkt_len_distrib_bins' defined. Exiting.\n", config.name, config.type);
-      exit_plugin(1);
-    }
-  }
   
   memset(&idata, 0, sizeof(idata));
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
   set_primptrs_funcs(&extras);
 
-  if (config.pipe_zmq) {
-    plugin_pipe_zmq_compile_check();
-#ifdef WITH_ZMQ
-    p_zmq_plugin_pipe_init_plugin(zmq_host);
-    p_zmq_plugin_pipe_consume(zmq_host);
-    p_zmq_set_retry_timeout(zmq_host, config.pipe_zmq_retry);
-    pipe_fd = p_zmq_get_fd(zmq_host);
-    seq = 0;
-#endif
-  }
+  if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
   idata.now = time(NULL);
@@ -192,6 +178,8 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   for(;;) {
     poll_again:
     status->wakeup = TRUE;
+    poll_bypass = FALSE;
+
     calc_refresh_timeout(refresh_deadline, idata.now, &refresh_timeout);
     if (config.amqp_avro_schema_routing_key) calc_refresh_timeout(avro_schema_deadline, idata.now, &avro_schema_timeout);
 
@@ -201,24 +189,18 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     ret = poll(&pfd, (pfd.fd == ERR ? 0 : 1), timeout);
 
     if (ret <= 0) {
-      if (getppid() == 1) {
+      if (getppid() != core_pid) {
         Log(LOG_ERR, "ERROR ( %s/%s ): Core process *seems* gone. Exiting.\n", config.name, config.type);
-        exit_plugin(1);
+        exit_gracefully(1);
       }
 
       if (ret < 0) goto poll_again;
     }
 
-    idata.now = time(NULL);
+    poll_ops:
+    P_update_time_reference(&idata);
 
-    if (config.sql_history) {
-      while (idata.now > (basetime.tv_sec + timeslot)) {
-	new_basetime.tv_sec = basetime.tv_sec;
-        basetime.tv_sec += timeslot;
-        if (config.sql_history == COUNT_MONTHLY)
-          timeslot = calc_monthly_timeslot(basetime.tv_sec, config.sql_history_howmany, ADD);
-      }
-    }
+    if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
 
 #ifdef WITH_AVRO
     if (idata.now > avro_schema_deadline) {
@@ -227,12 +209,22 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     }
 #endif
 
+    recv_budget = 0;
+    if (poll_bypass) {
+      poll_bypass = FALSE;
+      goto read_data;
+    }
+
     switch (ret) {
     case 0: /* timeout */
-      if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
       break;
     default: /* we received data */
       read_data:
+      if (recv_budget == DEFAULT_PLUGIN_COMMON_RECV_BUDGET) {
+	poll_bypass = TRUE;
+	goto poll_ops;
+      }
+
       if (config.pipe_homegrown) {
         if (!pollagain) {
           seq++;
@@ -241,7 +233,7 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
         }
         else {
           if ((ret = read(pipe_fd, &rgptr, sizeof(rgptr))) == 0) 
-	    exit_plugin(1); /* we exit silently; something happened at the write end */
+	    exit_gracefully(1); /* we exit silently; something happened at the write end */
         }
 
         if ((rg->ptr + bufsz) > rg->end) rg->ptr = rg->base;
@@ -271,7 +263,7 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
 #ifdef WITH_ZMQ
       else if (config.pipe_zmq) {
-	ret = p_zmq_plugin_pipe_recv(zmq_host, pipebuf, config.buffer_size);
+	ret = p_zmq_topic_recv(zmq_host, pipebuf, config.buffer_size);
 	if (ret > 0) {
 	  if (seq && (((struct ch_buf_hdr *)pipebuf)->seq != ((seq + 1) % MAX_SEQNUM))) {
 	    Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected. Sequence received=%u expected=%u\n",
@@ -284,17 +276,13 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       }
 #endif
 
-      /* lazy refresh time handling */ 
-      if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
-
       data = (struct pkt_data *) (pipebuf+sizeof(struct ch_buf_hdr));
 
       if (config.debug_internal_msg)
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received cpid=%u len=%llu seq=%u num_entries=%u\n",
-                config.name, config.type, core_pid, ((struct ch_buf_hdr *)pipebuf)->len,
-                seq, ((struct ch_buf_hdr *)pipebuf)->num);
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%llu seq=%u num_entries=%u\n",
+                config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->len, seq,
+                ((struct ch_buf_hdr *)pipebuf)->num);
 
-      if (!config.pipe_check_core_pid || ((struct ch_buf_hdr *)pipebuf)->core_pid == core_pid) {
       while (((struct ch_buf_hdr *)pipebuf)->num > 0) {
         for (num = 0; primptrs_funcs[num]; num++)
           (*primptrs_funcs[num])((u_char *)data, &extras, &prim_ptrs);
@@ -307,10 +295,6 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = 0;
         }
 
-        if (config.pkt_len_distrib_bins_str &&
-            config.what_to_count_2 & COUNT_PKT_LEN_DISTRIB)
-          evaluate_pkt_len_distrib(data);
-
         prim_ptrs.data = data;
         (*insert_func)(&prim_ptrs, &idata);
 
@@ -322,8 +306,8 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           data = (struct pkt_data *) dataptr;
 	}
       }
-      }
 
+      recv_budget++;
       goto read_data;
     }
   }
@@ -343,11 +327,12 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
   struct pkt_mpls_primitives empty_pmpls;
   struct pkt_tunnel_primitives empty_ptun;
   char *empty_pcust = NULL;
-  char src_mac[18], dst_mac[18], src_host[INET6_ADDRSTRLEN], dst_host[INET6_ADDRSTRLEN], ip_address[INET6_ADDRSTRLEN];
-  char rd_str[SRVBUFLEN], misc_str[SRVBUFLEN], dyn_amqp_routing_key[SRVBUFLEN], *orig_amqp_routing_key = NULL;
-  int i, j, stop, batch_idx, is_routing_key_dyn = FALSE, qn = 0, ret, saved_index = index;
+  char dyn_amqp_routing_key[SRVBUFLEN], *orig_amqp_routing_key = NULL;
+  int j, stop, is_routing_key_dyn = FALSE, qn = 0, ret, saved_index = index;
   int mv_num = 0, mv_num_save = 0;
   time_t start, duration;
+  struct primitives_ptrs prim_ptrs;
+  struct pkt_data dummy_data;
   pid_t writer_pid = getpid();
 
   char *json_buf = NULL;
@@ -390,7 +375,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
   else if (config.message_broker_output & PRINT_OUTPUT_AVRO) p_amqp_set_content_type_binary(&amqpp_amqp_host);
   else {
     Log(LOG_ERR, "ERROR ( %s/%s ): Unsupported amqp_output value specified. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   p_amqp_init_routing_key_rr(&amqpp_amqp_host);
@@ -399,7 +384,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
   empty_pcust = malloc(config.cpptrs.len);
   if (!empty_pcust) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Unable to malloc() empty_pcust. Exiting.\n", config.name, config.type);
-    exit_plugin(1);
+    exit_gracefully(1);
   }
 
   memset(&empty_pbgp, 0, sizeof(struct pkt_bgp_primitives));
@@ -441,7 +426,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 
       if (!json_buf) {
 	Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (json_buf). Exiting ..\n", config.name, config.type);
-	exit_plugin(1);
+	exit_gracefully(1);
       }
       else memset(json_buf, 0, config.sql_multi_values);
     }
@@ -454,7 +439,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 
     if (!avro_buf) {
       Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (avro_buf). Exiting ..\n", config.name, config.type);
-      exit_plugin(1);
+      exit_gracefully(1);
     }
 
     avro_writer = avro_writer_memory(avro_buf, config.avro_buffer_size);
@@ -462,7 +447,6 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
   }
 
   for (j = 0; j < index; j++) {
-    void *json_obj;
     char *json_str;
 
     if (queue[j]->valid != PRINT_CACHE_COMMITTED) continue;
@@ -516,7 +500,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
             config.name, config.type, config.avro_buffer_size);
         Log(LOG_ERR, "ERROR ( %s/%s ): AVRO: increase value or look for avro_buffer_size in CONFIG-KEYS document.\n\n",
             config.name, config.type);
-        exit_plugin(1);
+        exit_gracefully(1);
       }
       else if (avro_value_size >= (config.avro_buffer_size - avro_writer_tell(avro_writer))) {
         avro_buffer_full = TRUE;
@@ -524,7 +508,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
       }
       else if (avro_value_write(avro_writer, &avro_value)) {
         Log(LOG_ERR, "ERROR ( %s/%s ): ARVO: unable to write value: %s\n", config.name, config.type, avro_strerror());
-        exit_plugin(1);
+        exit_gracefully(1);
       }
       else {
         mv_num++;
@@ -546,7 +530,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 	if (json_strlen >= (config.sql_multi_values - json_buf_off)) {
 	  if (json_strlen >= config.sql_multi_values) {
 	    Log(LOG_ERR, "ERROR ( %s/%s ): amqp_multi_values not large enough to store JSON elements. Exiting ..\n", config.name, config.type);
-	    exit(1);
+	    exit_gracefully(1);
 	  }
 
 	  tmp_str = json_str;
@@ -566,7 +550,10 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 
       if (json_str) {
         if (is_routing_key_dyn) {
-          P_handle_table_dyn_strings(dyn_amqp_routing_key, SRVBUFLEN, orig_amqp_routing_key, queue[j]);
+	  prim_ptrs.data = &dummy_data;
+	  primptrs_set_all_from_chained_cache(&prim_ptrs, queue[j]);
+
+	  handle_dynname_internal_strings(dyn_amqp_routing_key, SRVBUFLEN, orig_amqp_routing_key, &prim_ptrs, DYN_STR_RABBITMQ_RK);
           p_amqp_set_routing_key(&amqpp_amqp_host, dyn_amqp_routing_key);
         }
 
@@ -603,7 +590,10 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
 #ifdef WITH_AVRO
       if (!config.sql_multi_values || (mv_num >= config.sql_multi_values) || avro_buffer_full) {
         if (is_routing_key_dyn) {
-          P_handle_table_dyn_strings(dyn_amqp_routing_key, SRVBUFLEN, orig_amqp_routing_key, queue[j]);
+          prim_ptrs.data = &dummy_data;
+          primptrs_set_all_from_chained_cache(&prim_ptrs, queue[j]);
+
+          handle_dynname_internal_strings(dyn_amqp_routing_key, SRVBUFLEN, orig_amqp_routing_key, &prim_ptrs, DYN_STR_RABBITMQ_RK);
           p_amqp_set_routing_key(&amqpp_amqp_host, dyn_amqp_routing_key);
         }
 

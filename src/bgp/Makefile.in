@@ -71,7 +71,8 @@ am_libbgp_la_OBJECTS = libbgp_la-bgp.lo libbgp_la-bgp_aspath.lo \
 	libbgp_la-bgp_hash.lo libbgp_la-bgp_prefix.lo \
 	libbgp_la-bgp_table.lo libbgp_la-bgp_logdump.lo \
 	libbgp_la-bgp_util.lo libbgp_la-bgp_msg.lo \
-	libbgp_la-bgp_lookup.lo libbgp_la-bgp_lcommunity.lo
+	libbgp_la-bgp_lookup.lo libbgp_la-bgp_lcommunity.lo \
+	libbgp_la-bgp_xcs.lo
 libbgp_la_OBJECTS = $(am_libbgp_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
@@ -204,6 +205,8 @@ RABBITMQ_CFLAGS = @RABBITMQ_CFLAGS@
 RABBITMQ_LIBS = @RABBITMQ_LIBS@
 RANLIB = @RANLIB@
 SED = @SED@
+SERDES_CFLAGS = @SERDES_CFLAGS@
+SERDES_LIBS = @SERDES_LIBS@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
 SQLITE3_CFLAGS = @SQLITE3_CFLAGS@
@@ -269,10 +272,11 @@ noinst_LTLIBRARIES = libbgp.la
 libbgp_la_SOURCES = bgp.c bgp_aspath.c bgp_community.c			\
 	bgp_ecommunity.c bgp_hash.c bgp_prefix.c bgp_table.c		\
 	bgp_logdump.c bgp_util.c bgp_msg.c bgp_lookup.c			\
-	bgp_lcommunity.c bgp_aspath.h bgp_community.h			\
+	bgp_lcommunity.c bgp_xcs.c bgp_aspath.h bgp_community.h		\
 	bgp_ecommunity.h bgp.h bgp_hash.h bgp_logdump.h			\
 	bgp_lookup.h bgp_msg.h bgp_packet.h bgp_prefix.h		\
-	bgp_table.h bgp_util.h bgp_lcommunity.h
+	bgp_table.h bgp_util.h bgp_lcommunity.h bgp_xcs.h		\
+	bgp_xcs-data.h
 
 libbgp_la_CFLAGS = -I$(srcdir)/.. $(AM_CFLAGS)
 all: all-am
@@ -339,6 +343,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libbgp_la-bgp_prefix.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libbgp_la-bgp_table.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libbgp_la-bgp_util.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libbgp_la-bgp_xcs.Plo@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(COMPILE) -MT $@ -MD -MP -MF $(DEPDIR)/$*.Tpo -c -o $@ $<
@@ -444,6 +449,13 @@ libbgp_la-bgp_lcommunity.lo: bgp_lcommunity.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='bgp_lcommunity.c' object='libbgp_la-bgp_lcommunity.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libbgp_la_CFLAGS) $(CFLAGS) -c -o libbgp_la-bgp_lcommunity.lo `test -f 'bgp_lcommunity.c' || echo '$(srcdir)/'`bgp_lcommunity.c
+
+libbgp_la-bgp_xcs.lo: bgp_xcs.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libbgp_la_CFLAGS) $(CFLAGS) -MT libbgp_la-bgp_xcs.lo -MD -MP -MF $(DEPDIR)/libbgp_la-bgp_xcs.Tpo -c -o libbgp_la-bgp_xcs.lo `test -f 'bgp_xcs.c' || echo '$(srcdir)/'`bgp_xcs.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libbgp_la-bgp_xcs.Tpo $(DEPDIR)/libbgp_la-bgp_xcs.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='bgp_xcs.c' object='libbgp_la-bgp_xcs.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libbgp_la_CFLAGS) $(CFLAGS) -c -o libbgp_la-bgp_xcs.lo `test -f 'bgp_xcs.c' || echo '$(srcdir)/'`bgp_xcs.c
 
 mostlyclean-libtool:
 	-rm -f *.lo

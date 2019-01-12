@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -29,6 +29,9 @@
 
 struct pm_ndpi_workflow *pm_ndpi_workflow_init()
 {
+    
+  NDPI_PROTOCOL_BITMASK all;
+    
   struct ndpi_detection_module_struct *module = ndpi_init_detection_module();
   struct pm_ndpi_workflow *workflow = ndpi_calloc(1, sizeof(struct pm_ndpi_workflow));
 
@@ -68,10 +71,14 @@ struct pm_ndpi_workflow *pm_ndpi_workflow_init()
 
   if (workflow->ndpi_struct == NULL) {
     Log(LOG_ERR, "ERROR ( %s/core ): nDPI global structure initialization failed.\n", config.name);
-    exit(1);
+    exit_gracefully(1);
   }
 
   workflow->ndpi_flows_root = ndpi_calloc(workflow->prefs.num_roots, sizeof(void *));
+    
+  // enable all protocols
+  NDPI_BITMASK_SET_ALL(all);
+  ndpi_set_protocol_detection_bitmask2(workflow->ndpi_struct, &all);
 
   return workflow;
 }
@@ -80,7 +87,7 @@ void pm_ndpi_export_proto_to_class(struct pm_ndpi_workflow *workflow)
 {
   struct pkt_classifier css;
   u_int32_t class_st_sz;
-  int idx;
+  int idx, ret;
 
   if (!workflow || !workflow->ndpi_struct) return;
 
@@ -89,10 +96,13 @@ void pm_ndpi_export_proto_to_class(struct pm_ndpi_workflow *workflow)
   memset(class, 0, class_st_sz);
 
   for (idx = 0; idx < (int) workflow->ndpi_struct->ndpi_num_supported_protocols; idx++) {
-    memset(&css, 0, sizeof(css));
-    css.id = workflow->ndpi_struct->proto_defaults[idx].protoId;
-    strncpy(css.protocol, workflow->ndpi_struct->proto_defaults[idx].protoName, MAX_PROTOCOL_LEN);
-    pmct_ndpi_register(&css);
+    if (workflow->ndpi_struct->proto_defaults[idx].protoId) {
+      memset(&css, 0, sizeof(css));
+      css.id = workflow->ndpi_struct->proto_defaults[idx].protoId;
+      strncpy(css.protocol, workflow->ndpi_struct->proto_defaults[idx].protoName, MAX_PROTOCOL_LEN);
+      ret = pmct_ndpi_register(&css);
+      if (!ret) Log(LOG_WARNING, "WARN ( %s/core ): unable to register nDPI class ID %u.\n", config.name, css.id);
+    }
   }
 }
 #endif

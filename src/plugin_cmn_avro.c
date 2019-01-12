@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -29,6 +29,7 @@
 #include "plugin_cmn_json.h"
 #include "ip_flow.h"
 #include "classifier.h"
+#include "bgp/bgp.h"
 #if defined (WITH_NDPI)
 #include "ndpi/ndpi.h"
 #endif
@@ -184,6 +185,17 @@ avro_schema_t build_avro_schema(u_int64_t wtc, u_int64_t wtc_2)
 
   if (wtc_2 & COUNT_DST_HOST_POCODE)
     avro_schema_record_field_append(schema, "pocode_ip_dst", avro_schema_string());
+
+  if (wtc_2 & COUNT_SRC_HOST_COORDS) {
+    avro_schema_record_field_append(schema, "lat_ip_src", avro_schema_double());
+    avro_schema_record_field_append(schema, "lon_ip_src", avro_schema_double());
+  }
+
+  if (wtc_2 & COUNT_DST_HOST_COORDS) {
+    avro_schema_record_field_append(schema, "lat_ip_dst", avro_schema_double());
+    avro_schema_record_field_append(schema, "lon_ip_dst", avro_schema_double());
+  }
+    
 #endif
 
   if (wtc & COUNT_TCPFLAGS)
@@ -198,8 +210,8 @@ avro_schema_t build_avro_schema(u_int64_t wtc, u_int64_t wtc_2)
   if (wtc_2 & COUNT_SAMPLING_RATE)
     avro_schema_record_field_append(schema, "sampling_rate", avro_schema_long());
 
-  if (wtc_2 & COUNT_PKT_LEN_DISTRIB)
-    avro_schema_record_field_append(schema, "pkt_len_distrib", avro_schema_string());
+  if (wtc_2 & COUNT_SAMPLING_DIRECTION)
+    avro_schema_record_field_append(schema, "sampling_direction", avro_schema_long());
 
   if (wtc_2 & COUNT_POST_NAT_SRC_HOST)
     avro_schema_record_field_append(schema, "post_nat_ip_src", avro_schema_string());
@@ -256,6 +268,9 @@ avro_schema_t build_avro_schema(u_int64_t wtc, u_int64_t wtc_2)
 
   if (wtc_2 & COUNT_EXPORT_PROTO_VERSION)
     avro_schema_record_field_append(schema, "export_proto_version", avro_schema_long());
+
+  if (wtc_2 & COUNT_EXPORT_PROTO_SYSID)
+    avro_schema_record_field_append(schema, "export_proto_sysid", avro_schema_long());
 
   if (config.cpptrs.num > 0) {
     avro_schema_record_field_append(
@@ -644,6 +659,20 @@ avro_value_t compose_avro(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, st
     else
       check_i(avro_value_set_string(&field, empty_string));
   }
+
+  if (wtc_2 & COUNT_SRC_HOST_COORDS) {
+    check_i(avro_value_get_by_name(&value, "lat_ip_src", &field, NULL));
+    check_i(avro_value_set_double(&field, pbase->src_ip_lat));
+    check_i(avro_value_get_by_name(&value, "lon_ip_src", &field, NULL));
+    check_i(avro_value_set_double(&field, pbase->src_ip_lon));
+  }
+
+  if (wtc_2 & COUNT_DST_HOST_COORDS) {
+    check_i(avro_value_get_by_name(&value, "lat_ip_dst", &field, NULL));
+    check_i(avro_value_set_double(&field, pbase->dst_ip_lat));
+    check_i(avro_value_get_by_name(&value, "lon_ip_dst", &field, NULL));
+    check_i(avro_value_set_double(&field, pbase->dst_ip_lon));
+  }
 #endif
 
   if (wtc & COUNT_TCPFLAGS) {
@@ -673,9 +702,9 @@ avro_value_t compose_avro(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, st
     check_i(avro_value_set_long(&field, pbase->sampling_rate));
   }
 
-  if (wtc_2 & COUNT_PKT_LEN_DISTRIB) {
-    check_i(avro_value_get_by_name(&value, "pkt_len_distrib", &field, NULL));
-    check_i(avro_value_set_string(&field, config.pkt_len_distrib_bins[pbase->pkt_len_distrib]));
+  if (wtc_2 & COUNT_SAMPLING_DIRECTION) {
+    check_i(avro_value_get_by_name(&value, "sampling_direction", &field, NULL));
+    check_i(avro_value_set_string(&field, pbase->sampling_direction));
   }
 
   if (wtc_2 & COUNT_POST_NAT_SRC_HOST) {
@@ -749,31 +778,41 @@ avro_value_t compose_avro(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, st
   }
 
   if (wtc_2 & COUNT_TIMESTAMP_START) {
-    compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_start, TRUE, config.timestamps_since_epoch);
+    compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_start, TRUE,
+		      config.timestamps_since_epoch, config.timestamps_rfc3339,
+		      config.timestamps_utc);
     check_i(avro_value_get_by_name(&value, "timestamp_start", &field, NULL));
     check_i(avro_value_set_string(&field, tstamp_str));
   }
 
   if (wtc_2 & COUNT_TIMESTAMP_END) {
-    compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_end, TRUE, config.timestamps_since_epoch);
+    compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_end, TRUE,
+		      config.timestamps_since_epoch, config.timestamps_rfc3339,
+		      config.timestamps_utc);
     check_i(avro_value_get_by_name(&value, "timestamp_end", &field, NULL));
     check_i(avro_value_set_string(&field, tstamp_str));
   }
 
   if (wtc_2 & COUNT_TIMESTAMP_ARRIVAL) {
-    compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_arrival, TRUE, config.timestamps_since_epoch);
+    compose_timestamp(tstamp_str, SRVBUFLEN, &pnat->timestamp_arrival, TRUE,
+		      config.timestamps_since_epoch, config.timestamps_rfc3339,
+		      config.timestamps_utc);
     check_i(avro_value_get_by_name(&value, "timestamp_arrival", &field, NULL));
     check_i(avro_value_set_string(&field, tstamp_str));
   }
 
   if (config.nfacctd_stitching) {
     if (stitch) {
-      compose_timestamp(tstamp_str, SRVBUFLEN, &stitch->timestamp_min, TRUE, config.timestamps_since_epoch);
+      compose_timestamp(tstamp_str, SRVBUFLEN, &stitch->timestamp_min, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339,
+			config.timestamps_utc);
       check_i(avro_value_get_by_name(&value, "timestamp_min", &field, NULL));
       check_i(avro_value_set_branch(&field, 1, &branch));
       check_i(avro_value_set_string(&branch, tstamp_str));
 
-      compose_timestamp(tstamp_str, SRVBUFLEN, &stitch->timestamp_max, TRUE, config.timestamps_since_epoch);
+      compose_timestamp(tstamp_str, SRVBUFLEN, &stitch->timestamp_max, TRUE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339,
+			config.timestamps_utc);
       check_i(avro_value_get_by_name(&value, "timestamp_max", &field, NULL));
       check_i(avro_value_set_branch(&field, 1, &branch));
       check_i(avro_value_set_string(&branch, tstamp_str));
@@ -794,6 +833,11 @@ avro_value_t compose_avro(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, st
   if (wtc_2 & COUNT_EXPORT_PROTO_VERSION) {
     check_i(avro_value_get_by_name(&value, "export_proto_version", &field, NULL));
     check_i(avro_value_set_long(&field, pbase->export_proto_version));
+  }
+
+  if (wtc_2 & COUNT_EXPORT_PROTO_SYSID) {
+    check_i(avro_value_get_by_name(&value, "export_proto_sysid", &field, NULL));
+    check_i(avro_value_set_long(&field, pbase->export_proto_sysid));
   }
 
   /* all custom primitives printed here */
@@ -825,14 +869,18 @@ avro_value_t compose_avro(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, st
 
       tv.tv_sec = basetime->tv_sec;
       tv.tv_usec = 0;
-      compose_timestamp(tstamp_str, SRVBUFLEN, &tv, FALSE, config.timestamps_since_epoch);
+      compose_timestamp(tstamp_str, SRVBUFLEN, &tv, FALSE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339,
+			config.timestamps_utc);
       check_i(avro_value_get_by_name(&value, "stamp_inserted", &field, NULL));
       check_i(avro_value_set_branch(&field, 1, &branch));
       check_i(avro_value_set_string(&branch, tstamp_str));
 
       tv.tv_sec = time(NULL);
       tv.tv_usec = 0;
-      compose_timestamp(tstamp_str, SRVBUFLEN, &tv, FALSE, config.timestamps_since_epoch);
+      compose_timestamp(tstamp_str, SRVBUFLEN, &tv, FALSE,
+			config.timestamps_since_epoch, config.timestamps_rfc3339,
+			config.timestamps_utc);
       check_i(avro_value_get_by_name(&value, "stamp_updated", &field, NULL));
       check_i(avro_value_set_branch(&field, 1, &branch));
       check_i(avro_value_set_string(&branch, tstamp_str));
@@ -882,5 +930,135 @@ void add_writer_name_and_pid_avro(avro_value_t value, char *name, pid_t writer_p
   snprintf(wid, SHORTSHORTBUFLEN, "%s/%u", name, writer_pid);
   check_i(avro_value_get_by_name(&value, "writer_id", &field, NULL));
   check_i(avro_value_set_string(&field, wid));
+}
+
+void write_avro_schema_to_file(char *filename, avro_schema_t schema)
+{
+  FILE *avro_fp;
+  avro_writer_t avro_schema_writer;
+
+  avro_fp = open_output_file(filename, "w", TRUE);
+
+  if (avro_fp) {
+    avro_schema_writer = avro_writer_file(avro_fp);
+
+    if (avro_schema_writer) {
+      if (avro_schema_to_json(schema, avro_schema_writer))
+	goto exit_lane;
+    }
+    else goto exit_lane;
+
+    close_output_file(avro_fp);
+  }
+  else goto exit_lane;
+
+  return;
+
+  exit_lane:
+  Log(LOG_ERR, "ERROR ( %s/%s ): write_avro_schema_to_file(): unable to dump Avro schema: %s\n", config.name, config.type, avro_strerror());
+  exit_gracefully(1);
+}
+
+char *write_avro_schema_to_memory(avro_schema_t avro_schema)
+{
+  avro_writer_t avro_writer;
+  char *avro_buf = NULL;
+
+  if (!config.avro_buffer_size) config.avro_buffer_size = LARGEBUFLEN;
+
+  avro_buf = malloc(config.avro_buffer_size);
+
+  if (!avro_buf) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): write_avro_schema_to_memory(): malloc() failed. Exiting.\n", config.name, config.type);
+    exit_gracefully(1);
+  }
+  else memset(avro_buf, 0, config.avro_buffer_size);
+
+  avro_writer = avro_writer_memory(avro_buf, config.avro_buffer_size);
+
+  if (avro_schema_to_json(avro_schema, avro_writer)) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): write_avro_schema_to_memory(): unable to dump Avro schema: %s\n", config.name, config.type, avro_strerror());
+    free(avro_buf);
+    avro_buf = NULL;
+  }
+
+  if (!avro_writer_tell(avro_writer)) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): write_avro_schema_to_memory(): unable to tell Avro schema: %s\n", config.name, config.type, avro_strerror());
+    free(avro_buf);
+    avro_buf = NULL;
+  }
+
+  avro_writer_free(avro_writer);
+
+  return avro_buf;
+}
+
+char *compose_avro_purge_schema(avro_schema_t avro_schema, char *writer_name)
+{
+  char *avro_buf = NULL, *json_str = NULL;
+
+  avro_buf = write_avro_schema_to_memory(avro_schema);
+
+  if (avro_buf) {
+    char event_type[] = "purge_schema", wid[SHORTSHORTBUFLEN];
+    json_t *obj = json_object();
+
+    json_object_set_new_nocheck(obj, "event_type", json_string(event_type));
+
+    snprintf(wid, SHORTSHORTBUFLEN, "%s/%u", writer_name, 0);
+    json_object_set_new_nocheck(obj, "writer_id", json_string(wid));
+
+    json_object_set_new_nocheck(obj, "schema", json_string(avro_buf));
+
+    free(avro_buf);
+
+    json_str = compose_json_str(obj);
+  }
+  else {
+    Log(LOG_ERR, "ERROR ( %s/%s ): compose_avro_purge_schema(): no avro_buf. Exiting.\n", config.name, config.type);
+    exit_gracefully(1);
+  }
+
+  return json_str;
+}
+
+char *compose_avro_schema_name(char *extra1, char *extra2)
+{
+  int len_base = 0, len_extra1 = 0, len_extra2 = 0, len_total = 0; 
+  char *schema_name = NULL;
+
+  if (extra1) len_extra1 = strlen(extra1);
+  if (extra2) {
+    if (len_extra1) len_extra1++;
+    len_extra2 = strlen(extra2);
+  }
+  
+  if (len_extra1 || len_extra2) len_base = strlen("pmacct_");
+  else len_base = strlen("pmacct");
+
+  len_total = len_base + len_extra1 + len_extra2 + 1;
+
+  schema_name = malloc(len_total);  
+  if (!schema_name) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): compose_avro_schema_name(): malloc() failed. Exiting.\n", config.name, config.type);
+    exit_gracefully(1);
+  }
+  else memset(schema_name, 0, len_total);
+
+  strcpy(schema_name, "pmacct");
+  if (len_extra1 || len_extra2) {
+    strcat(schema_name, "_");
+
+    if (len_extra1) {
+      strcat(schema_name, extra1);
+      if (len_extra2) strcat(schema_name, "_");
+    }
+
+    if (len_extra2) strcat(schema_name, extra2);
+  }
+
+  schema_name[len_total] = '\0'; /* pedantic */
+
+  return schema_name;
 }
 #endif

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -18,6 +18,11 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
+
+/* includes */
+#if defined (WITH_SERDES)
+#include <libserdes/serdes.h>
+#endif
 
 /* defines */
 
@@ -40,5 +45,9 @@ EXT avro_value_t compose_avro(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type
   struct timeval *basetime, struct pkt_stitching *stitch,
   avro_value_iface_t *iface);
 EXT void add_writer_name_and_pid_avro(avro_value_t, char *, pid_t);
+EXT void write_avro_schema_to_file(char *, avro_schema_t);
+EXT char *write_avro_schema_to_memory(avro_schema_t);
+EXT char *compose_avro_purge_schema(avro_schema_t, char *);
+EXT char *compose_avro_schema_name(char *, char *);
 #endif
 #undef EXT

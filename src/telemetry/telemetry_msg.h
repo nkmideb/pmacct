@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -34,12 +34,15 @@ EXT void telemetry_process_data(telemetry_peer *, struct telemetry_data *, int);
 EXT int telemetry_recv_generic(telemetry_peer *, u_int32_t);
 EXT int telemetry_recv_jump(telemetry_peer *, u_int32_t, int *);
 EXT int telemetry_recv_json(telemetry_peer *, u_int32_t, int *);
-EXT int telemetry_recv_zjson(telemetry_peer *, telemetry_peer_z *, u_int32_t, int *);
-EXT int telemetry_recv_cisco(telemetry_peer *, int *, int *);
-EXT int telemetry_recv_cisco_json(telemetry_peer *, int *);
-EXT int telemetry_recv_cisco_zjson(telemetry_peer *, telemetry_peer_z *, int *);
-EXT int telemetry_recv_cisco_gpb(telemetry_peer *);
-EXT int telemetry_recv_cisco_gpb_kv(telemetry_peer *, int *);
+EXT int telemetry_recv_gpb(telemetry_peer *, u_int32_t);
+EXT int telemetry_recv_cisco(telemetry_peer *, int *, int *, u_int32_t, u_int32_t);
+EXT int telemetry_recv_cisco_v0(telemetry_peer *, int *, int *);
+EXT int telemetry_recv_cisco_v1(telemetry_peer *, int *, int *);
 EXT void telemetry_basic_process_json(telemetry_peer *);
 EXT int telemetry_basic_validate_json(telemetry_peer *);
+
+#if defined (WITH_ZMQ)
+EXT int telemetry_recv_zmq_generic(telemetry_peer *, u_int32_t);
+EXT int telemetry_decode_zmq_peer(struct telemetry_data *, void *, char *, int, struct sockaddr *, socklen_t *);
+#endif
 #undef EXT

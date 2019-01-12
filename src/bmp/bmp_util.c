@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -47,6 +47,42 @@ char *bmp_get_and_check_length(char **bmp_packet_ptr, u_int32_t *pkt_size, u_int
   }
 
   return current_ptr;
+}
+
+int bmp_get_tlv_and_check_length(char **bmp_packet_ptr, u_int32_t *pkt_size, struct bmp_rm_tlv *btlv) 
+{
+  u_int16_t type, len;
+  int ret = TRUE;
+
+  if (bmp_packet_ptr && (*bmp_packet_ptr) && pkt_size && btlv) {
+    memset(btlv, 0, sizeof(struct bmp_rm_tlv));
+
+    /* check we have room for type (u_int16_t) and len (u_int16_t) fields */
+    if ((*pkt_size) >= 4) {
+      memcpy(&type, (*bmp_packet_ptr), 2); 
+      memcpy(&len, ((*bmp_packet_ptr) + 2), 2); 
+
+      type = ntohs(type);
+      len = ntohs(len);
+
+      (*pkt_size) -= 4;
+      (*bmp_packet_ptr) += 4;
+
+      /* check we have room for value field length */
+      if ((*pkt_size) >= len) {
+	btlv->type = type;
+	btlv->len = len;
+	btlv->value = (*bmp_packet_ptr);
+
+	(*pkt_size) -= len;
+	(*bmp_packet_ptr) += len;
+
+	ret = FALSE;
+      }
+    }
+  }
+
+  return ret;
 }
 
 void bmp_jump_offset(char **bmp_packet_ptr, u_int32_t *len, u_int32_t offset)
@@ -132,6 +168,10 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->msglog_kafka_host = &bmp_daemon_msglog_kafka_host;
 #endif
   bms->max_peers = config.nfacctd_bmp_max_peers;
+  bms->peers = bmp_peers;
+  bms->peers_cache = NULL;
+  bms->peers_port_cache = NULL;
+  bms->xconnects = NULL;
   bms->dump_file = config.bmp_dump_file;
   bms->dump_amqp_routing_key = config.bmp_dump_amqp_routing_key;
   bms->dump_amqp_routing_key_rr = config.bmp_dump_amqp_routing_key_rr;
@@ -162,6 +202,8 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->route_info_modulo = bmp_route_info_modulo;
   bms->bgp_lookup_find_peer = bgp_lookup_find_bmp_peer;
   bms->bgp_lookup_node_match_cmp = bgp_lookup_node_match_cmp_bmp;
+
+  bms->bgp_msg_open_router_id_check = NULL;
 
   if (!bms->is_thread && !bms->dump_backend_methods) bms->skip_rib = TRUE;
 }
@@ -213,10 +255,9 @@ void bmp_peer_close(struct bmp_peer *bmpp, int type)
   bgp_peer_close(peer, type, FALSE, FALSE, FALSE, FALSE, NULL);
 }
 
-void bgp_msg_data_set_data_bmp(struct bgp_msg_extra_data_bmp *bmed_bmp, struct bmp_data *bdata)
+void bgp_msg_data_set_data_bmp(struct bmp_chars *bmed_bmp, struct bmp_data *bdata)
 {
-  bmed_bmp->is_post = bdata->is_post;
-  bmed_bmp->is_2b_asn = bdata->is_2b_asn;
+  memcpy(bmed_bmp, &bdata->chars, sizeof(struct bmp_chars));
 }
 
 int bgp_extra_data_cmp_bmp(struct bgp_msg_extra_data *a, struct bgp_msg_extra_data *b) 
@@ -265,7 +306,7 @@ void bgp_extra_data_free_bmp(struct bgp_msg_extra_data *bmed)
 
 void bgp_extra_data_print_bmp(struct bgp_msg_extra_data *bmed, int output, void *void_obj)
 {
-  struct bgp_msg_extra_data_bmp *bmed_bmp;
+  struct bmp_chars *bmed_bmp;
 
   if (!bmed || !void_obj || bmed->id != BGP_MSG_EXTRA_DATA_BMP) return;
 
@@ -275,7 +316,14 @@ void bgp_extra_data_print_bmp(struct bgp_msg_extra_data *bmed, int output, void 
 #ifdef WITH_JANSSON
     json_t *obj = void_obj;
 
-    json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bmed_bmp->is_post));
+    if (bmed_bmp->is_loc) {
+      json_object_set_new_nocheck(obj, "is_filtered", json_integer((json_int_t)bmed_bmp->is_filtered));
+      json_object_set_new_nocheck(obj, "is_loc", json_integer((json_int_t)bmed_bmp->is_loc));
+    }
+    else if (bmed_bmp->is_out) {
+      json_object_set_new_nocheck(obj, "is_post", json_integer((json_int_t)bmed_bmp->is_post));
+      json_object_set_new_nocheck(obj, "is_out", json_integer((json_int_t)bmed_bmp->is_out));
+    }
 #endif
   }
 }

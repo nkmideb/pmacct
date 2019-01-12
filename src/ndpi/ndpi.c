@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -211,7 +211,7 @@ struct pm_ndpi_flow_info *pm_ndpi_get_flow_info(struct pm_ndpi_workflow *workflo
 
       if (newflow == NULL) {
 	Log(LOG_ERR, "ERROR ( %s/core ): pm_ndpi_get_flow_info() not enough memory (1).\n", config.name);
-	exit(1);
+	exit_gracefully(1);
       }
 
       memset(newflow, 0, sizeof(struct pm_ndpi_flow_info));
@@ -223,19 +223,19 @@ struct pm_ndpi_flow_info *pm_ndpi_get_flow_info(struct pm_ndpi_workflow *workflo
 
       if ((newflow->ndpi_flow = ndpi_flow_malloc(SIZEOF_FLOW_STRUCT)) == NULL) {
 	Log(LOG_ERR, "ERROR ( %s/core ): pm_ndpi_get_flow_info() not enough memory (2).\n", config.name);
-	exit(1);
+	exit_gracefully(1);
       }
       else memset(newflow->ndpi_flow, 0, SIZEOF_FLOW_STRUCT);
 
       if ((newflow->src_id = ndpi_malloc(SIZEOF_ID_STRUCT)) == NULL) {
 	Log(LOG_ERR, "ERROR ( %s/core ): pm_ndpi_get_flow_info() not enough memory (3).\n", config.name);
-	exit(1);
+	exit_gracefully(1);
       }
       else memset(newflow->src_id, 0, SIZEOF_ID_STRUCT);
 
       if ((newflow->dst_id = ndpi_malloc(SIZEOF_ID_STRUCT)) == NULL) {
 	Log(LOG_ERR, "ERROR ( %s/core ): pm_ndpi_get_flow_info() not enough memory (4).\n", config.name);
-	exit(1);
+	exit_gracefully(1);
       }
       else memset(newflow->dst_id, 0, SIZEOF_ID_STRUCT);
 
@@ -281,7 +281,7 @@ struct pm_ndpi_flow_info *pm_ndpi_get_flow_info6(struct pm_ndpi_workflow *workfl
   iph.version = IPVERSION;
   iph.saddr = iph6->ip6_src.u6_addr.u6_addr32[2] + iph6->ip6_src.u6_addr.u6_addr32[3];
   iph.daddr = iph6->ip6_dst.u6_addr.u6_addr32[2] + iph6->ip6_dst.u6_addr.u6_addr32[3];
-  iph.protocol = iph6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
+  iph.protocol = iph6->ip6_hdr.ip6_un1_nxt;
 
   if (iph.protocol == IPPROTO_DSTOPTS /* IPv6 destination option */) {
     u_int8_t *options = (u_int8_t*)iph6 + sizeof(const struct ndpi_ipv6hdr);
@@ -291,7 +291,7 @@ struct pm_ndpi_flow_info *pm_ndpi_get_flow_info6(struct pm_ndpi_workflow *workfl
 
   return(pm_ndpi_get_flow_info(workflow, pptrs, vlan_id, &iph, iph6, ip_offset,
 			    sizeof(struct ndpi_ipv6hdr),
-			    ntohs(iph6->ip6_ctlun.ip6_un1.ip6_un1_plen),
+			    ntohs(iph6->ip6_hdr.ip6_un1_plen),
 			    tcph, udph, sport, dport,
 			    src, dst, proto, payload, payload_len, src_to_dst_direction));
 }

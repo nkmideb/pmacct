@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2017 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /*
@@ -22,6 +22,7 @@
 #define __CONNTRACK_C
 
 #include "pmacct.h"
+#include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "ip_flow.h"
@@ -220,7 +221,7 @@ void conntrack_rtsp_helper(time_t now, struct packet_ptrs *pptrs)
 
       /* Then, we need to look into the Transport: line */
       if ( !strncmp(start, "Transport:", 10) ) {
-	if ( ptr = strchr(start, '\r') ) end = ptr;
+	if ((ptr = strchr(start, '\r'))) end = ptr;
 	ptr = strchr(start, ':');
 	ptr++;
 
@@ -240,7 +241,7 @@ void conntrack_rtsp_helper(time_t now, struct packet_ptrs *pptrs)
 
 	    /* We have reached the client_port info; let's handle it meaningfully:
 	       we expect either a single port or a range of ports (lo-hi) */ 
-	    if ( ss_sep = strchr(ss_start, '-') ) {
+	    if ((ss_sep = strchr(ss_start, '-'))) {
 	      *ss_sep = '\0'; 
 	      port[0] = atoi(ss_start);
 	      *ss_sep = '-';
@@ -277,7 +278,7 @@ void conntrack_sip_helper(time_t now, struct packet_ptrs *pptrs)
 {
   char *start = NULL, *end = NULL, *ptr;
   u_int16_t port;
-  int x = 0, len;
+  int len;
 
   if (!pptrs->payload_ptr) return;
   len = strlen(pptrs->payload_ptr);

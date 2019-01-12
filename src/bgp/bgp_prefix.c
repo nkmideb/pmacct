@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2016 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
 */
 
 /* 
@@ -107,17 +107,8 @@ prefix_copy (struct prefix *dest, const struct prefix *src)
   else if (src->family == AF_INET6)
     dest->u.prefix6 = src->u.prefix6;
 #endif /* ENABLE_IPV6 */
-  else if (src->family == AF_UNSPEC)
-    {
-      dest->u.lp.id = src->u.lp.id;
-      dest->u.lp.adv_router = src->u.lp.adv_router;
-    }
-  else
-    {
-      //zlog (NULL, LOG_ERR, "prefix_copy(): Unknown address family %d",
-	  //    src->family);
-      assert (0);
-    }
+  // XXX: "else if (src->family == AF_UNSPEC)" case
+  // XXX: "else" case
 }
 
 /* 
@@ -247,7 +238,7 @@ str2prefix_ipv4 (const char *str, struct prefix_ipv4 *p)
       cp = malloc ((pnt - str) + 1);
       if (!cp) {
 	Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (str2prefix_ipv4). Exiting ..\n", config.name, config.type);
-	exit_all(1);
+	exit_gracefully(1);
       }
       strncpy (cp, str, pnt - str);
       *(cp + (pnt - str)) = '\0';
@@ -396,7 +387,7 @@ str2prefix_ipv6 (const char *str, struct prefix_ipv6 *p)
       cp = malloc((pnt - str) + 1);
       if (!cp) {
 	Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (str2prefix_ipv6). Exiting ..\n", config.name, config.type);
-	exit_all(1);
+	exit_gracefully(1);
       }
       strncpy (cp, str, pnt - str);
       *(cp + (pnt - str)) = '\0';
@@ -575,7 +566,7 @@ prefix_new ()
   p = malloc (sizeof *p);
   if (!p) {
     Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (prefix_new). Exiting ..\n", config.name, config.type);
-    exit_all(1);
+    exit_gracefully(1);
   }
   memset(p, 0, sizeof *p); 
 
