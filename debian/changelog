@@ -1,3 +1,13 @@
+pmacct (1.7.2-1~1.gbp326164) UNRELEASED; urgency=medium
+
+  ** SNAPSHOT build @326164df32279f12280030b50dc7c396cb1b6eb0 **
+
+  * [326164d] Update upstream source from tag 'upstream/1.7.2'
+    Update to upstream version '1.7.2'
+    with Debian dir b0ab2ffb19367e9d2f35d7823ed4c6e20d9ac8eb
+
+ -- Bernd Zeimetz <bzed@debian.org>  Sat, 12 Jan 2019 09:30:14 +0100
+
 pmacct (1.7.0-1) unstable; urgency=medium
 
   * [09997b1] Updated version 1.7.0 from 'upstream/1.7.0'
