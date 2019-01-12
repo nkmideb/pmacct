@@ -30,6 +30,7 @@ override_dh_auto_configure:
 		--enable-bgp-bins     \
 		--enable-bmp-bins     \
 		--enable-st-bins      \
+		--enable-ndpi         \
 		$(extra_confflags)
 
 		# build-deps not available in debian
