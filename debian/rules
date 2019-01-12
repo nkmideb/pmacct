@@ -58,5 +58,5 @@ override_dh_systemd_enable:
 	dh_systemd_enable --name uacctd --no-enable
 
 %:
-	dh $@ --with autotools_dev,systemd
+	dh $@ --with autotools_dev,systemd,autoreconf
 

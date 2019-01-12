@@ -18,7 +18,8 @@ Build-Depends: debhelper (>= 9),
  libzmq3-dev,
  autotools-dev,
  pkg-config,
- dh-systemd
+ dh-systemd,
+ dh-autoreconf
 Standards-Version: 3.9.6
 Homepage: http://www.pmacct.net/
 Vcs-Git: https://github.com/bzed/pkg-pmacct.git
