@@ -1,12 +1,25 @@
-pmacct (1.7.2-1~1.gbp326164) UNRELEASED; urgency=medium
-
-  ** SNAPSHOT build @326164df32279f12280030b50dc7c396cb1b6eb0 **
+pmacct (1.7.2-1) unstable; urgency=medium
 
   * [326164d] Update upstream source from tag 'upstream/1.7.2'
     Update to upstream version '1.7.2'
     with Debian dir b0ab2ffb19367e9d2f35d7823ed4c6e20d9ac8eb
+  * [a0b6f73] snapshot changelog
+  * [1529cb5] Add gitlab ci file
+  * [c054575] Enable nDPI support
+  * [bb395f7] Enable MongoDB support.
+  * [a2c3c6a] Remove TOOLS from docs, removed by upstream.
+  * [8d4d43a] Revert "Enable MongoDB support."
+    This reverts commit bb395f7a40b896bcf0ddd68fe0da2e7ecdc6004e.
+    Debian ships libmongoc 1.0, supported is 0.8 only.
+  * [2b7e587] Revert "Enable nDPI support"
+    This reverts commit c054575d0e7b0d846093910684f12e0dc05fba6b.
+    Not sure if 2.2 will ever go into testing...
+  * [e31b08a] Move exmaples into /usr/lib
+  * [9ff3581] Use dh_autoreconf
+  * [86066b8] Add patch to include mysql/mysql_version.h.
+    Thanks to Andreas Beckmann (Closes: #919379)
 
- -- Bernd Zeimetz <bzed@debian.org>  Sat, 12 Jan 2019 09:30:14 +0100
+ -- Bernd Zeimetz <bzed@debian.org>  Tue, 15 Jan 2019 15:26:22 +0100
 
 pmacct (1.7.0-1) unstable; urgency=medium
 
