@@ -1,3 +1,9 @@
+pmacct (1.7.2-2) unstable; urgency=medium
+
+  * [1a1815a] Enable nDPI support
+
+ -- Bernd Zeimetz <bzed@debian.org>  Mon, 21 Jan 2019 18:14:14 +0100
+
 pmacct (1.7.2-1) unstable; urgency=medium
 
   * [326164d] Update upstream source from tag 'upstream/1.7.2'
