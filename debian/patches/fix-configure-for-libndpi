@@ -1,0 +1,11 @@
+--- a/configure.ac
++++ b/configure.ac
+@@ -982,7 +982,7 @@
+       LIBS="$_save_LIBS"
+       _save_CFLAGS="$CFLAGS"
+       CFLAGS="$CFLAGS $NDPI_CFLAGS"
+-      AC_CHECK_HEADER([libndpi/ndpi_main.h])
++      AC_CHECK_HEADER([ndpi/ndpi_main.h])
+       CFLAGS="$_save_CFLAGS"
+ 
+       dnl XXX: to be improved: avoid linking both static and dynamic libs

@@ -1,3 +1,4 @@
 fix-build-with-recent-mariadb
 af_link.patch
 move-examples
+fix-configure-for-libndpi
