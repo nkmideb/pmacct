@@ -1,6 +1,6 @@
 --- a/configure.ac
 +++ b/configure.ac
-@@ -982,7 +982,7 @@
+@@ -982,22 +982,10 @@
        LIBS="$_save_LIBS"
        _save_CFLAGS="$CFLAGS"
        CFLAGS="$CFLAGS $NDPI_CFLAGS"
@@ -8,4 +8,20 @@
 +      AC_CHECK_HEADER([ndpi/ndpi_main.h])
        CFLAGS="$_save_CFLAGS"
  
-       dnl XXX: to be improved: avoid linking both static and dynamic libs
+-      dnl XXX: to be improved: avoid linking both static and dynamic libs
+-      if test x"$NDPI_CUST_STATIC_LIB_FOUND" = x"yes"; then
+-        NDPI_LIBS_STATIC="$NDPI_CUST_STATIC_LIB/libndpi.a"
+-      elif test -r /usr/lib/libndpi.a; then
+-        NDPI_LIBS_STATIC="/usr/lib/libndpi.a"
+-      elif test -r /usr/local/lib/libndpi.a; then
+-        NDPI_LIBS_STATIC="/usr/local/lib/libndpi.a"
+-      elif test -r /usr/local/nDPI/lib/libndpi.a; then
+-        NDPI_LIBS_STATIC="/usr/local/nDPI/lib/libndpi.a"
+-      else
+-        AC_MSG_ERROR([ERROR: missing nDPI static library])
+-      fi
+-
++      NDPI_LIBS_STATIC=""
+       AC_SUBST([NDPI_LIBS_STATIC])
+     ])
+     ;;
