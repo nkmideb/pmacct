@@ -11,6 +11,8 @@ endif
 
 
 override_dh_auto_configure:
+	export NDPI_LIBS=-L/usr/lib; \
+	export NDPI_CFLAGS=-I/usr/include; \
 	dh_auto_configure -- \
 		--with-pgsql-includes=`pg_config --includedir` \
 		--enable-l2           \
