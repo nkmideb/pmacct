@@ -1,11 +1,13 @@
---- a/Makefile.am
-+++ b/Makefile.am
-@@ -7,7 +7,7 @@ endif
- 
- pmacct_dir = $(datarootdir)/pmacct
- pmacct_docs_dir = $(pmacct_dir)/docs
--pmacct_examples_dir = $(pmacct_dir)/examples
+Index: pkg-pmacct/Makefile.am
+===================================================================
+--- pkg-pmacct.orig/Makefile.am
++++ pkg-pmacct/Makefile.am
+@@ -11,7 +11,7 @@ endif
+ pmacct_data_dir = $(datarootdir)/pmacct
+ pmacct_libs_dir = $(libdir)/pmacct
+ pmacct_docs_dir = $(pmacct_data_dir)/docs
+-pmacct_examples_dir = $(pmacct_data_dir)/examples
 +pmacct_examples_dir = $(libdir)/pmacct/examples
+ pmacct_examples_arch_dir = $(pmacct_libs_dir)/examples
  pmacct_examples_kafka_dir = $(pmacct_examples_dir)/kafka
  pmacct_examples_amqp_dir = $(pmacct_examples_dir)/amqp
- pmacct_examples_avro_dir = $(pmacct_examples_dir)/avro

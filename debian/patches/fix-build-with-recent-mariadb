@@ -1,5 +1,7 @@
---- a/src/mysql_plugin.h
-+++ b/src/mysql_plugin.h
+Index: pkg-pmacct/src/mysql_plugin.h
+===================================================================
+--- pkg-pmacct.orig/src/mysql_plugin.h
++++ pkg-pmacct/src/mysql_plugin.h
 @@ -22,8 +22,10 @@
  /* includes */
  #if defined HAVE_MYSQL_H 
@@ -10,4 +12,4 @@
 +#include <mysql/mysql_version.h>
  #endif
  
- /* prototypes */
+ #include "sql_common.h"
