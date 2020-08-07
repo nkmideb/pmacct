@@ -1,3 +1,14 @@
+pmacct (1.7.5-1~1.gbp4e8616) UNRELEASED; urgency=medium
+
+  ** SNAPSHOT build @4e861675c288803d8f5a73c10d8348ce87eb257e **
+
+  * [027d4f2] New gitlab file
+  * [4e86167] Update upstream source from tag 'upstream/1.7.5'
+    Update to upstream version '1.7.5'
+    with Debian dir 3359a3d47966bc883978e2202434a291ce7bc6bf
+
+ -- Bernd Zeimetz <bzed@debian.org>  Fri, 07 Aug 2020 13:25:54 +0200
+
 pmacct (1.7.2-3) unstable; urgency=medium
 
   * [7e3d753] Disable ndpi again.
