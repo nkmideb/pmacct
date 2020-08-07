@@ -1,13 +1,15 @@
-pmacct (1.7.5-1~1.gbp4e8616) UNRELEASED; urgency=medium
-
-  ** SNAPSHOT build @4e861675c288803d8f5a73c10d8348ce87eb257e **
+pmacct (1.7.5-1) unstable; urgency=medium
 
   * [027d4f2] New gitlab file
   * [4e86167] Update upstream source from tag 'upstream/1.7.5'
     Update to upstream version '1.7.5'
     with Debian dir 3359a3d47966bc883978e2202434a291ce7bc6bf
+  * [4d171d6] Refreshing patches
+  * [ec543b5] snapshot changelog
+  * [66dc6a0] Use CFLAGS=-fcommon as workaround for gcc-10 (Closes: #957693)
+  * [a6ba6fe] Orphaning package
 
- -- Bernd Zeimetz <bzed@debian.org>  Fri, 07 Aug 2020 13:25:54 +0200
+ -- Bernd Zeimetz <bzed@debian.org>  Fri, 07 Aug 2020 14:01:48 +0200
 
 pmacct (1.7.2-3) unstable; urgency=medium
 
