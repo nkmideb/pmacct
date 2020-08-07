@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -18,9 +18,6 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
-
-/* defines */
-#define __NFV9_TEMPLATE_C
 
 /* includes */
 #include "pmacct.h"
@@ -118,7 +115,7 @@ struct template_cache_entry *insert_template(struct template_hdr_v9 *hdr, struct
 
   while (count < num) {
     if (count >= TPL_LIST_ENTRIES) {
-      notify_malf_packet(LOG_INFO, "INFO: insert_template(): unable to read Data Template (too long)",
+      notify_malf_packet(LOG_INFO, "INFO", "insert_template(): unable to read Data Template (too long)",
 			 (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       free(ptr);
@@ -126,7 +123,7 @@ struct template_cache_entry *insert_template(struct template_hdr_v9 *hdr, struct
     }
 
     if (off >= len) {
-      notify_malf_packet(LOG_INFO, "INFO: insert_template(): unable to read Data Template (malformed)",
+      notify_malf_packet(LOG_INFO, "INFO", "insert_template(): unable to read Data Template (malformed)",
 			 (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       free(ptr);
@@ -226,11 +223,7 @@ void load_templates_from_file(char *path)
   int line = 1;
   u_int16_t modulo;
 
-#if defined ENABLE_IPV6
   struct sockaddr_storage agent;
-#else
-  struct sockaddr agent;
-#endif
 
   if (!tmp_file) {
     Log(LOG_ERR, "ERROR ( %s/core ): [%s] load_templates_from_file(): unable to fopen(). File skipped.\n", config.name, path);
@@ -774,6 +767,8 @@ void save_template(struct template_cache_entry *tpl, char *file)
 struct template_cache_entry *nfacctd_offline_read_json_template(char *buf, char *errbuf, int errlen)
 {
   if (config.debug) Log(LOG_DEBUG, "DEBUG ( %s/core ): nfacctd_offline_read_json_template(): JSON object not created due to missing --enable-jansson\n", config.name);
+
+  return NULL;
 }
 #endif
 
@@ -807,14 +802,14 @@ struct template_cache_entry *refresh_template(struct template_hdr_v9 *hdr, struc
 
   while (count < num) {
     if (count >= TPL_LIST_ENTRIES) {
-      notify_malf_packet(LOG_INFO, "INFO: refresh_template(): unable to read Data Template (too long)",
+      notify_malf_packet(LOG_INFO, "INFO", "refresh_template(): unable to read Data Template (too long)",
 			 (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       return NULL;
     }
 
     if (off >= len) {
-      notify_malf_packet(LOG_INFO, "INFO: refresh_template(): unable to read Data Template (malformed)",
+      notify_malf_packet(LOG_INFO, "INFO", "refresh_template(): unable to read Data Template (malformed)",
                          (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       memcpy(tpl, &backup, sizeof(struct template_cache_entry));
@@ -900,7 +895,7 @@ struct template_cache_entry *refresh_template(struct template_hdr_v9 *hdr, struc
 void log_template_header(struct template_cache_entry *tpl, struct packet_ptrs *pptrs, u_int16_t tpl_type, u_int32_t sid, u_int8_t version)
 {
   struct host_addr a;
-  u_char agent_addr[50];
+  char agent_addr[50];
   u_int16_t agent_port;
 
   sa_to_addr((struct sockaddr *)pptrs->f_agent, &a, &agent_port);
@@ -986,6 +981,10 @@ struct template_cache_entry *insert_opt_template(void *hdr, struct packet_ptrs *
     slen = ntohs(hdr_v10->scope_count);
     olen = ntohs(hdr_v10->option_count)-slen;
   }
+  else {
+    Log(LOG_ERR, "ERROR ( %s/core ): Unknown template type (%u).\n", config.name, tpl_type);
+    return NULL;
+  }
 
   ptr = tpl_cache.c[modulo];
 
@@ -1018,7 +1017,7 @@ struct template_cache_entry *insert_opt_template(void *hdr, struct packet_ptrs *
 
   while (count) {
     if (off >= len) {
-      notify_malf_packet(LOG_INFO, "INFO: insert_opt_template(): unable to read Options Template Flowset (malformed)",
+      notify_malf_packet(LOG_INFO, "INFO", "insert_opt_template(): unable to read Options Template Flowset (malformed)",
 			 (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       free(ptr);
@@ -1057,7 +1056,7 @@ struct template_cache_entry *insert_opt_template(void *hdr, struct packet_ptrs *
       }
 
       if (count >= TPL_LIST_ENTRIES) {
-	notify_malf_packet(LOG_INFO, "INFO: insert_opt_template(): unable to read Options Template (too long)",
+	notify_malf_packet(LOG_INFO, "INFO", "insert_opt_template(): unable to read Options Template (too long)",
 			   (struct sockaddr *) pptrs->f_agent, seq);
 	xflow_tot_bad_datagrams++;
 	free(ptr);
@@ -1115,6 +1114,10 @@ struct template_cache_entry *refresh_opt_template(void *hdr, struct template_cac
     slen = ntohs(hdr_v10->scope_count);
     olen = ntohs(hdr_v10->option_count)-slen;
   }
+  else {
+    Log(LOG_ERR, "ERROR ( %s/core ): Unknown template type (%u).\n", config.name, tpl_type);
+    return NULL;
+  }
 
   next = tpl->next;
   memcpy(&backup, tpl, sizeof(struct template_cache_entry));
@@ -1137,7 +1140,7 @@ struct template_cache_entry *refresh_opt_template(void *hdr, struct template_cac
 
   while (count) {
     if (off >= len) {
-      notify_malf_packet(LOG_INFO, "INFO: refresh_opt_template(): unable to read Options Template Flowset (malformed)",
+      notify_malf_packet(LOG_INFO, "INFO", "refresh_opt_template(): unable to read Options Template Flowset (malformed)",
 			 (struct sockaddr *) pptrs->f_agent, seq);
       xflow_tot_bad_datagrams++;
       memcpy(tpl, &backup, sizeof(struct template_cache_entry));
@@ -1175,7 +1178,7 @@ struct template_cache_entry *refresh_opt_template(void *hdr, struct template_cac
       }
 
       if (count >= TPL_LIST_ENTRIES) {
-	notify_malf_packet(LOG_INFO, "INFO: refresh_opt_template: unable to read Options Template (too long)",
+	notify_malf_packet(LOG_INFO, "INFO", "refresh_opt_template: unable to read Options Template (too long)",
 			   (struct sockaddr *) pptrs->f_agent, seq);
 	xflow_tot_bad_datagrams++;
 	return NULL;
@@ -1205,12 +1208,13 @@ struct template_cache_entry *refresh_opt_template(void *hdr, struct template_cac
   return tpl;
 }
 
-void resolve_vlen_template(char *ptr, u_int16_t flowsetlen, struct template_cache_entry *tpl)
+int resolve_vlen_template(u_char *ptr, u_int16_t remlen, struct template_cache_entry *tpl)
 {
   struct otpl_field *otpl_ptr;
   struct utpl_field *utpl_ptr;
   u_int16_t idx = 0, len = 0;
   u_int8_t vlen = 0, add_len;
+  int ret;
 
   while (idx < tpl->num) {
     add_len = 0;
@@ -1221,52 +1225,69 @@ void resolve_vlen_template(char *ptr, u_int16_t flowsetlen, struct template_cach
 
       if (otpl_ptr->tpl_len == IPFIX_VARIABLE_LENGTH) {
 	vlen = TRUE;
-	add_len = get_ipfix_vlen(ptr+len, &otpl_ptr->len);
-	otpl_ptr->off = len+add_len;
+
+	ret = get_ipfix_vlen(ptr+len, remlen - len, &otpl_ptr->len);
+	if (ret > 0) add_len = ret;
+	else return ERR;
+
+	otpl_ptr->off = (len + add_len);
       }
 
-      len += (otpl_ptr->len+add_len); 
+      len += (otpl_ptr->len + add_len);
     }
     else if (tpl->list[idx].type == TPL_TYPE_EXT_DB) {
       utpl_ptr = (struct utpl_field *) tpl->list[idx].ptr;
       if (vlen) utpl_ptr->off = len;
 
       if (utpl_ptr->tpl_len == IPFIX_VARIABLE_LENGTH) {
-        vlen = TRUE;
-        add_len = get_ipfix_vlen(ptr+len, &utpl_ptr->len);
-	utpl_ptr->off = len+add_len;
+	vlen = TRUE;
+
+	ret = get_ipfix_vlen(ptr+len, remlen - len, &utpl_ptr->len);
+	if (ret > 0) add_len = ret;
+	else return ERR;
+
+	utpl_ptr->off = (len + add_len);
       }
 
-      len += (utpl_ptr->len+add_len);
+      len += (utpl_ptr->len + add_len);
     }
 
     /* if len is invalid (ie. greater than flowsetlen), we stop here */
-    if (len > flowsetlen) break;
+    if (len > remlen) return ERR;
 
     idx++;
   }
-  
+
   tpl->len = len;
+
+  return SUCCESS;
 }
 
-u_int8_t get_ipfix_vlen(char *base, u_int16_t *len)
+int get_ipfix_vlen(u_char *base, u_int16_t remlen, u_int16_t *len)
 {
-  char *ptr = base;
+  u_char *ptr = base;
   u_int8_t *len8, ret = 0;
   u_int16_t *len16;
 
   if (ptr && len) {
-    len8 = (u_int8_t *) ptr;
-    if (*len8 < 255) {
-      ret = 1;
-      *len = *len8;
+    if (remlen >= 1) {
+      len8 = (u_int8_t *) ptr;
+
+      if ((*len8) < 255) {
+	ret = 1;
+	(*len) = (*len8);
+      }
+      else {
+	if (remlen >= 3) {
+	  ptr++;
+	  len16 = (u_int16_t *) ptr;
+	  ret = 3;
+	  (*len) = ntohs(*len16);
+	}
+	else ret = ERR;
+      }
     }
-    else {
-      ptr++;
-      len16 = (u_int16_t *) ptr;
-      ret = 3;
-      *len = ntohs(*len16);
-    }
+    else ret = ERR;
   }
 
   return ret;

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -20,25 +20,28 @@
 */
 
 /* defines */
-#define ARGS_NFACCTD "n:dDhP:b:f:F:c:m:p:r:s:S:L:l:o:t:O:uRVaA:E:I:WZ:Y:"
-#define ARGS_SFACCTD "n:dDhP:b:f:F:c:m:p:r:s:S:L:l:o:t:O:uRVaA:E:I:WZ:Y:"
-#define ARGS_PMACCTD "n:NdDhP:b:f:F:c:i:I:m:p:r:s:S:o:t:O:uwWZ:Y:L:RVazA:E:"
-#define ARGS_UACCTD "n:NdDhP:b:f:F:c:m:p:r:s:S:o:t:O:uRg:L:VaA:E:"
+#define ARGS_NFACCTD "n:dDhP:b:f:F:c:m:p:r:s:S:L:l:o:t:O:MuRVaAE:I:WZ:Y:"
+#define ARGS_SFACCTD "n:dDhP:b:f:F:c:m:p:r:s:S:L:l:o:t:O:MuRVaAE:I:WZ:Y:"
+#define ARGS_PMACCTD "n:NdDhP:b:f:F:c:i:I:m:p:r:s:S:o:t:O:MuwWZ:Y:L:RVazAE:"
+#define ARGS_UACCTD "n:NdDhP:b:f:F:c:m:p:r:s:S:o:t:O:MuRg:L:VaAE:"
 #define ARGS_PMTELEMETRYD "hVL:u:t:Z:f:dDS:F:o:O:i:"
 #define ARGS_PMBGPD "hVL:l:f:dDS:F:o:O:i:gm:"
-#define ARGS_PMBMPD "hVL:l:f:dDS:F:o:O:i:"
+#define ARGS_PMBMPD "hVL:l:f:dDS:F:o:O:i:I:Z:Y:T:"
 #define ARGS_PMACCT "hSsc:Cetm:p:P:M:arN:n:lT:O:E:uVUiI0"
 #define N_PRIMITIVES 128
 #define N_FUNCS 10 
 #define MAX_N_PLUGINS 32
 #define PROTO_LEN 12
+#define PROTO_NUM_STRLEN 4
 #define MAX_MAP_ENTRIES 2048 /* allow maps */
 #define BGP_MD5_MAP_ENTRIES 8192
 #define AGG_FILTER_ENTRIES 128 
 #define FOLLOW_BGP_NH_ENTRIES 32 
 #define MAX_PROTOCOL_LEN 32 
 #define DEFAULT_AVRO_SCHEMA_REFRESH_TIME 60
+#define MAX_AVRO_SCHEMA 65535 
 #define DEFAULT_IMT_PLUGIN_POLL_TIMEOUT 5
+#define DEFAULT_SLOTH_SLEEP_TIME 5
 #define UINT32T_THRESHOLD 4290000000UL
 #define UINT64T_THRESHOLD 18446744073709551360ULL
 #define INT64T_THRESHOLD 9223372036854775807ULL
@@ -75,11 +78,7 @@
 
 #define LONGLONG_RETRY INT_MAX
 
-#if defined ENABLE_IPV6
 #define DEFAULT_SNAPLEN 128
-#else
-#define DEFAULT_SNAPLEN 68
-#endif
 #define SNAPLEN_ISIS_MIN 512
 #define SNAPLEN_ISIS_DEFAULT 1476
 
@@ -96,7 +95,7 @@
 #define PRIMITIVE_LEN 		32
 #define PRIMITIVE_DESC_LEN	64
 
-#define PMACCT_VERSION "1.7.2-git"
+#define PMACCT_VERSION "1.7.5-git"
 #define MANTAINER "Paolo Lucente <paolo@pmacct.net>"
 #define GET_IN_TOUCH_MSG "If you see this message, please get in touch"
 #define PMACCTD_USAGE_HEADER "Promiscuous Mode Accounting Daemon, pmacctd"
@@ -139,6 +138,7 @@
 #endif
 
 /* Daemon identificator */ 
+#define ACCT_UNKNOWN		0	/* Undefined / unknown daemon */
 #define ACCT_PM			1	/* promiscuous mode */
 #define ACCT_NF			2	/* NetFlow */
 #define ACCT_SF			3	/* sFlow */
@@ -246,6 +246,14 @@
 #define COUNT_INT_SRC_HOST_COORDS	0x0002000008000000ULL
 #define COUNT_INT_DST_HOST_COORDS	0x0002000010000000ULL
 #define COUNT_INT_SAMPLING_DIRECTION	0x0002000020000000ULL
+#define COUNT_INT_MPLS_PW_ID		0x0002000040000000ULL
+#define COUNT_INT_SRC_ROA		0x0002000080000000ULL
+#define COUNT_INT_DST_ROA		0x0002000100000000ULL
+#define COUNT_INT_VXLAN			0x0002000200000000ULL
+#define COUNT_INT_TUNNEL_SRC_MAC	0x0002000400000000ULL
+#define COUNT_INT_TUNNEL_DST_MAC	0x0002000800000000ULL
+#define COUNT_INT_TUNNEL_SRC_PORT	0x0002001000000000ULL
+#define COUNT_INT_TUNNEL_DST_PORT	0x0002002000000000ULL
 #define COUNT_INT_CUSTOM_PRIMITIVES	0x0002800000000000ULL
 
 #define COUNT_INDEX_MASK	0xFFFF
@@ -334,6 +342,14 @@
 #define COUNT_SRC_HOST_COORDS		(COUNT_INT_SRC_HOST_COORDS & COUNT_REGISTRY_MASK)
 #define COUNT_DST_HOST_COORDS		(COUNT_INT_DST_HOST_COORDS & COUNT_REGISTRY_MASK)
 #define COUNT_SAMPLING_DIRECTION	(COUNT_INT_SAMPLING_DIRECTION & COUNT_REGISTRY_MASK)
+#define COUNT_MPLS_PW_ID		(COUNT_INT_MPLS_PW_ID & COUNT_REGISTRY_MASK)
+#define COUNT_SRC_ROA			(COUNT_INT_SRC_ROA & COUNT_REGISTRY_MASK)
+#define COUNT_DST_ROA			(COUNT_INT_DST_ROA & COUNT_REGISTRY_MASK)
+#define COUNT_VXLAN			(COUNT_INT_VXLAN & COUNT_REGISTRY_MASK)
+#define COUNT_TUNNEL_SRC_MAC		(COUNT_INT_TUNNEL_SRC_MAC & COUNT_REGISTRY_MASK)
+#define COUNT_TUNNEL_DST_MAC		(COUNT_INT_TUNNEL_DST_MAC & COUNT_REGISTRY_MASK)
+#define COUNT_TUNNEL_SRC_PORT		(COUNT_INT_TUNNEL_SRC_PORT & COUNT_REGISTRY_MASK)
+#define COUNT_TUNNEL_DST_PORT		(COUNT_INT_TUNNEL_DST_PORT & COUNT_REGISTRY_MASK)
 #define COUNT_CUSTOM_PRIMITIVES		(COUNT_INT_CUSTOM_PRIMITIVES & COUNT_REGISTRY_MASK)
 /* PRIMITIVES DEFINITION: END */
 
@@ -401,7 +417,9 @@
 #define PRINT_OUTPUT_CSV	0x00000002
 #define PRINT_OUTPUT_JSON	0x00000004
 #define PRINT_OUTPUT_EVENT	0x00000008
-#define PRINT_OUTPUT_AVRO  	0x00000010
+#define PRINT_OUTPUT_AVRO_BIN  	0x00000010
+#define PRINT_OUTPUT_AVRO_JSON	0x00000020
+#define PRINT_OUTPUT_CUSTOM	0x00000040
 
 #define DIRECTION_UNKNOWN	0x00000000
 #define DIRECTION_IN		0x00000001
@@ -413,6 +431,7 @@
 #define IFINDEX_TAG		0x00000002
 #define IFINDEX_TAG2		0x00000004
 
+#define CUSTOM_PRIMITIVE_TYPE_UNKNOWN	0
 #define CUSTOM_PRIMITIVE_TYPE_UINT	1
 #define CUSTOM_PRIMITIVE_TYPE_HEX	2
 #define CUSTOM_PRIMITIVE_TYPE_STRING	3
@@ -423,9 +442,11 @@
 #define FUNC_TYPE_NULL			0
 #define FUNC_TYPE_BGP			1
 #define FUNC_TYPE_BMP			2
-#define FUNC_TYPE_SFLOW_COUNTER		3
-#define FUNC_TYPE_TELEMETRY		4
-#define FUNC_TYPE_MAX			5
+#define FUNC_TYPE_RPKI			3
+#define FUNC_TYPE_SFLOW_COUNTER		4
+#define FUNC_TYPE_TELEMETRY		5
+#define FUNC_TYPE_BGP_BLACKHOLE		6
+#define FUNC_TYPE_MAX			7
 
 #define PM_MSG_BIN_COPY			0
 #define PM_MSG_STR_COPY			1
@@ -484,11 +505,7 @@ typedef struct {
   u_int16_t n;
 } s_uint16_t;
 
-#if defined HAVE_64BIT_COUNTERS
 typedef u_int64_t pm_counter_t;
-#else
-typedef u_int32_t pm_counter_t;
-#endif
 
 /* Keep common NF_AS and NF_NET values aligned, ie. NF_[NET|AS]_KEEP == 0x00000001 */
 #define NF_AS_COMPAT    0x00000000 /* Unused */
@@ -520,6 +537,7 @@ typedef u_int32_t pm_counter_t;
 #define NF9_FTYPE_VLAN_MPLS             15      
 #define NF9_FTYPE_VLAN_MPLS_IPV4        16
 #define NF9_FTYPE_VLAN_MPLS_IPV6        17
+#define NF9_FTYPE_TRAFFIC_MAX		99  /* temporary: re-coding needed */
 #define NF9_FTYPE_EVENT			100 /* temporary: re-coding needed */
 #define NF9_FTYPE_NAT_EVENT             100
 #define NF9_FTYPE_OPTION		200

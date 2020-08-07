@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -18,8 +18,6 @@
     along with this program; if no, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
-
-#define __PLUGIN_HOOKS_C
 
 /* includes */
 #include "pmacct.h"
@@ -42,13 +40,23 @@ void load_plugins(struct plugin_requests *req)
   u_int64_t buf_pipe_ratio_sz = 0, pipe_idx = 0;
   int snd_buflen = 0, rcv_buflen = 0, socklen = 0, target_buflen = 0;
 
-  int nfprobe_id = 0, min_sz = 0, extra_sz = 0;
+  int nfprobe_id = 0, min_sz = 0, extra_sz = 0, offset = 0;
   struct plugins_list_entry *list = plugins_list;
-  int l = sizeof(list->cfg.pipe_size), offset = 0;
+  socklen_t l = sizeof(list->cfg.pipe_size);
   struct channels_list_entry *chptr = NULL;
 
+ 
   init_random_seed(); 
   init_pipe_channels();
+ 
+#ifdef WITH_ZMQ
+  char username[SHORTBUFLEN], password[SHORTBUFLEN];
+  memset(username, 0, sizeof(username));
+  memset(password, 0, sizeof(password));
+
+  generate_random_string(username, (sizeof(username) - 1));
+  generate_random_string(password, (sizeof(password) - 1));
+#endif
 
   while (list) {
     if ((*list->type.func)) {
@@ -117,8 +125,9 @@ void load_plugins(struct plugin_requests *req)
 
         buf_pipe_ratio_sz = (list->cfg.pipe_size/list->cfg.buffer_size)*sizeof(char *);
         if (buf_pipe_ratio_sz > INT_MAX) {
-	  Log(LOG_ERR, "ERROR ( %s/%s ): Current plugin_buffer_size elems per plugin_pipe_size: %d. Max: %d.\nExiting.\n",
-		list->name, list->type.string, (list->cfg.pipe_size/list->cfg.buffer_size), (INT_MAX/sizeof(char *)));
+	  Log(LOG_ERR, "ERROR ( %s/%s ): Current plugin_buffer_size elems per plugin_pipe_size: %llu. Max: %d.\nExiting.\n",
+		list->name, list->type.string, (unsigned long long)(list->cfg.pipe_size/list->cfg.buffer_size),
+		(INT_MAX/(int)sizeof(char *)));
           exit_gracefully(1);
         }
         else target_buflen = buf_pipe_ratio_sz;
@@ -142,7 +151,7 @@ void load_plugins(struct plugin_requests *req)
         }
 
         if (list->cfg.debug || (list->cfg.pipe_size > WARNING_PIPE_SIZE)) {
-	  Log(LOG_INFO, "INFO ( %s/%s ): plugin_pipe_size=%llu bytes plugin_buffer_size=%llu bytes\n", 
+	  Log(LOG_INFO, "INFO ( %s/%s ): plugin_pipe_size=%" PRIu64 " bytes plugin_buffer_size=%" PRIu64 " bytes\n", 
 		list->name, list->type.string, list->cfg.pipe_size, list->cfg.buffer_size);
 	  if (target_buflen <= snd_buflen) 
             Log(LOG_INFO, "INFO ( %s/%s ): ctrl channel: obtained=%d bytes target=%d bytes\n",
@@ -244,9 +253,9 @@ void load_plugins(struct plugin_requests *req)
       /* ZMQ inits, if required */
 #ifdef WITH_ZMQ
       if (list->cfg.pipe_zmq) {
-	char log_id[SHORTBUFLEN];
+	char log_id[LARGEBUFLEN];
 
-	p_zmq_plugin_pipe_init_core(&chptr->zmq_host, list->id);
+	p_zmq_plugin_pipe_init_core(&chptr->zmq_host, list->id, username, password);
 	snprintf(log_id, sizeof(log_id), "%s/%s", list->name, list->type.string);
 	p_zmq_set_log_id(&chptr->zmq_host, log_id);
 	p_zmq_pub_setup(&chptr->zmq_host);
@@ -261,7 +270,7 @@ void load_plugins(struct plugin_requests *req)
       case 0: /* Child */
 	/* SIGCHLD handling issue: SysV avoids zombies by ignoring SIGCHLD; to emulate
 	   such semantics on BSD systems, we need an handler like handle_falling_child() */
-#if defined (IRIX) || (SOLARIS)
+#if defined (SOLARIS)
 	signal(SIGCHLD, SIG_IGN);
 #else
 	signal(SIGCHLD, ignore_falling_child);
@@ -271,6 +280,7 @@ void load_plugins(struct plugin_requests *req)
         mallopt(M_CHECK_ACTION, 0);
 #endif
 
+	if (device.dev_desc) pcap_close(device.dev_desc);
 	close(config.sock);
 	close(config.bgp_sock);
 	if (!list->cfg.pipe_zmq) close(list->pipe[1]);
@@ -342,14 +352,14 @@ void exec_plugins(struct packet_ptrs *pptrs, struct plugin_requests *req)
 {
   int saved_have_tag = FALSE, saved_have_tag2 = FALSE, saved_have_label = FALSE;
   pm_id_t saved_tag = 0, saved_tag2 = 0;
-  pt_label_t saved_label;
+  pt_label_t *saved_label = malloc(sizeof(pt_label_t));
 
-  int num, ret, fixed_size;
+  int num, fixed_size;
   u_int32_t savedptr;
   char *bptr;
   int index, got_tags = FALSE;
 
-  pretag_init_label(&saved_label);
+  pretag_init_label(saved_label);
 
 #if defined WITH_GEOIPV2
   if (reload_geoipv2_file && config.geoipv2_file) {
@@ -379,7 +389,7 @@ void exec_plugins(struct packet_ptrs *pptrs, struct plugin_requests *req)
       if (p->cfg.ptm_global && got_tags) {
         pptrs->tag = saved_tag;
         pptrs->tag2 = saved_tag2;
-	pretag_copy_label(&pptrs->label, &saved_label);
+	pretag_copy_label(&pptrs->label, saved_label);
 
         pptrs->have_tag = saved_have_tag;
         pptrs->have_tag2 = saved_have_tag2;
@@ -393,7 +403,7 @@ void exec_plugins(struct packet_ptrs *pptrs, struct plugin_requests *req)
 	  if (p->cfg.ptm_global) {
 	    saved_tag = pptrs->tag;
 	    saved_tag2 = pptrs->tag2;
-	    pretag_copy_label(&saved_label, &pptrs->label);
+	    pretag_copy_label(saved_label, &pptrs->label);
 
 	    saved_have_tag = pptrs->have_tag;
 	    saved_have_tag2 = pptrs->have_tag2;
@@ -475,7 +485,7 @@ reprocess:
 
         if (config.debug_internal_msg) {
 	  struct plugins_list_entry *list = channels_list[index].plugin;
-	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer released len=%llu seq=%u num_entries=%u off=%llu\n",
+	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer released len=%" PRIu64 " seq=%u num_entries=%u off=%" PRIu64 "\n",
 		list->name, list->type.string, channels_list[index].bufptr, channels_list[index].hdr.seq,
 		channels_list[index].hdr.num, channels_list[index].status->last_buf_off);
 	}
@@ -485,7 +495,8 @@ reprocess:
 #ifdef WITH_ZMQ
           struct channels_list_entry *chptr = &channels_list[index];
 
-	  ret = p_zmq_topic_send(&chptr->zmq_host, chptr->rg.ptr, chptr->bufsize);
+	  int ret = p_zmq_topic_send(&chptr->zmq_host, chptr->rg.ptr, chptr->bufsize);
+          (void)ret; //Check error?
 #endif
 	}
 	else {
@@ -552,7 +563,8 @@ reprocess:
 
   /* cleanups */
   reload_map_exec_plugins = FALSE;
-  pretag_free_label(&saved_label);
+  pretag_free_label(saved_label);
+  if (saved_label) free(saved_label);
 }
 
 struct channels_list_entry *insert_pipe_channel(int plugin_type, struct configuration *cfg, int pipe)
@@ -755,7 +767,7 @@ pm_counter_t take_simple_systematic_skip(pm_counter_t mean)
    TRUE: We want it!
    FALSE: Discard it!
 */
-int evaluate_filters(struct aggregate_filter *filter, char *pkt, struct pcap_pkthdr *pkthdr)
+int evaluate_filters(struct aggregate_filter *filter, u_char *pkt, struct pcap_pkthdr *pkthdr)
 {
   int index;
 
@@ -945,14 +957,14 @@ void plugin_pipe_check(struct configuration *cfg)
   if (!cfg->pipe_zmq) cfg->pipe_homegrown = TRUE;
 }
 
-void P_zmq_pipe_init(void *zh, int *pipe_fd, int *seq)
+void P_zmq_pipe_init(void *zh, int *pipe_fd, u_int32_t *seq)
 {
   plugin_pipe_zmq_compile_check();
 
 #ifdef WITH_ZMQ
   if (zh) {
     struct p_zmq_host *zmq_host = zh;
-    char log_id[SHORTBUFLEN];
+    char log_id[LARGEBUFLEN];
 
     p_zmq_plugin_pipe_init_plugin(zmq_host);
 

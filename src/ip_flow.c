@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,8 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __IP_FLOW_C
-
 /* includes */
 #include "pmacct.h"
 #include "addr.h"
@@ -30,6 +28,13 @@
 #include "classifier.h"
 #include "jhash.h"
 
+/* Global variables */
+struct ip_flow **ip_flow_table;
+struct flow_lru_l flow_lru_list;
+
+struct ip_flow6 **ip_flow_table6;
+struct flow_lru_l6 flow_lru_list6;
+
 u_int32_t flt_total_nodes;  
 time_t flt_prune_deadline;
 time_t flt_emergency_prune;
@@ -37,18 +42,14 @@ time_t flow_generic_lifetime;
 time_t flow_tcpest_lifetime;
 u_int32_t flt_trivial_hash_rnd = 140281; /* ummmh */
 
-#if defined ENABLE_IPV6
 u_int32_t flt6_total_nodes;
 time_t flt6_prune_deadline;
 time_t flt6_emergency_prune;
-#endif
 
 void init_ip_flow_handler()
 {
   init_ip4_flow_handler();
-#if defined ENABLE_IPV6
   init_ip6_flow_handler();
-#endif
 }
 
 void init_ip4_flow_handler()
@@ -394,7 +395,6 @@ unsigned int is_expired_uni(struct timeval *now, struct ip_flow_common *fp, unsi
   return FALSE;
 }
 
-#if defined ENABLE_IPV6
 void init_ip6_flow_handler()
 {
   int size;
@@ -675,4 +675,3 @@ void prune_old_flows6(struct timeval *now)
 
   flow_lru_list6.last = last_seen;
 }
-#endif

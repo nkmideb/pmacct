@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -18,9 +18,6 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
-
-/* defines */
-#define __SIGNALS_C
 
 /* includes */
 #include "pmacct.h"
@@ -45,8 +42,6 @@ void startup_handle_falling_child()
       break;
     }
   }
-
-  signal(SIGCHLD, startup_handle_falling_child);
 }
 
 void handle_falling_child()
@@ -71,6 +66,13 @@ void handle_falling_child()
 	  if (config.pidfile) remove_pid_file(config.pidfile);
           exit(1);
         }
+	else {
+	  if (config.plugin_exit_any) {
+            Log(LOG_WARNING, "WARN ( %s/%s ): one or more plugins did exit (plugin_exit_any). Shutting down.\n", config.name, config.type);
+	    if (config.pidfile) remove_pid_file(config.pidfile);
+	    exit_all(1);
+	  }
+	}
       }
       failed_plugins[j] = 0;
     }
@@ -90,9 +92,14 @@ void handle_falling_child()
       if (config.pidfile) remove_pid_file(config.pidfile);
       exit(1);
     }
+    else {
+      if (config.plugin_exit_any) {
+	Log(LOG_WARNING, "WARN ( %s/%s ): one or more plugins did exit (plugin_exit_any). Shutting down.\n", config.name, config.type);
+	if (config.pidfile) remove_pid_file(config.pidfile);
+	exit_all(1);
+      }
+    }
   }
-
-  signal(SIGCHLD, handle_falling_child);
 }
 
 void ignore_falling_child()
@@ -104,19 +111,17 @@ void ignore_falling_child()
     if (!WIFEXITED(status)) Log(LOG_WARNING, "WARN ( %s/%s ): Abnormal exit status detected for child PID %u\n", config.name, config.type, cpid);
     // sql_writers.retired++;
   }
-
-  signal(SIGCHLD, ignore_falling_child);
 }
 
-void my_sigint_handler(int signum)
+void PM_sigint_handler(int signum)
 {
   struct plugins_list_entry *list = plugins_list;
   char shutdown_msg[] = "pmacct received SIGINT - shutting down";
 
-  if (config.acct_type == ACCT_PMBGP || config.nfacctd_bgp == BGP_DAEMON_ONLINE) {
+  if (config.acct_type == ACCT_PMBGP || config.bgp_daemon == BGP_DAEMON_ONLINE) {
     int idx;
 
-    for (idx = 0; idx < config.nfacctd_bgp_max_peers; idx++) {
+    for (idx = 0; idx < config.bgp_daemon_max_peers; idx++) {
       if (peers[idx].fd)
 	bgp_peer_close(&peers[idx], FUNC_TYPE_BGP, TRUE, TRUE, BGP_NOTIFY_CEASE, BGP_NOTIFY_CEASE_ADMIN_SHUTDOWN, shutdown_msg);
     }
@@ -128,15 +133,6 @@ void my_sigint_handler(int signum)
      wait() call. Let's release collector's socket to improve turn-
      around times when restarting the daemon */
   if (config.acct_type == ACCT_NF || config.acct_type == ACCT_SF) close(config.sock);
-
-#if defined (IRIX) || (SOLARIS)
-  signal(SIGCHLD, SIG_IGN);
-#else
-  signal(SIGCHLD, ignore_falling_child);
-#endif
-
-  signal(SIGINT, SIG_IGN);
-  signal(SIGTERM, SIG_IGN);
 
   fill_pipe_buffer();
   sleep(2); /* XXX: we should really choose an adaptive value here. It should be
@@ -157,16 +153,16 @@ void my_sigint_handler(int signum)
     if (config.pcap_if) {
       printf("NOTICE ( %s/%s ): +++\n", config.name, config.type);
 
-      for (device_idx = 0; device_idx < device.num; device_idx++) {
-        if (pcap_stats(device.list[device_idx].dev_desc, &ps) < 0) {
+      for (device_idx = 0; device_idx < devices.num; device_idx++) {
+        if (pcap_stats(devices.list[device_idx].dev_desc, &ps) < 0) {
 	  printf("INFO ( %s/%s ): [%s,%u] error='pcap_stats(): %s'\n",
-		config.name, config.type, device.list[device_idx].str,
-		device.list[device_idx].id,
-		pcap_geterr(device.list[device_idx].dev_desc));
+		config.name, config.type, devices.list[device_idx].str,
+		devices.list[device_idx].id,
+		pcap_geterr(devices.list[device_idx].dev_desc));
 	}
         printf("NOTICE ( %s/%s ): [%s,%u] received_packets=%u dropped_packets=%u\n",
-		config.name, config.type, device.list[device_idx].str,
-		device.list[device_idx].id, ps.ps_recv, ps.ps_drop);
+		config.name, config.type, devices.list[device_idx].str,
+		devices.list[device_idx].id, ps.ps_recv, ps.ps_drop);
       }
 
       printf("NOTICE ( %s/%s ): ---\n", config.name, config.type);
@@ -177,79 +173,48 @@ void my_sigint_handler(int signum)
   exit(0);
 }
 
+void PM_sigalrm_noop_handler(int signum)
+{
+  /* noop */
+}
+
 void reload()
 {
-  int logf;
-
-  if (config.syslog) {
-    closelog();
-    logf = parse_log_facility(config.syslog);
-    if (logf == ERR) {
-      config.syslog = NULL;
-      Log(LOG_WARNING, "WARN ( %s/%s ): specified syslog facility is not supported; logging to console.\n", config.name, config.type);
-    }
-    openlog(NULL, LOG_PID, logf);
-    Log(LOG_INFO, "INFO ( %s/%s ): Start logging ...\n", config.name, config.type);
-  }
-
-  if (config.logfile) {
-    fclose(config.logfile_fd);
-    config.logfile_fd = open_output_file(config.logfile, "a", FALSE);
-  }
-
-  if (config.nfacctd_bgp_msglog_file) reload_log_bgp_thread = TRUE;
-  if (config.nfacctd_bmp_msglog_file) reload_log_bmp_thread = TRUE;
+  reload_log = TRUE;
+  if (config.bgp_daemon_msglog_file) reload_log_bgp_thread = TRUE;
+  if (config.bmp_daemon_msglog_file) reload_log_bmp_thread = TRUE;
   if (config.sfacctd_counter_file) reload_log_sf_cnt = TRUE;
   if (config.telemetry_msglog_file) reload_log_telemetry_thread = TRUE;
-
-  signal(SIGHUP, reload);
 }
 
 void push_stats()
 {
-  time_t now = time(NULL);
-
   if (config.acct_type == ACCT_PM) {
-    int device_idx;
-
-    if (config.pcap_if) {
-      Log(LOG_NOTICE, "NOTICE ( %s/%s ): +++\n", config.name, config.type);
-
-      for (device_idx = 0; device_idx < device.num; device_idx++) {
-	if (pcap_stats(device.list[device_idx].dev_desc, &ps) < 0) {
-	  Log(LOG_INFO, "INFO ( %s/%s ): stats [%s,%u] time=%u error='pcap_stats(): %s'\n",
-		config.name, config.type, device.list[device_idx].str, device.list[device_idx].id,
-		now, pcap_geterr(device.list[device_idx].dev_desc));
-	}
-	Log(LOG_NOTICE, "NOTICE ( %s/%s ): stats [%s,%u] time=%u received_packets=%u dropped_packets=%u\n",
-		config.name, config.type, device.list[device_idx].str, device.list[device_idx].id,
-		now, ps.ps_recv, ps.ps_drop);
-      }
-
-      Log(LOG_NOTICE, "NOTICE ( %s/%s ): ---\n", config.name, config.type);
-    }
+    time_t now = time(NULL);
+    PM_print_stats(now);
   }
-  else if (config.acct_type == ACCT_NF || config.acct_type == ACCT_SF)
-    print_status_table(now, XFLOW_STATUS_TABLE_SZ);
+  else if (config.acct_type == ACCT_NF || config.acct_type == ACCT_SF) {
+    print_stats = TRUE;
+  }
 
-  signal(SIGUSR1, push_stats);
 }
 
 void reload_maps()
 {
   reload_map = FALSE;
   reload_map_bgp_thread = FALSE;
+  reload_map_rpki_thread = FALSE;
   reload_map_exec_plugins = FALSE;
   reload_geoipv2_file = FALSE;
 
   if (config.maps_refresh) {
     reload_map = TRUE; 
     reload_map_bgp_thread = TRUE;
+    reload_map_rpki_thread = TRUE;
     reload_map_exec_plugins = TRUE;
     reload_geoipv2_file = TRUE;
 
     if (config.acct_type == ACCT_PM) reload_map_pmacctd = TRUE;
   }
   
-  signal(SIGUSR2, reload_maps);
 }

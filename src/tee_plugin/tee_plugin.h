@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -18,6 +18,9 @@
     along with this program; if no, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
+
+#ifndef TEE_PLUGIN_H
+#define TEE_PLUGIN_H
 
 /* includes */
 #include <sys/poll.h>
@@ -38,11 +41,7 @@ typedef struct tee_receiver *(*tee_balance_algorithm) (void *, struct pkt_msg *)
 
 /* structures */
 struct tee_receiver {
-#if defined ENABLE_IPV6
   struct sockaddr_storage dest;
-#else
-  struct sockaddr dest;
-#endif
   socklen_t dest_len;
   int fd;
 };
@@ -80,36 +79,31 @@ struct tee_receivers {
 };
 
 /* prototypes */
-#if (!defined __TEE_PLUGIN_C)
-#define EXT extern
-#else
-#define EXT
-#endif
-
-EXT void Tee_exit_now(int);
-EXT void Tee_init_socks();
-EXT void Tee_destroy_recvs();
-EXT int Tee_craft_transparent_msg(struct pkt_msg *, struct sockaddr *);
-EXT void Tee_send(struct pkt_msg *, struct sockaddr *, int);
-EXT int Tee_prepare_sock(struct sockaddr *, socklen_t, u_int16_t);
-EXT int Tee_parse_hostport(const char *, struct sockaddr *, socklen_t *, int);
-EXT struct tee_receiver *Tee_rr_balance(void *, struct pkt_msg *);
-EXT struct tee_receiver *Tee_hash_agent_balance(void *, struct pkt_msg *);
-EXT struct tee_receiver *Tee_hash_tag_balance(void *, struct pkt_msg *);
+extern void Tee_exit_now(int);
+extern void Tee_init_socks();
+extern void Tee_destroy_recvs();
+extern size_t Tee_craft_transparent_msg(struct pkt_msg *, struct sockaddr *);
+extern void Tee_send(struct pkt_msg *, struct sockaddr *, int, int);
+extern int Tee_prepare_sock(struct sockaddr *, socklen_t, u_int16_t, int, int);
+extern int Tee_parse_hostport(const char *, struct sockaddr *, socklen_t *, int);
+extern struct tee_receiver *Tee_rr_balance(void *, struct pkt_msg *);
+extern struct tee_receiver *Tee_hash_agent_balance(void *, struct pkt_msg *);
+extern struct tee_receiver *Tee_hash_tag_balance(void *, struct pkt_msg *);
+extern void Tee_select_templates(unsigned char *, int, int, unsigned char *, int *);
 
 #ifdef WITH_KAFKA
-EXT void Tee_kafka_send(struct pkt_msg *, struct tee_receivers_pool *);
-EXT void Tee_init_kafka_host(struct p_kafka_host *, char *, char *, u_int32_t);
+extern void Tee_kafka_send(struct pkt_msg *, struct tee_receivers_pool *);
+extern void Tee_init_kafka_host(struct p_kafka_host *, char *, char *, u_int32_t);
 #endif
 
 #ifdef WITH_ZMQ
-EXT void Tee_zmq_send(struct pkt_msg *, struct tee_receivers_pool *); 
-EXT void Tee_init_zmq_host(struct p_zmq_host *, char *, u_int32_t);
+extern void Tee_zmq_send(struct pkt_msg *, struct tee_receivers_pool *); 
+extern void Tee_init_zmq_host(struct p_zmq_host *, char *, u_int32_t);
 #endif
 
 /* global variables */
-EXT char tee_send_buf[65535];
-EXT struct tee_receivers receivers; 
-EXT int err_cant_bridge_af;
+extern char tee_send_buf[65535];
+extern struct tee_receivers receivers; 
+extern int err_cant_bridge_af;
 
-#undef EXT
+#endif //TEE_PLUGIN_H

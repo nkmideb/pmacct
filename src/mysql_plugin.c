@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -19,15 +19,29 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __MYSQL_PLUGIN_C
-
 /* includes */
 #include "pmacct.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "sql_common.h"
+#include "sql_common_m.h"
 #include "mysql_plugin.h"
-#include "sql_common_m.c"
+#include "preprocess.h"
+
+/* variables */
+char mysql_user[] = "pmacct";
+char mysql_pwd[] = "arealsmartpwd";
+unsigned int mysql_prt = 3306;
+char mysql_db[] = "pmacct";
+char mysql_table[] = "acct";
+char mysql_table_v2[] = "acct_v2";
+char mysql_table_v3[] = "acct_v3";
+char mysql_table_v4[] = "acct_v4";
+char mysql_table_v5[] = "acct_v5";
+char mysql_table_v6[] = "acct_v6";
+char mysql_table_v7[] = "acct_v7";
+char mysql_table_v8[] = "acct_v8";
+char mysql_table_bgp[] = "acct_bgp";
 
 /* Functions */
 void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr) 
@@ -41,12 +55,11 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   int ret, num, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
-  struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
   int datasize = ((struct channels_list_entry *)ptr)->datasize;
   u_int32_t bufsz = ((struct channels_list_entry *)ptr)->bufsize;
   pid_t core_pid = ((struct channels_list_entry *)ptr)->core_pid;
   struct networks_file_data nfd;
-  char *dataptr;
+  unsigned char *dataptr;
 
   unsigned char *rgptr;
   int pollagain = TRUE;
@@ -59,6 +72,10 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
 #else
   void *zmq_host = NULL;
+#endif
+
+#ifdef WITH_REDIS
+  struct p_redis_host redis_host;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -106,6 +123,15 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
   sql_link_backend_descriptors(&bed, &p, &b);
 
+#ifdef WITH_REDIS
+  if (config.redis_host) {
+    char log_id[SHORTBUFLEN];
+
+    snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+    p_redis_init(&redis_host, log_id, p_redis_thread_produce_common_plugin_handler);
+  }
+#endif
+
   /* plugin main loop */
   for(;;) {
     poll_again:
@@ -144,7 +170,7 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
     /* lazy sql refresh handling */
     if (idata.now > refresh_deadline) {
-      if (qq_ptr) sql_cache_flush(queries_queue, qq_ptr, &idata, FALSE);
+      if (qq_ptr) sql_cache_flush(sql_queries_queue, qq_ptr, &idata, FALSE);
       sql_cache_handle_flush_event(&idata, &refresh_deadline, &pt);
     }
     else {
@@ -196,7 +222,7 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 	  else {
 	    rg_err_count++;
 	    if (config.debug || (rg_err_count > MAX_RG_COUNT_ERR)) {
-              Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected (plugin_buffer_size=%llu plugin_pipe_size=%llu).\n",
+              Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected (plugin_buffer_size=%" PRIu64 " plugin_pipe_size=%" PRIu64 ").\n",
                         config.name, config.type, config.buffer_size, config.pipe_size);
               Log(LOG_WARNING, "WARN ( %s/%s ): Increase values or look for plugin_buffer_size, plugin_pipe_size in CONFIG-KEYS document.\n\n",
                         config.name, config.type);
@@ -229,7 +255,7 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       data = (struct pkt_data *) (pipebuf+sizeof(struct ch_buf_hdr));
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%llu seq=%u num_entries=%u\n",
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%" PRIu64 " seq=%u num_entries=%u\n",
                 config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->len, seq,
                 ((struct ch_buf_hdr *)pipebuf)->num);
 
@@ -265,7 +291,7 @@ void mysql_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
 int MY_cache_dbop(struct DBdesc *db, struct db_cache *cache_elem, struct insert_data *idata)
 {
-  char *ptr_values, *ptr_where, *ptr_mv, *ptr_set, *ptr_insert;
+  char *ptr_values, *ptr_where, *ptr_mv, *ptr_set;
   int num=0, num_set=0, ret=0, have_flows=0, len=0;
 
   if (idata->mv.last_queue_elem) {
@@ -286,7 +312,6 @@ int MY_cache_dbop(struct DBdesc *db, struct db_cache *cache_elem, struct insert_
   ptr_where = where_clause;
   ptr_values = values_clause; 
   ptr_set = set_clause;
-  ptr_insert = insert_full_clause;
   memset(where_clause, 0, sizeof(where_clause));
   memset(values_clause, 0, sizeof(values_clause));
   memset(set_clause, 0, sizeof(set_clause));
@@ -325,13 +350,8 @@ int MY_cache_dbop(struct DBdesc *db, struct db_cache *cache_elem, struct insert_
     else {
       strncpy(insert_full_clause, insert_clause, SPACELEFT(insert_full_clause));
       strncat(insert_full_clause, insert_counters_clause, SPACELEFT(insert_full_clause));
-#if defined HAVE_64BIT_COUNTERS
-      if (have_flows) snprintf(ptr_values, SPACELEFT(values_clause), ", %llu, %llu, %llu)", cache_elem->packet_counter, cache_elem->bytes_counter, cache_elem->flows_counter);
-      else snprintf(ptr_values, SPACELEFT(values_clause), ", %llu, %llu)", cache_elem->packet_counter, cache_elem->bytes_counter);
-#else
-      if (have_flows) snprintf(ptr_values, SPACELEFT(values_clause), ", %lu, %lu, %lu)", cache_elem->packet_counter, cache_elem->bytes_counter, cache_elem->flows_counter);
-      else snprintf(ptr_values, SPACELEFT(values_clause), ", %lu, %lu)", cache_elem->packet_counter, cache_elem->bytes_counter);
-#endif
+      if (have_flows) snprintf(ptr_values, SPACELEFT(values_clause), ", %" PRIu64 ", %" PRIu64 ", %" PRIu64 ")", cache_elem->packet_counter, cache_elem->bytes_counter, cache_elem->flows_counter);
+      else snprintf(ptr_values, SPACELEFT(values_clause), ", %" PRIu64 ", %" PRIu64 ")", cache_elem->packet_counter, cache_elem->bytes_counter);
     }
 
     if (config.sql_multi_values) { 
@@ -429,7 +449,7 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
 
   if (!index) {
     Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - START (PID: %u) ***\n", config.name, config.type, writer_pid);
-    Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - END (PID: %u, QN: 0/0, ET: 0) ***\n", config.name, config.type, writer_pid);
+    Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - END (PID: %u, QN: 0/0, ET: X) ***\n", config.name, config.type, writer_pid);
     return;
   }
 
@@ -448,7 +468,7 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
   start = time(NULL);
 
   /* re-using pending queries queue stuff from parent and saving clauses */
-  memcpy(pending_queries_queue, queue, index*sizeof(struct db_cache *));
+  memcpy(sql_pending_queries_queue, queue, index*sizeof(struct db_cache *));
   pqq_ptr = index;
 
   strlcpy(orig_insert_clause, insert_clause, LONGSRVBUFLEN);
@@ -457,8 +477,8 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
 
   start:
   memset(&idata->mv, 0, sizeof(struct multi_values));
-  memcpy(queue, pending_queries_queue, pqq_ptr*sizeof(struct db_cache *));
-  memset(pending_queries_queue, 0, pqq_ptr*sizeof(struct db_cache *));
+  memcpy(queue, sql_pending_queries_queue, pqq_ptr*sizeof(struct db_cache *));
+  memset(sql_pending_queries_queue, 0, pqq_ptr*sizeof(struct db_cache *));
   index = pqq_ptr; pqq_ptr = 0;
 
   /* We check for variable substitution in SQL table */ 
@@ -493,7 +513,7 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
   for (idata->current_queue_elem = 0; idata->current_queue_elem < index; idata->current_queue_elem++) {
     go_to_pending = FALSE;
 
-    if (idata->dyn_table && (!idata->dyn_table_time_only || !config.nfacctd_time_new)) {
+    if (idata->dyn_table && (!idata->dyn_table_time_only || !config.nfacctd_time_new || (config.sql_refresh_time != idata->timeslot))) {
       time_t stamp = 0;
 
       memset(tmpbuf, 0, LONGLONGSRVBUFLEN); // XXX: pedantic?
@@ -506,7 +526,7 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
       pm_strftime_same(tmptable, LONGSRVBUFLEN, tmpbuf, &stamp, config.timestamps_utc);
 
       if (strncmp(idata->dyn_table_name, tmptable, SRVBUFLEN)) {
-	pending_queries_queue[pqq_ptr] = queue[idata->current_queue_elem];
+	sql_pending_queries_queue[pqq_ptr] = queue[idata->current_queue_elem];
 
 	pqq_ptr++;
         go_to_pending = TRUE;
@@ -536,7 +556,7 @@ void MY_cache_purge(struct db_cache *queue[], int index, struct insert_data *ida
   if (pqq_ptr) goto start;
   
   idata->elap_time = time(NULL)-start; 
-  Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - END (PID: %u, QN: %u/%u, ET: %u) ***\n", 
+  Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - END (PID: %u, QN: %u/%u, ET: %lu) ***\n", 
 		config.name, config.type, writer_pid, idata->qn, saved_index, idata->elap_time); 
 
   if (config.sql_trigger_exec) {
@@ -665,12 +685,14 @@ void MY_Unlock(struct BE_descs *bed)
 
 void MY_DB_Connect(struct DBdesc *db, char *host)
 {
-  MYSQL *dbptr = db->desc;
   bool reconnect = TRUE;
 
   if (!db->fail) {
     mysql_init(db->desc);
-    mysql_options(dbptr, MYSQL_OPT_RECONNECT, &reconnect);
+
+    mysql_options(db->desc, MYSQL_OPT_RECONNECT, &reconnect);
+    if (config.sql_conn_ca_file) mysql_ssl_set(db->desc, NULL, NULL, config.sql_conn_ca_file, NULL, NULL);
+    
     if (!mysql_real_connect(db->desc, host, config.sql_user, config.sql_passwd, config.sql_db, config.sql_port, NULL, 0)) {
       sql_db_fail(db);
       MY_get_errmsg(db);

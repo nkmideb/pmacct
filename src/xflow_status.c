@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -19,11 +19,16 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __XFLOW_STATUS_C
-
 /* includes */
 #include "pmacct.h"
 #include "addr.h"
+
+/* Global variables */
+struct xflow_status_entry *xflow_status_table[XFLOW_STATUS_TABLE_SZ];
+u_int32_t xflow_status_table_entries;
+u_int8_t xflow_status_table_error;
+u_int32_t xflow_tot_bad_datagrams;
+u_int8_t smp_entry_status_table_memerr, class_entry_status_table_memerr;
 
 /* functions */
 u_int32_t hash_status_table(u_int32_t data, struct sockaddr *sa, u_int32_t size)
@@ -32,7 +37,6 @@ u_int32_t hash_status_table(u_int32_t data, struct sockaddr *sa, u_int32_t size)
 
   if (sa->sa_family == AF_INET)
     hash = (data ^ ((struct sockaddr_in *)sa)->sin_addr.s_addr) % size;
-#if defined ENABLE_IPV6
   else if (sa->sa_family == AF_INET6) {
     u_int32_t tmp;
 
@@ -40,7 +44,6 @@ u_int32_t hash_status_table(u_int32_t data, struct sockaddr *sa, u_int32_t size)
     hash = (data ^ tmp) % size;
     // hash = (data ^ ((struct sockaddr_in6 *)sa)->sin6_addr.s6_addr32[3]) % size;
   }
-#endif
 
   return hash;
 }
@@ -114,7 +117,7 @@ void update_status_table(struct xflow_status_entry *entry, u_int32_t seqno, int 
 
       Log(LOG_INFO, "INFO ( %s/%s ): expecting flow '%u' but received '%u' collector=%s:%u agent=%s:%u\n",
 		config.name, config.type, entry->seqno+entry->inc, seqno, collector_ip_address,
-		config.nfacctd_port, agent_ip_address, entry->aux1);
+		collector_port, agent_ip_address, entry->aux1);
       if (seqno > entry->seqno+entry->inc) entry->counters.jumps_f++;
       else entry->counters.jumps_b++;
     }
@@ -143,9 +146,9 @@ void print_status_table(time_t now, int buckets)
     if (entry && entry->counters.total && entry->counters.bytes) {
       addr_to_str(agent_ip_address, &entry->agent_addr);
 
-      Log(LOG_NOTICE, "NOTICE ( %s/%s ): stats [%s:%u] agent=%s:%u time=%u packets=%llu bytes=%llu seq_good=%u seq_jmp_fwd=%u seq_jmp_bck=%u\n",
-		config.name, config.type, collector_ip_address, config.nfacctd_port,
-		agent_ip_address, entry->aux1, now, entry->counters.total, entry->counters.bytes,
+      Log(LOG_NOTICE, "NOTICE ( %s/%s ): stats [%s:%u] agent=%s:%u time=%ld packets=%" PRIu64 " bytes=%" PRIu64 " seq_good=%u seq_jmp_fwd=%u seq_jmp_bck=%u\n",
+		config.name, config.type, collector_ip_address, collector_port,
+		agent_ip_address, entry->aux1, (long)now, entry->counters.total, entry->counters.bytes,
 		entry->counters.good, entry->counters.jumps_f, entry->counters.jumps_b);
 
       if (entry->next) {
@@ -155,9 +158,9 @@ void print_status_table(time_t now, int buckets)
     } 
   }
 
-  Log(LOG_NOTICE, "NOTICE ( %s/%s ): stats [%s:%u] time=%u discarded_packets=%u\n",
-		config.name, config.type, collector_ip_address, config.nfacctd_port,
-		now, xflow_tot_bad_datagrams);
+  Log(LOG_NOTICE, "NOTICE ( %s/%s ): stats [%s:%u] time=%ld discarded_packets=%u\n",
+		config.name, config.type, collector_ip_address, collector_port,
+		(long)now, xflow_tot_bad_datagrams);
 
   Log(LOG_NOTICE, "NOTICE ( %s/%s ): ---\n", config.name, config.type);
 }
@@ -225,7 +228,7 @@ search_class_id_status_table(struct xflow_status_entry_class *centry, pm_class_t
   while (centry) {
     haystack = ntohl(centry->class_id);
 
-    if (centry->class_id == class_id) return centry;
+    if (haystack == needle) return centry;
     centry = centry->next;
   }
 
@@ -266,12 +269,11 @@ void set_vector_f_status(struct packet_ptrs_vector *pptrsv)
   pptrsv->vlan4.f_status = pptrsv->v4.f_status;
   pptrsv->mpls4.f_status = pptrsv->v4.f_status;
   pptrsv->vlanmpls4.f_status = pptrsv->v4.f_status;
-#if defined ENABLE_IPV6
+
   pptrsv->v6.f_status = pptrsv->v4.f_status;
   pptrsv->vlan6.f_status = pptrsv->v4.f_status;
   pptrsv->vlanmpls6.f_status = pptrsv->v4.f_status;
   pptrsv->mpls6.f_status = pptrsv->v4.f_status;
-#endif
 }
 
 void set_vector_f_status_g(struct packet_ptrs_vector *pptrsv)
@@ -279,10 +281,9 @@ void set_vector_f_status_g(struct packet_ptrs_vector *pptrsv)
   pptrsv->vlan4.f_status_g = pptrsv->v4.f_status_g;
   pptrsv->mpls4.f_status_g = pptrsv->v4.f_status_g;
   pptrsv->vlanmpls4.f_status_g = pptrsv->v4.f_status_g;
-#if defined ENABLE_IPV6
+
   pptrsv->v6.f_status_g = pptrsv->v4.f_status_g;
   pptrsv->vlan6.f_status_g = pptrsv->v4.f_status_g;
   pptrsv->vlanmpls6.f_status_g = pptrsv->v4.f_status_g;
   pptrsv->mpls6.f_status_g = pptrsv->v4.f_status_g;
-#endif
 }

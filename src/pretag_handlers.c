@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -19,8 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __PRETAG_HANDLERS_C
-
 #include "pmacct.h"
 #include "addr.h"
 #include "bgp/bgp_packet.h"
@@ -31,6 +29,7 @@
 #include "pretag_handlers.h"
 #include "net_aggr.h"
 #include "bgp/bgp.h"
+#include "rpki/rpki.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "pkt_handlers.h"
@@ -58,7 +57,6 @@ int PT_map_id_handler(char *filename, struct id_entry *e, char *value, struct pl
   }
   /* If we parse a bgp_agent_map and spot a ':' within the string let's
      check if we are given a valid IPv6 address */
-#if defined ENABLE_IPV6
   else if (acct_type == MAP_BGP_TO_XFLOW_AGENT && strchr(value, ':')) {
     memset(&a, 0, sizeof(a));
     str_to_addr(value, &a);
@@ -73,7 +71,6 @@ int PT_map_id_handler(char *filename, struct id_entry *e, char *value, struct pl
       return TRUE;
     }
   }
-#endif
   else if (acct_type == MAP_FLOW_TO_RD && strchr(value, ':')) {
     rd_t rd;
 
@@ -162,6 +159,7 @@ int PT_map_label_handler(char *filename, struct id_entry *e, char *value, struct
   if (!strchr(value, default_sep)) {
     if (pretag_malloc_label(&e->label, len + 1 /* null */)) return TRUE;
     strcpy(e->label.val, value);
+    e->label.len = len;
     e->label.val[e->label.len] = '\0';
   }
   else {
@@ -362,7 +360,7 @@ int BPAS_map_bgp_nexthop_handler(char *filename, struct id_entry *e, char *value
   }
 
   for (x = 0; e->func[x]; x++);
-  if (config.nfacctd_bgp) {
+  if (config.bgp_daemon) {
     e->func[x] = BPAS_bgp_nexthop_handler;
     e->func_type[x] = PRETAG_BGP_NEXTHOP;
   }
@@ -382,7 +380,7 @@ int BPAS_map_bgp_peer_dst_as_handler(char *filename, struct id_entry *e, char *v
   e->key.peer_dst_as.n = tmp;
 
   for (x = 0; e->func[x]; x++);
-  if (config.nfacctd_bgp) {
+  if (config.bgp_daemon) {
     e->func[x] = BPAS_bgp_peer_dst_as_handler; 
     e->func_type[x] = PRETAG_BGP_NEXTHOP;
   }
@@ -503,7 +501,7 @@ int PT_map_engine_id_handler(char *filename, struct id_entry *e, char *value, st
 
 int PT_map_filter_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
 {
-  struct pcap_device dev;
+  struct pm_pcap_device dev;
   bpf_u_int32 localnet, netmask;  /* pcap library stuff */
   char errbuf[PCAP_ERRBUF_SIZE];
   int x;
@@ -516,9 +514,9 @@ int PT_map_filter_handler(char *filename, struct id_entry *e, char *value, struc
     }
   }
 
-  memset(&dev, 0, sizeof(struct pcap_device));
+  memset(&dev, 0, sizeof(struct pm_pcap_device));
   // XXX: fix if multiple interfaces
-  if (device.list[0].dev_desc) dev.link_type = pcap_datalink(device.list[0].dev_desc);
+  if (devices.list[0].dev_desc) dev.link_type = pcap_datalink(devices.list[0].dev_desc);
   else if (config.uacctd_group) dev.link_type = DLT_RAW;
   else dev.link_type = 1;
   dev.dev_desc = pcap_open_dead(dev.link_type, 128); /* snaplen=eth_header+pm_iphdr+pm_tlhdr */
@@ -898,6 +896,56 @@ int PT_map_local_pref_handler(char *filename, struct id_entry *e, char *value, s
   return TRUE;
 }
 
+int PT_map_src_roa_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
+{
+  int x = 0;
+
+  e->key.src_roa.neg = pt_check_neg(&value, &((struct id_table *) req->key_value_table)->flags);
+  e->key.src_roa.n = rpki_str2roa(value);
+
+  for (x = 0; e->func[x]; x++) {
+    if (e->func_type[x] == PRETAG_SRC_ROA) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Multiple 'src_roa' clauses part of the same statement.\n", config.name, config.type, filename);
+      return TRUE;
+    }
+  }
+
+  if (config.nfacctd_as & NF_AS_BGP) {
+    e->func[x] = pretag_src_roa_handler;
+    e->func_type[x] = PRETAG_SRC_ROA;
+    return FALSE;
+  }
+
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_roa' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+
+  return TRUE;
+}
+
+int PT_map_dst_roa_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
+{
+  int x = 0;
+
+  e->key.dst_roa.neg = pt_check_neg(&value, &((struct id_table *) req->key_value_table)->flags);
+  e->key.dst_roa.n = rpki_str2roa(value);
+
+  for (x = 0; e->func[x]; x++) {
+    if (e->func_type[x] == PRETAG_DST_ROA) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Multiple 'dst_roa' clauses part of the same statement.\n", config.name, config.type, filename);
+      return TRUE;
+    }
+  }
+
+  if (config.nfacctd_as & NF_AS_BGP) {
+    e->func[x] = pretag_dst_roa_handler;
+    e->func_type[x] = PRETAG_DST_ROA;
+    return FALSE;
+  }
+
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'dst_roa' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+
+  return TRUE;
+}
+
 int PT_map_src_comms_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
 {
   int x = 0, idx = 0;
@@ -996,6 +1044,28 @@ int PT_map_mpls_vpn_rd_handler(char *filename, struct id_entry *e, char *value, 
     return FALSE;
   }
   else return TRUE; 
+}
+
+int PT_map_mpls_pw_id_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
+{
+  int x = 0;
+  char *endptr;
+
+  e->key.mpls_pw_id.neg = pt_check_neg(&value, &((struct id_table *) req->key_value_table)->flags);
+  e->key.mpls_pw_id.n = strtoul(value, &endptr, 10);
+
+  for (x = 0; e->func[x]; x++) {
+    if (e->func_type[x] == PRETAG_MPLS_PW_ID) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Multiple 'mpls_pw_id' clauses part of the same statement.\n", config.name, config.type, filename);
+      return TRUE;
+    }
+  }
+
+  if (config.acct_type == ACCT_NF) e->func[x] = pretag_mpls_pw_id_handler;
+  else if (config.acct_type == ACCT_SF) e->func[x] = SF_pretag_mpls_pw_id_handler;
+  if (e->func[x]) e->func_type[x] = PRETAG_MPLS_PW_ID;
+
+  return FALSE;
 }
 
 int PT_map_src_mac_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
@@ -1228,19 +1298,35 @@ int BTA_map_lookup_bgp_port_handler(char *filename, struct id_entry *e, char *va
 
 int PT_map_entry_label_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
 {
-  strlcpy(e->entry_label, value, MAX_LABEL_LEN); 
+  int len = strlen(value);
+
+  memset(e->entry_label, 0, MAX_LABEL_LEN);
+
+  if (len >= MAX_LABEL_LEN) {
+    strncpy(e->entry_label, value, (MAX_LABEL_LEN - 1));
+    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] entry label '%s' cut to '%s'.\n", config.name, config.type, filename, value, e->entry_label);
+  }
+  else strcpy(e->entry_label, value);
 
   return FALSE;
 }
 
 int PT_map_jeq_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
 {
+  int len = strlen(value);
+
   e->jeq.label = malloc(MAX_LABEL_LEN);
   if (!e->jeq.label) {
     Log(LOG_ERR, "ERROR ( %s/%s ): [%s] malloc() failed (PT_map_jeq_handler). Exiting.\n", config.name, config.type, filename);
     exit_gracefully(1);
   }
-  else strlcpy(e->jeq.label, value, MAX_LABEL_LEN);
+  else memset(e->jeq.label, 0, MAX_LABEL_LEN);
+
+  if (len >= MAX_LABEL_LEN) {
+    strncpy(e->jeq.label, value, (MAX_LABEL_LEN - 1));
+    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] JEQ label '%s' cut to '%s'.\n", config.name, config.type, filename, value, e->jeq.label);
+  }
+  else strcpy(e->jeq.label, value);
 
   return FALSE;
 }
@@ -1264,7 +1350,7 @@ int PT_map_stack_handler(char *filename, struct id_entry *e, char *value, struct
 
   if (*value == '+' || !strncmp(value, "sum", 3)) e->stack.func = PT_stack_sum;
   else if (!strncmp(value, "or", 2)) e->stack.func = PT_stack_logical_or;
-  else Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Unknown STACK operator: '%c'. Ignoring.\n", config.name, config.type, filename, value);
+  else Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Unknown STACK operator: '%s'. Ignoring.\n", config.name, config.type, filename, value);
 
   return FALSE;
 }
@@ -1297,9 +1383,6 @@ int PT_map_fwdstatus_handler(char *filename, struct id_entry *e, char *value, st
   return FALSE;
 }
 
-
-
-
 int pretag_dummy_ip_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 {
   return FALSE;
@@ -1331,7 +1414,7 @@ int pretag_input_handler(struct packet_ptrs *pptrs, void *unused, void *e)
       if (!memcmp(&input32, pptrs->f_data+tpl->tpl[NF9_INPUT_PHYSINT].off, tpl->tpl[NF9_INPUT_PHYSINT].len))
         return (FALSE | neg);
     }
-    else return (TRUE ^ neg);
+    return (TRUE ^ neg);
   case 5:
     if (input16 == ((struct struct_export_v5 *)pptrs->f_data)->input) return (FALSE | neg);
     else return (TRUE ^ neg); 
@@ -1366,7 +1449,7 @@ int pretag_output_handler(struct packet_ptrs *pptrs, void *unused, void *e)
       if (!memcmp(&output32, pptrs->f_data+tpl->tpl[NF9_OUTPUT_PHYSINT].off, tpl->tpl[NF9_OUTPUT_PHYSINT].len))
         return (FALSE | neg);
     }
-    else return (TRUE ^ neg);
+    return (TRUE ^ neg);
   case 5:
     if (output16 == ((struct struct_export_v5 *)pptrs->f_data)->output) return (FALSE | neg);
     else return (TRUE ^ neg);
@@ -1390,13 +1473,11 @@ int pretag_nexthop_handler(struct packet_ptrs *pptrs, void *unused, void *e)
       if (!memcmp(&entry->key.nexthop.a.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_NEXT_HOP].off, tpl->tpl[NF9_IPV4_NEXT_HOP].len))
 	return (FALSE | entry->key.nexthop.neg);
     }
-#if defined ENABLE_IPV6
     else if (entry->key.nexthop.a.family == AF_INET6) {
       if (!memcmp(&entry->key.nexthop.a.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_NEXT_HOP].off, tpl->tpl[NF9_IPV6_NEXT_HOP].len))
 	return (FALSE | entry->key.nexthop.neg);
     }
-#endif
-    else return (TRUE ^ entry->key.nexthop.neg);
+    return (TRUE ^ entry->key.nexthop.neg);
   case 5:
     if (entry->key.nexthop.a.address.ipv4.s_addr == ((struct struct_export_v5 *)pptrs->f_data)->nexthop.s_addr) return (FALSE | entry->key.nexthop.neg);
     else return (TRUE ^ entry->key.nexthop.neg);
@@ -1431,7 +1512,6 @@ int pretag_bgp_nexthop_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 	  return (FALSE | entry->key.bgp_nexthop.neg);
       }
     }
-#if defined ENABLE_IPV6
     else if (entry->key.nexthop.a.family == AF_INET6) {
       if (tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].len) {
 	if (!memcmp(&entry->key.bgp_nexthop.a.address.ipv6, pptrs->f_data+tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].off, tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].len))
@@ -1442,8 +1522,7 @@ int pretag_bgp_nexthop_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 	  return (FALSE | entry->key.bgp_nexthop.neg);
       }
     }
-#endif
-    else return (TRUE ^ entry->key.bgp_nexthop.neg);
+    return (TRUE ^ entry->key.bgp_nexthop.neg);
   case 5:
     if (entry->key.bgp_nexthop.a.address.ipv4.s_addr == ((struct struct_export_v5 *)pptrs->f_data)->nexthop.s_addr) return (FALSE | entry->key.bgp_nexthop.neg);
     else return (TRUE ^ entry->key.bgp_nexthop.neg);
@@ -1472,11 +1551,9 @@ int pretag_bgp_bgp_nexthop_handler(struct packet_ptrs *pptrs, void *unused, void
       if (info->attr->mp_nexthop.family == AF_INET) {
         ret = memcmp(&entry->key.bgp_nexthop.a.address.ipv4, &info->attr->mp_nexthop.address.ipv4, 4);
       }
-#if defined ENABLE_IPV6
       else if (info->attr->mp_nexthop.family == AF_INET6) {
         ret = memcmp(&entry->key.bgp_nexthop.a.address.ipv6, &info->attr->mp_nexthop.address.ipv6, 16);
       }
-#endif
       else {
 	ret = memcmp(&entry->key.bgp_nexthop.a.address.ipv4, &info->attr->nexthop, 4);
       }
@@ -1693,10 +1770,10 @@ int pretag_peer_src_as_handler(struct packet_ptrs *pptrs, void *unused, void *e)
   struct bgp_info *info;
   as_t asn = 0;
 
-  if (config.nfacctd_bgp_peer_as_src_type == BGP_SRC_PRIMITIVES_MAP) {
+  if (config.bgp_daemon_peer_as_src_type == BGP_SRC_PRIMITIVES_MAP) {
     asn = pptrs->bpas;
   }
-  else if (config.nfacctd_bgp_peer_as_src_type & BGP_SRC_PRIMITIVES_BGP) {
+  else if (config.bgp_daemon_peer_as_src_type & BGP_SRC_PRIMITIVES_BGP) {
     if (src_ret) {
       info = (struct bgp_info *) pptrs->bgp_src_info;
       if (info && info->attr) {
@@ -1738,10 +1815,10 @@ int pretag_src_local_pref_handler(struct packet_ptrs *pptrs, void *unused, void 
   struct bgp_info *info;
   u_int32_t local_pref = 0;
 
-  if (config.nfacctd_bgp_src_local_pref_type == BGP_SRC_PRIMITIVES_MAP) {
+  if (config.bgp_daemon_src_local_pref_type == BGP_SRC_PRIMITIVES_MAP) {
     local_pref = pptrs->blp;
   }
-  else if (config.nfacctd_bgp_src_local_pref_type & BGP_SRC_PRIMITIVES_BGP) {
+  else if (config.bgp_daemon_src_local_pref_type & BGP_SRC_PRIMITIVES_BGP) {
     if (src_ret) {
       info = (struct bgp_info *) pptrs->bgp_src_info;
       if (info && info->attr) {
@@ -1770,6 +1847,29 @@ int pretag_local_pref_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 
   if (entry->key.local_pref.n == local_pref) return (FALSE | entry->key.local_pref.neg);
   else return (TRUE ^ entry->key.local_pref.neg);
+}
+
+int pretag_src_roa_handler(struct packet_ptrs *pptrs, void *unused, void *e)
+{
+  struct id_entry *entry = e;
+  struct bgp_node *src_ret = (struct bgp_node *) pptrs->bgp_src;
+  u_int8_t roa = ROA_STATUS_UNKNOWN;
+
+  if (config.bgp_daemon_src_roa_type & BGP_SRC_PRIMITIVES_BGP) {
+    if (src_ret) roa = pptrs->src_roa;
+  }
+
+  if (entry->key.src_roa.n == roa) return (FALSE | entry->key.src_roa.neg);
+  else return (TRUE ^ entry->key.src_roa.neg);
+}
+
+int pretag_dst_roa_handler(struct packet_ptrs *pptrs, void *unused, void *e)
+{
+  struct id_entry *entry = e;
+  u_int8_t roa = ROA_STATUS_UNKNOWN;
+
+  if (entry->key.dst_roa.n == roa) return (FALSE | entry->key.dst_roa.neg);
+  else return (TRUE ^ entry->key.dst_roa.neg);
 }
 
 int pretag_src_comms_handler(struct packet_ptrs *pptrs, void *unused, void *e)
@@ -1815,8 +1915,13 @@ int pretag_comms_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 int pretag_sample_type_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 {
   struct id_entry *entry = e;
+  u_int8_t flow_type = pptrs->flow_type;
 
-  if (entry->key.sample_type.n == pptrs->flow_type) return (FALSE | entry->key.sample_type.neg); 
+  if (flow_type >= NF9_FTYPE_TRAFFIC && flow_type <= NF9_FTYPE_TRAFFIC_MAX) {
+    flow_type = NF9_FTYPE_TRAFFIC;
+  }
+
+  if (entry->key.sample_type.n == flow_type) return (FALSE | entry->key.sample_type.neg); 
   else return (TRUE ^ entry->key.sample_type.neg);
 }
 
@@ -1884,6 +1989,28 @@ int pretag_mpls_vpn_rd_handler(struct packet_ptrs *pptrs, void *unused, void *e)
   else return (TRUE ^ entry->key.mpls_vpn_rd.neg);
 }
 
+int pretag_mpls_pw_id_handler(struct packet_ptrs *pptrs, void *unused, void *e)
+{
+  struct id_entry *entry = e;
+  struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+  u_int32_t tmp32 = 0, mpls_pw_id = 0;;
+
+  switch (hdr->version) {
+  case 10:
+  case 9:
+    if (tpl->tpl[NF9_PSEUDOWIREID].len) {
+      memcpy(&tmp32, pptrs->f_data+tpl->tpl[NF9_PSEUDOWIREID].off, 4);
+      mpls_pw_id = ntohl(tmp32);
+    } 
+
+    if (entry->key.mpls_pw_id.n == mpls_pw_id) return (FALSE | entry->key.mpls_pw_id.neg);
+    else return (TRUE ^ entry->key.mpls_pw_id.neg);
+  default:
+    return TRUE; /* this field does not exist: condition is always true */
+  }
+}
+
 int pretag_src_mac_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 {
   struct id_entry *entry = e;
@@ -1898,8 +2025,8 @@ int pretag_src_mac_handler(struct packet_ptrs *pptrs, void *unused, void *e)
     if (tpl->tpl[NF9_IN_SRC_MAC].len) {
       if (!memcmp(&entry->key.src_mac.a, pptrs->f_data+tpl->tpl[NF9_IN_SRC_MAC].off, MIN(tpl->tpl[NF9_IN_SRC_MAC].len, 6)))
 	return (FALSE | entry->key.src_mac.neg);
-      else return (TRUE ^ entry->key.src_mac.neg);
     }
+    return (TRUE ^ entry->key.src_mac.neg);
   default:
     return TRUE; /* this field does not exist: condition is always true */
   }
@@ -1919,8 +2046,8 @@ int pretag_dst_mac_handler(struct packet_ptrs *pptrs, void *unused, void *e)
     if (tpl->tpl[NF9_IN_DST_MAC].len) {
       if (!memcmp(&entry->key.dst_mac.a, pptrs->f_data+tpl->tpl[NF9_IN_DST_MAC].off, MIN(tpl->tpl[NF9_IN_DST_MAC].len, 6)))
         return (FALSE | entry->key.dst_mac.neg);
-      else return (TRUE ^ entry->key.dst_mac.neg);
     }
+    return (TRUE ^ entry->key.dst_mac.neg);
   default:
     return TRUE; /* this field does not exist: condition is always true */
   }
@@ -1972,7 +2099,6 @@ int pretag_src_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
       memcpy(&addr.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_SRC_PREFIX].off, MIN(tpl->tpl[NF9_IPV4_SRC_PREFIX].len, 4));
       addr.family = AF_INET;
     }
-#if defined ENABLE_IPV6
     if (tpl->tpl[NF9_IPV6_SRC_ADDR].len) {
       memcpy(&addr.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_SRC_ADDR].off, MIN(tpl->tpl[NF9_IPV6_SRC_ADDR].len, 16));
       addr.family = AF_INET6;
@@ -1981,7 +2107,6 @@ int pretag_src_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
       memcpy(&addr.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_SRC_PREFIX].off, MIN(tpl->tpl[NF9_IPV6_SRC_PREFIX].len, 16));
       addr.family = AF_INET6;
     }
-#endif
     break;
   case 5:
     addr.address.ipv4.s_addr = ((struct struct_export_v5 *) pptrs->f_data)->srcaddr.s_addr;
@@ -2017,7 +2142,6 @@ int pretag_dst_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
       memcpy(&addr.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_DST_PREFIX].off, MIN(tpl->tpl[NF9_IPV4_DST_PREFIX].len, 4));
       addr.family = AF_INET;
     }
-#if defined ENABLE_IPV6
     if (tpl->tpl[NF9_IPV6_DST_ADDR].len) {
       memcpy(&addr.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_DST_ADDR].off, MIN(tpl->tpl[NF9_IPV6_DST_ADDR].len, 16));
       addr.family = AF_INET6;
@@ -2026,7 +2150,6 @@ int pretag_dst_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
       memcpy(&addr.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_DST_PREFIX].off, MIN(tpl->tpl[NF9_IPV6_DST_PREFIX].len, 16));
       addr.family = AF_INET6;
     }
-#endif
     break;
   case 5:
     addr.address.ipv4.s_addr = ((struct struct_export_v5 *) pptrs->f_data)->dstaddr.s_addr;
@@ -2063,7 +2186,7 @@ int pretag_forwarding_status_handler(struct packet_ptrs *pptrs, void *unused, vo
     else return TRUE;
     
     u_int32_t comp = (entry->key.fwdstatus.n & 0xC0);
-    if ( comp == entry->key.fwdstatus.n) {
+    if (comp == entry->key.fwdstatus.n) {
       /* We have a generic (unknown) status provided so we then take everything that match that. */
       u_int32_t base = (fwdstatus & 0xC0);
       if ( comp == base )
@@ -2142,7 +2265,7 @@ int pretag_id_handler(struct packet_ptrs *pptrs, void *id, void *e)
 	if (info->attr->aspath && info->attr->aspath->str) {
 	  *tid = evaluate_first_asn(info->attr->aspath->str);
 
-	  if (!(*tid) && config.nfacctd_bgp_stdcomm_pattern_to_asn) {
+	  if (!(*tid) && config.bgp_daemon_stdcomm_pattern_to_asn) {
 	    char tmp_stdcomms[MAX_BGP_STD_COMMS];
 
 	    if (info->attr->community && info->attr->community->str) {
@@ -2151,7 +2274,7 @@ int pretag_id_handler(struct packet_ptrs *pptrs, void *id, void *e)
 	    }
           }
 
-	  if (!(*tid) && config.nfacctd_bgp_lrgcomm_pattern_to_asn) {
+	  if (!(*tid) && config.bgp_daemon_lrgcomm_pattern_to_asn) {
 	    char tmp_lrgcomms[MAX_BGP_LRG_COMMS];
 
 	    if (info->attr->lcommunity && info->attr->lcommunity->str) {
@@ -2188,8 +2311,11 @@ int pretag_id2_handler(struct packet_ptrs *pptrs, void *id, void *e)
 int pretag_label_handler(struct packet_ptrs *pptrs, void *id, void *e)
 {
   struct id_entry *entry = e;
+  pt_label_t *out_label = (pt_label_t *) id;
 
-  if (id) memcpy(id, &entry->label, sizeof(pt_label_t));
+  if (out_label) {
+    pretag_copy_label(out_label, &entry->label);
+  }
 
   return PRETAG_MAP_RCODE_LABEL; /* cap */
 }
@@ -2220,11 +2346,9 @@ int SF_pretag_nexthop_handler(struct packet_ptrs *pptrs, void *unused, void *e)
   if (entry->key.nexthop.a.family == AF_INET) {
     if (!memcmp(&entry->key.nexthop.a.address.ipv4, &sample->nextHop.address.ip_v4, 4)) return (FALSE | entry->key.nexthop.neg);
   }
-#if defined ENABLE_IPV6
   else if (entry->key.nexthop.a.family == AF_INET6) {
     if (!memcmp(&entry->key.nexthop.a.address.ipv6, &sample->nextHop.address.ip_v6, IP6AddrSz)) return (FALSE | entry->key.nexthop.neg);
   }
-#endif
 
   return (TRUE ^ entry->key.nexthop.neg);
 }
@@ -2242,11 +2366,9 @@ int SF_pretag_bgp_nexthop_handler(struct packet_ptrs *pptrs, void *unused, void 
   if (entry->key.bgp_nexthop.a.family == AF_INET) {
     if (!memcmp(&entry->key.bgp_nexthop.a.address.ipv4, &sample->bgp_nextHop.address.ip_v4, 4)) return (FALSE | entry->key.bgp_nexthop.neg);
   }
-#if defined ENABLE_IPV6
   else if (entry->key.bgp_nexthop.a.family == AF_INET6) {
     if (!memcmp(&entry->key.bgp_nexthop.a.address.ipv6, &sample->bgp_nextHop.address.ip_v6, IP6AddrSz)) return (FALSE | entry->key.bgp_nexthop.neg);
   }
-#endif
 
   return (TRUE ^ entry->key.bgp_nexthop.neg);
 }
@@ -2332,6 +2454,15 @@ int SF_pretag_vlan_id_handler(struct packet_ptrs *pptrs, void *unused, void *e)
   else return (TRUE ^ entry->key.vlan_id.neg);
 }
 
+int SF_pretag_mpls_pw_id_handler(struct packet_ptrs *pptrs, void *unused, void *e)
+{
+  struct id_entry *entry = e;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  if (entry->key.mpls_pw_id.n == sample->mpls_vll_vc_id) return (FALSE | entry->key.mpls_pw_id.neg);
+  else return (TRUE ^ entry->key.mpls_pw_id.neg);
+}
+
 int SF_pretag_src_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 {
   struct id_entry *entry = e;
@@ -2343,12 +2474,10 @@ int SF_pretag_src_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
     addr.address.ipv4.s_addr = sample->dcd_srcIP.s_addr;
     addr.family = AF_INET;
   }
-#if defined ENABLE_IPV6
   else if (sample->gotIPV6) {
     memcpy(&addr.address.ipv6, &sf_addr->address.ip_v6, IP6AddrSz);
     addr.family = AF_INET6;
   }
-#endif
 
   if (!host_addr_mask_cmp(&entry->key.src_net.a, &entry->key.src_net.m, &addr)) 
     return (FALSE | entry->key.src_net.neg);
@@ -2367,12 +2496,10 @@ int SF_pretag_dst_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
     addr.address.ipv4.s_addr = sample->dcd_dstIP.s_addr;
     addr.family = AF_INET;
   }
-#if defined ENABLE_IPV6
   else if (sample->gotIPV6) {
     memcpy(&addr.address.ipv6, &sf_addr->address.ip_v6, IP6AddrSz);
     addr.family = AF_INET6;
   }
-#endif
 
   if (!host_addr_mask_cmp(&entry->key.dst_net.a, &entry->key.dst_net.m, &addr)) 
     return (FALSE | entry->key.dst_net.neg);
@@ -2451,12 +2578,10 @@ int BPAS_bgp_nexthop_handler(struct packet_ptrs *pptrs, void *unused, void *e)
             return (FALSE | entry->key.bgp_nexthop.neg);
 	}
       }
-#if defined ENABLE_IPV6
       else if (entry->key.nexthop.a.family == AF_INET6) {
 	if (!memcmp(&entry->key.bgp_nexthop.a.address.ipv6, &info->attr->mp_nexthop.address.ipv6, 16))
           return (FALSE | entry->key.bgp_nexthop.neg);
       }
-#endif
     }
   }
 
@@ -2476,7 +2601,7 @@ int BPAS_bgp_peer_dst_as_handler(struct packet_ptrs *pptrs, void *unused, void *
       if (info->attr->aspath && info->attr->aspath->str) {
         asn = evaluate_first_asn(info->attr->aspath->str);
 
-        if (!asn && config.nfacctd_bgp_stdcomm_pattern_to_asn) {
+        if (!asn && config.bgp_daemon_stdcomm_pattern_to_asn) {
           char tmp_stdcomms[MAX_BGP_STD_COMMS];
 
           if (info->attr->community && info->attr->community->str) {
@@ -2485,7 +2610,7 @@ int BPAS_bgp_peer_dst_as_handler(struct packet_ptrs *pptrs, void *unused, void *
           }
         }
 
-        if (!asn && config.nfacctd_bgp_lrgcomm_pattern_to_asn) {
+        if (!asn && config.bgp_daemon_lrgcomm_pattern_to_asn) {
           char tmp_lrgcomms[MAX_BGP_LRG_COMMS];
 
           if (info->attr->lcommunity && info->attr->lcommunity->str) {
@@ -2531,25 +2656,23 @@ int BITR_mpls_vpn_id_handler(struct packet_ptrs *pptrs, void *unused, void *e)
   struct id_entry *entry = e;
   struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
   struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
-  u_int32_t tmp32 = 0, label = 0;
+  u_int32_t tmp32 = 0, id = 0;
 
   switch(hdr->version) {
   case 10:
   case 9:
     if (tpl->tpl[NF9_INGRESS_VRFID].len) {
       memcpy(&tmp32, pptrs->f_data+tpl->tpl[NF9_INGRESS_VRFID].off, MIN(tpl->tpl[NF9_INGRESS_VRFID].len, 4));
-      label = ntohl(tmp32);
+      id = ntohl(tmp32);
 
-      if (!memcmp(&entry->key.mpls_vpn_id.n, &label, 4))
-        return (FALSE | entry->key.mpls_vpn_id.neg);
+      if (entry->key.mpls_vpn_id.n == id) return (FALSE | entry->key.mpls_vpn_id.neg);
     }
 
     if (tpl->tpl[NF9_EGRESS_VRFID].len) {
       memcpy(&tmp32, pptrs->f_data+tpl->tpl[NF9_EGRESS_VRFID].off, MIN(tpl->tpl[NF9_EGRESS_VRFID].len, 4));
-      label = ntohl(tmp32);
+      id = ntohl(tmp32);
 
-      if (!memcmp(&entry->key.mpls_vpn_id.n, &label, 4))
-        return (FALSE | entry->key.mpls_vpn_id.neg);
+      if (entry->key.mpls_vpn_id.n == id) return (FALSE | entry->key.mpls_vpn_id.neg);
     }
 
     return (TRUE ^ entry->key.mpls_vpn_id.neg);
@@ -2590,7 +2713,7 @@ int custom_primitives_map_field_type_handler(char *filename, struct id_entry *e,
   struct custom_primitives *table = (struct custom_primitives *) req->key_value_table;
   char *pen = NULL, *type = NULL, *endptr;
 
-  if (config.acct_type == ACCT_NF && table) {
+  if (table) {
     u_int8_t repeat_id;
     int idx;
 
@@ -2616,13 +2739,7 @@ int custom_primitives_map_field_type_handler(char *filename, struct id_entry *e,
     table->primitive[table->num].repeat_id = repeat_id;
   }
   else {
-    if (config.acct_type != ACCT_NF) {
-      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] field_type is only supported in nfacctd.\n", config.name, config.type, filename);
-    }
-    else {
-      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] custom aggregate primitives registry not allocated.\n", config.name, config.type, filename);
-    }
-
+    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] custom aggregate primitives registry not allocated.\n", config.name, config.type, filename);
     return TRUE;
   }
 
@@ -2953,6 +3070,18 @@ int PT_map_index_entries_mpls_vpn_rd_handler(struct id_entry *e, pm_hash_serial_
   return FALSE;
 }
 
+int PT_map_index_entries_mpls_pw_id_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
+{
+  struct id_entry *src_e = (struct id_entry *) src;
+
+  if (!e || !hash_serializer || !src_e) return TRUE;
+
+  memcpy(&e->key.mpls_pw_id, &src_e->key.mpls_pw_id, sizeof(pt_uint32_t));
+  hash_serial_append(hash_serializer, (char *)&src_e->key.mpls_pw_id.n, sizeof(u_int32_t), TRUE);
+
+  return FALSE;
+}
+
 int PT_map_index_entries_mpls_label_bottom_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
 {
   struct id_entry *src_e = (struct id_entry *) src;
@@ -3052,12 +3181,10 @@ int PT_map_index_fdata_ip_handler(struct id_entry *e, pm_hash_serial_t *hash_ser
       e->key.agent_ip.a.family = AF_INET;
       e->key.agent_ip.a.address.ipv4.s_addr = sample->agent_addr.address.ip_v4.s_addr;
     }
-#if defined ENABLE_IPV6
     else if (sample->agent_addr.type == SFLADDRESSTYPE_IP_V6) {
       e->key.agent_ip.a.family = AF_INET6;
       memcpy(e->key.agent_ip.a.address.ipv6.s6_addr, sample->agent_addr.address.ip_v6.s6_addr, 16);
     }
-#endif 
   }
   else return TRUE;
 
@@ -3179,11 +3306,9 @@ int PT_map_index_fdata_bgp_nexthop_handler(struct id_entry *e, pm_hash_serial_t 
 	if (info->attr->mp_nexthop.family == AF_INET) {
 	  memcpy(&e->key.bgp_nexthop.a, &info->attr->mp_nexthop, HostAddrSz);
 	}
-#if defined ENABLE_IPV6
 	else if (info->attr->mp_nexthop.family == AF_INET6) {
 	  memcpy(&e->key.bgp_nexthop.a, &info->attr->mp_nexthop, HostAddrSz);
 	}
-#endif
 	else {
 	  e->key.bgp_nexthop.a.address.ipv4.s_addr = info->attr->nexthop.s_addr;
 	  e->key.bgp_nexthop.a.family = AF_INET;
@@ -3206,7 +3331,6 @@ int PT_map_index_fdata_bgp_nexthop_handler(struct id_entry *e, pm_hash_serial_t 
 	    e->key.bgp_nexthop.a.family = AF_INET;
 	  }
 	}
-#if defined ENABLE_IPV6
 	else if (pptrs->l3_proto == ETHERTYPE_IPV6) {
 	  if (tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].len) {
 	    memcpy(&e->key.bgp_nexthop.a.address.ipv6, pptrs->f_data+tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].off, MIN(tpl->tpl[NF9_BGP_IPV6_NEXT_HOP].len, 16));
@@ -3221,7 +3345,6 @@ int PT_map_index_fdata_bgp_nexthop_handler(struct id_entry *e, pm_hash_serial_t 
 	    e->key.bgp_nexthop.a.family = AF_INET6;
 	  }
 	}
-#endif
       }
     }
     else if (config.acct_type == ACCT_SF) {
@@ -3229,12 +3352,10 @@ int PT_map_index_fdata_bgp_nexthop_handler(struct id_entry *e, pm_hash_serial_t 
 	e->key.bgp_nexthop.a.family = AF_INET;
 	e->key.bgp_nexthop.a.address.ipv4.s_addr = sample->bgp_nextHop.address.ip_v4.s_addr;
       }
-#if defined ENABLE_IPV6
       else if (sample->gotIPV6) {
 	e->key.bgp_nexthop.a.family = AF_INET6;
 	memcpy(&e->key.bgp_nexthop.a.address.ipv6, &sample->bgp_nextHop.address.ip_v6, IP6AddrSz);
       }
-#endif
     }
     else return TRUE;
   }
@@ -3356,7 +3477,7 @@ int PT_map_index_fdata_peer_src_as_handler(struct id_entry *e, pm_hash_serial_t 
   struct bgp_node *src_ret = (struct bgp_node *) pptrs->bgp_src;
   struct bgp_info *info;
 
-  if (config.nfacctd_bgp_peer_as_src_type & BGP_SRC_PRIMITIVES_MAP) {
+  if (config.bgp_daemon_peer_as_src_type & BGP_SRC_PRIMITIVES_MAP) {
     e->key.peer_src_as.n = pptrs->bpas;
   }
   else {
@@ -3469,25 +3590,53 @@ int PT_map_index_fdata_mpls_vpn_rd_handler(struct id_entry *e, pm_hash_serial_t 
   return FALSE;
 }
 
+int PT_map_index_fdata_mpls_pw_id_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
+{
+  struct packet_ptrs *pptrs = (struct packet_ptrs *) src;
+  struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+  u_int32_t tmp32 = 0;
+
+  if (config.acct_type == ACCT_NF) {
+    switch (hdr->version) {
+    case 10:
+    case 9:
+      if (tpl->tpl[NF9_PSEUDOWIREID].len) {
+	memcpy(&tmp32, pptrs->f_data+tpl->tpl[NF9_PSEUDOWIREID].off, 4);
+	e->key.mpls_pw_id.n = ntohl(tmp32);
+      }
+    }
+  }
+  else if (config.acct_type == ACCT_SF) {
+    e->key.mpls_pw_id.n = sample->mpls_vll_vc_id;
+  }
+  else return TRUE;
+
+  hash_serial_append(hash_serializer, (char *)&e->key.mpls_pw_id.n, sizeof(u_int32_t), FALSE);
+  return FALSE;
+}
+
 int PT_map_index_fdata_mpls_vpn_id_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
 {
   struct packet_ptrs *pptrs = (struct packet_ptrs *) src;
   struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
   struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+  u_int32_t tmp32 = 0;
 
   if (config.acct_type == ACCT_NF) {
     switch(hdr->version) {
     case 10:
     case 9:
       if (tpl->tpl[NF9_INGRESS_VRFID].len) {
-        memcpy(&e->key.mpls_vpn_id.n, pptrs->f_data+tpl->tpl[NF9_INGRESS_VRFID].off, MIN(tpl->tpl[NF9_INGRESS_VRFID].len, 4));
+        memcpy(&tmp32, pptrs->f_data+tpl->tpl[NF9_INGRESS_VRFID].off, MIN(tpl->tpl[NF9_INGRESS_VRFID].len, 4));
+	e->key.mpls_vpn_id.n = ntohl(tmp32);
       }
 
-      if (tpl->tpl[NF9_EGRESS_VRFID].len) {
-        memcpy(&e->key.mpls_vpn_id.n, pptrs->f_data+tpl->tpl[NF9_EGRESS_VRFID].off, MIN(tpl->tpl[NF9_EGRESS_VRFID].len, 4));
+      if (tpl->tpl[NF9_EGRESS_VRFID].len && !e->key.mpls_vpn_id.n) {
+        memcpy(&tmp32, pptrs->f_data+tpl->tpl[NF9_EGRESS_VRFID].off, MIN(tpl->tpl[NF9_EGRESS_VRFID].len, 4));
+	e->key.mpls_vpn_id.n = ntohl(tmp32);
       }
-
-      break;
     }
   }
 
@@ -3655,9 +3804,9 @@ int PT_map_index_fdata_fwdstatus_handler(struct id_entry *e, pm_hash_serial_t *h
   return FALSE;
 }
 
-void pcap_interfaces_map_validate(char *filename, struct plugin_requests *req)
+void pm_pcap_interfaces_map_validate(char *filename, struct plugin_requests *req)
 {
-  struct pcap_interfaces *table = (struct pcap_interfaces *) req->key_value_table;
+  struct pm_pcap_interfaces *table = (struct pm_pcap_interfaces *) req->key_value_table;
   int valid = FALSE;
 
   if (table && table->list) {
@@ -3665,13 +3814,13 @@ void pcap_interfaces_map_validate(char *filename, struct plugin_requests *req)
       valid = TRUE;
 
     if (valid) table->num++;
-    else memset(&table->list[table->num], 0, sizeof(struct pcap_interface));
+    else memset(&table->list[table->num], 0, sizeof(struct pm_pcap_interface));
   }
 }
 
-int pcap_interfaces_map_ifindex_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
+int pm_pcap_interfaces_map_ifindex_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
 {
-  struct pcap_interfaces *table = (struct pcap_interfaces *) req->key_value_table;
+  struct pm_pcap_interfaces *table = (struct pm_pcap_interfaces *) req->key_value_table;
   char *endp;
 
   if (table && table->list) {
@@ -3695,9 +3844,9 @@ int pcap_interfaces_map_ifindex_handler(char *filename, struct id_entry *e, char
   return FALSE;
 }
 
-int pcap_interfaces_map_ifname_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
+int pm_pcap_interfaces_map_ifname_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
 {
-  struct pcap_interfaces *table = (struct pcap_interfaces *) req->key_value_table;
+  struct pm_pcap_interfaces *table = (struct pm_pcap_interfaces *) req->key_value_table;
 
   if (table && table->list) {
     if (table->num < PCAP_MAX_INTERFACES) {
@@ -3720,9 +3869,9 @@ int pcap_interfaces_map_ifname_handler(char *filename, struct id_entry *e, char 
   return FALSE;
 }
 
-int pcap_interfaces_map_direction_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
+int pm_pcap_interfaces_map_direction_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
 {
-  struct pcap_interfaces *table = (struct pcap_interfaces *) req->key_value_table;
+  struct pm_pcap_interfaces *table = (struct pm_pcap_interfaces *) req->key_value_table;
 
   if (table && table->list) {
     if (table->num < PCAP_MAX_INTERFACES) {
@@ -3747,49 +3896,49 @@ int pcap_interfaces_map_direction_handler(char *filename, struct id_entry *e, ch
   return FALSE;
 }
 
-void pcap_interfaces_map_initialize(struct pcap_interfaces *map)
+void pm_pcap_interfaces_map_initialize(struct pm_pcap_interfaces *map)
 {
-  memset(map, 0, sizeof(struct pcap_interfaces));
+  memset(map, 0, sizeof(struct pm_pcap_interfaces));
 
   /* Setting up the list */
-  map->list = malloc((PCAP_MAX_INTERFACES) * sizeof(struct pcap_interface));
+  map->list = malloc((PCAP_MAX_INTERFACES) * sizeof(struct pm_pcap_interface));
   if (!map->list) {
     Log(LOG_ERR, "ERROR ( %s/%s ): unable to allocate pcap_interfaces_map. Exiting ...\n", config.name, config.type);
     exit_gracefully(1);
   }
-  else memset(map->list, 0, (PCAP_MAX_INTERFACES) * sizeof(struct pcap_interface));
+  else memset(map->list, 0, (PCAP_MAX_INTERFACES) * sizeof(struct pm_pcap_interface));
 }
 
-void pcap_interfaces_map_load(struct pcap_interfaces *map)
+void pm_pcap_interfaces_map_load(struct pm_pcap_interfaces *map)
 {
   struct plugin_requests req;
-  int pcap_interfaces_allocated = FALSE;
+  int pm_pcap_interfaces_allocated = FALSE;
 
   memset(&req, 0, sizeof(req));
 
   req.key_value_table = (void *) map;
-  load_id_file(MAP_PCAP_INTERFACES, config.pcap_interfaces_map, NULL, &req, &pcap_interfaces_allocated);
+  load_id_file(MAP_PCAP_INTERFACES, config.pcap_interfaces_map, NULL, &req, &pm_pcap_interfaces_allocated);
 }
 
-void pcap_interfaces_map_destroy(struct pcap_interfaces *map)
+void pm_pcap_interfaces_map_destroy(struct pm_pcap_interfaces *map)
 {
   int idx;
 
-  for (idx = 0; idx < map->num; idx++) memset(&map->list[idx], 0, sizeof(struct pcap_interface));
+  for (idx = 0; idx < map->num; idx++) memset(&map->list[idx], 0, sizeof(struct pm_pcap_interface));
 
   map->num = 0;
 }
 
-void pcap_interfaces_map_copy(struct pcap_interfaces *dst, struct pcap_interfaces *src)
+void pm_pcap_interfaces_map_copy(struct pm_pcap_interfaces *dst, struct pm_pcap_interfaces *src)
 {
   int idx;
 
-  for (idx = 0; idx < src->num; idx++) memcpy(&dst->list[idx], &src->list[idx], sizeof(struct pcap_interface)); 
+  for (idx = 0; idx < src->num; idx++) memcpy(&dst->list[idx], &src->list[idx], sizeof(struct pm_pcap_interface)); 
 
   dst->num = src->num;
 }
 
-u_int32_t pcap_interfaces_map_lookup_ifname(struct pcap_interfaces *map, char *ifname)
+u_int32_t pm_pcap_interfaces_map_lookup_ifname(struct pm_pcap_interfaces *map, char *ifname)
 {
   u_int32_t ifindex = 0;
   int idx;
@@ -3804,7 +3953,7 @@ u_int32_t pcap_interfaces_map_lookup_ifname(struct pcap_interfaces *map, char *i
   return ifindex;
 }
 
-struct pcap_interface *pcap_interfaces_map_getentry_by_ifname(struct pcap_interfaces *map, char *ifname)
+struct pm_pcap_interface *pm_pcap_interfaces_map_getentry_by_ifname(struct pm_pcap_interfaces *map, char *ifname)
 {
   int idx;
 
@@ -3817,7 +3966,7 @@ struct pcap_interface *pcap_interfaces_map_getentry_by_ifname(struct pcap_interf
   return NULL;
 }
 
-char *pcap_interfaces_map_getnext_ifname(struct pcap_interfaces *map, int *index)
+char *pm_pcap_interfaces_map_getnext_ifname(struct pm_pcap_interfaces *map, int *index)
 {
   char *ifname = NULL;
   int loc_idx = (*index);

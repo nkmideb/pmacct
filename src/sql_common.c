@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -19,15 +19,54 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __SQL_COMMON_C
-
 /* includes */
 #include "pmacct.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "sql_common.h"
+#include "sql_common_m.h"
 #include "crc32.h"
-#include "sql_common_m.c"
+
+/* Global variables */
+char sql_data[LARGEBUFLEN];
+char lock_clause[LONGSRVBUFLEN];
+char unlock_clause[LONGSRVBUFLEN];
+char update_clause[LONGSRVBUFLEN];
+char set_clause[LONGSRVBUFLEN];
+char copy_clause[LONGSRVBUFLEN];
+char insert_clause[LONGSRVBUFLEN];
+char insert_counters_clause[LONGSRVBUFLEN];
+char insert_nocounters_clause[LONGSRVBUFLEN];
+char insert_full_clause[LONGSRVBUFLEN];
+char values_clause[LONGLONGSRVBUFLEN];
+char *multi_values_buffer;
+char where_clause[LONGLONGSRVBUFLEN];
+unsigned char *pipebuf;
+struct db_cache *sql_cache;
+struct db_cache **sql_queries_queue, **sql_pending_queries_queue;
+struct db_cache *collision_queue;
+int cq_ptr, qq_ptr, qq_size, pp_size, pb_size, pn_size, pm_size, pt_size;
+int pc_size, dbc_size, cq_size, pqq_ptr;
+struct db_cache lru_head, *lru_tail;
+struct frags where[N_PRIMITIVES+2];
+struct frags values[N_PRIMITIVES+2];
+struct frags copy_values[N_PRIMITIVES+2];
+struct frags set[N_PRIMITIVES+2];
+struct frags set_event[N_PRIMITIVES+2];
+int glob_num_primitives; /* last resort for signal handling */
+int glob_basetime; /* last resort for signal handling */
+time_t glob_new_basetime; /* last resort for signal handling */
+time_t glob_committed_basetime; /* last resort for signal handling */
+int glob_dyn_table, glob_dyn_table_time_only; /* last resort for signal handling */
+int glob_timeslot; /* last resort for sql handlers */
+
+struct sqlfunc_cb_registry sqlfunc_cbr; 
+void (*insert_func)(struct primitives_ptrs *, struct insert_data *);
+struct DBdesc p;
+struct DBdesc b;
+struct BE_descs bed;
+struct largebuf_s envbuf;
+time_t now; /* PostgreSQL */
 
 /* Functions */
 void sql_set_signals()
@@ -86,24 +125,24 @@ void sql_init_global_buffers()
   memset(&lru_head, 0, sizeof(lru_head));
   lru_tail = &lru_head;
 
-  Log(LOG_INFO, "INFO ( %s/%s ): cache entries=%llu base cache memory=%llu bytes\n", config.name, config.type,
+  Log(LOG_INFO, "INFO ( %s/%s ): cache entries=%d base cache memory=%luu bytes\n", config.name, config.type,
         config.sql_cache_entries, ((config.sql_cache_entries * sizeof(struct db_cache)) +
 	(2 * (qq_size * sizeof(struct db_cache *)))));
 
   pipebuf = (unsigned char *) malloc(config.buffer_size);
-  cache = (struct db_cache *) malloc(config.sql_cache_entries*sizeof(struct db_cache));
-  queries_queue = (struct db_cache **) malloc(qq_size*sizeof(struct db_cache *));
-  pending_queries_queue = (struct db_cache **) malloc(qq_size*sizeof(struct db_cache *));
+  sql_cache = (struct db_cache *) malloc(config.sql_cache_entries*sizeof(struct db_cache));
+  sql_queries_queue = (struct db_cache **) malloc(qq_size*sizeof(struct db_cache *));
+  sql_pending_queries_queue = (struct db_cache **) malloc(qq_size*sizeof(struct db_cache *));
 
-  if (!pipebuf || !cache || !queries_queue || !pending_queries_queue) {
+  if (!pipebuf || !sql_cache || !sql_queries_queue || !sql_pending_queries_queue) {
     Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (sql_init_global_buffers). Exiting ..\n", config.name, config.type);
     exit_gracefully(1);
   }
 
   memset(pipebuf, 0, config.buffer_size);
-  memset(cache, 0, config.sql_cache_entries*sizeof(struct db_cache));
-  memset(queries_queue, 0, qq_size*sizeof(struct db_cache *));
-  memset(pending_queries_queue, 0, qq_size*sizeof(struct db_cache *));
+  memset(sql_cache, 0, config.sql_cache_entries*sizeof(struct db_cache));
+  memset(sql_queries_queue, 0, qq_size*sizeof(struct db_cache *));
+  memset(sql_pending_queries_queue, 0, qq_size*sizeof(struct db_cache *));
 }
 
 /* being the first routine to be called by each SQL plugin, this is
@@ -111,6 +150,8 @@ void sql_init_global_buffers()
    check */ 
 void sql_init_default_values(struct extra_primitives *extras)
 {
+  memset(empty_mem_area_256b, 0, sizeof(empty_mem_area_256b));
+
   if (config.proc_priority) {
     int ret;
 
@@ -283,7 +324,7 @@ void sql_cache_modulo(struct primitives_ptrs *prim_ptrs, struct insert_data *ida
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
+  u_char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
 
   idata->hash = cache_crc32((unsigned char *)srcdst, pp_size);
@@ -321,11 +362,11 @@ int sql_cache_flush(struct db_cache *queue[], int index, struct insert_data *ida
   if (!exiting) {
     for (j = 0, pqq_ptr = 0; j < index; j++) {
       if (new_basetime && queue[j]->basetime+delay >= idata->basetime) {
-        pending_queries_queue[pqq_ptr] = queue[j];
+        sql_pending_queries_queue[pqq_ptr] = queue[j];
         pqq_ptr++;
       }
       else if (!new_basetime && queue[j]->basetime+delay > idata->basetime) {
-        pending_queries_queue[pqq_ptr] = queue[j];
+        sql_pending_queries_queue[pqq_ptr] = queue[j];
         pqq_ptr++;
       }
       else queue[j]->valid = SQL_CACHE_COMMITTED;
@@ -413,6 +454,7 @@ void sql_cache_handle_flush_event(struct insert_data *idata, time_t *refresh_dea
       signal(SIGINT, SIG_IGN);
       signal(SIGHUP, SIG_IGN);
       pm_setproctitle("%s %s [%s]", config.type, "Plugin -- DB Writer", config.name);
+      config.is_forked = TRUE;
 
       if (qq_ptr) {
         if (dump_writers_get_flags() == CHLD_WARNING) sql_db_fail(&p);
@@ -423,7 +465,7 @@ void sql_cache_handle_flush_event(struct insert_data *idata, time_t *refresh_dea
       }
 
       /* qq_ptr check inside purge function along with a Log() call */
-      (*sqlfunc_cbr.purge)(queries_queue, qq_ptr, idata);
+      (*sqlfunc_cbr.purge)(sql_queries_queue, qq_ptr, idata);
 
       if (qq_ptr) (*sqlfunc_cbr.close)(&bed);
 
@@ -441,7 +483,7 @@ void sql_cache_handle_flush_event(struct insert_data *idata, time_t *refresh_dea
   }
   else Log(LOG_WARNING, "WARN ( %s/%s ): Maximum number of writer processes reached (%d).\n", config.name, config.type, dump_writers_get_active());
 
-  if (pqq_ptr) sql_cache_flush_pending(pending_queries_queue, pqq_ptr, idata);
+  if (pqq_ptr) sql_cache_flush_pending(sql_pending_queries_queue, pqq_ptr, idata);
   gettimeofday(&idata->flushtime, NULL);
   while (idata->now > *refresh_deadline)
     *refresh_deadline += config.sql_refresh_time;
@@ -454,12 +496,17 @@ void sql_cache_handle_flush_event(struct insert_data *idata, time_t *refresh_dea
   idata->new_basetime = FALSE;
   glob_new_basetime = FALSE;
   qq_ptr = pqq_ptr;
-  memcpy(queries_queue, pending_queries_queue, qq_ptr*sizeof(struct db_cache *));
+  memcpy(sql_queries_queue, sql_pending_queries_queue, qq_ptr*sizeof(struct db_cache *));
 
   if (reload_map) {
     load_networks(config.networks_file, &nt, &nc);
     load_ports(config.ports_file, pt);
     reload_map = FALSE;
+  }
+
+  if (reload_log) {
+    reload_logs();
+    reload_log = FALSE;
   }
 }
 
@@ -471,18 +518,16 @@ struct db_cache *sql_cache_search(struct primitives_ptrs *prim_ptrs, time_t base
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
+  u_char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
-  unsigned int modulo;
   struct db_cache *Cursor;
   struct insert_data idata;
   int res_data = TRUE, res_bgp = TRUE, res_nat = TRUE, res_mpls = TRUE, res_tun = TRUE;
   int res_cust = TRUE, res_vlen = TRUE;
 
   sql_cache_modulo(prim_ptrs, &idata);
-  modulo = idata.modulo;
 
-  Cursor = &cache[idata.modulo];
+  Cursor = &sql_cache[idata.modulo];
 
   start:
   if (idata.hash != Cursor->signature) {
@@ -549,7 +594,7 @@ void sql_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *ida
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
+  u_char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   time_t basetime = idata->basetime, timeslot = idata->timeslot;
   struct pkt_primitives *srcdst = &data->primitives;
@@ -639,7 +684,7 @@ void sql_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *ida
   }
 
   sql_cache_modulo(prim_ptrs, idata);
-  Cursor = &cache[idata->modulo];
+  Cursor = &sql_cache[idata->modulo];
 
   start:
   insert_status = SQL_INSERT_INSERT;
@@ -729,7 +774,7 @@ void sql_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *ida
 
   if (insert_status == SQL_INSERT_INSERT) {
     if (qq_ptr < qq_size) {
-      queries_queue[qq_ptr] = Cursor;
+      sql_queries_queue[qq_ptr] = Cursor;
       qq_ptr++;
     }
     else SafePtr = Cursor;
@@ -903,7 +948,7 @@ void sql_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *ida
 
     Log(LOG_INFO, "INFO ( %s/%s ): Finished cache entries (ie. sql_cache_entries). Purging.\n", config.name, config.type);
   
-    if (qq_ptr) sql_cache_flush(queries_queue, qq_ptr, idata, FALSE); 
+    if (qq_ptr) sql_cache_flush(sql_queries_queue, qq_ptr, idata, FALSE); 
 
     dump_writers_count();
     if (dump_writers_get_flags() != CHLD_ALERT) {
@@ -912,11 +957,12 @@ void sql_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *ida
         signal(SIGINT, SIG_IGN);
         signal(SIGHUP, SIG_IGN);
         pm_setproctitle("%s [%s]", "SQL Plugin -- DB Writer (urgent)", config.name);
+	config.is_forked = TRUE;
   
         if (qq_ptr) {
           if (dump_writers_get_flags() == CHLD_WARNING) sql_db_fail(&p);
           (*sqlfunc_cbr.connect)(&p, config.sql_host);
-          (*sqlfunc_cbr.purge)(queries_queue, qq_ptr, idata);
+          (*sqlfunc_cbr.purge)(sql_queries_queue, qq_ptr, idata);
           (*sqlfunc_cbr.close)(&bed);
         }
   
@@ -931,14 +977,14 @@ void sql_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *ida
     else Log(LOG_WARNING, "WARN ( %s/%s ): Maximum number of writer processes reached (%d).\n", config.name, config.type, dump_writers_get_active());
   
     qq_ptr = pqq_ptr;
-    memcpy(queries_queue, pending_queries_queue, sizeof(queries_queue));
+    memcpy(sql_queries_queue, sql_pending_queries_queue, sizeof(*sql_queries_queue));
 
     if (SafePtr) {
-      queries_queue[qq_ptr] = Cursor;
+      sql_queries_queue[qq_ptr] = Cursor;
       qq_ptr++;
     }
     else {
-      Cursor = &cache[idata->modulo];
+      Cursor = &sql_cache[idata->modulo];
       goto start;
     }
   }
@@ -1059,13 +1105,13 @@ void sql_exit_gracefully(int signum)
   if (config.sql_backup_host) idata.recover = TRUE;
   if (config.sql_locking_style) idata.locks = sql_select_locking_style(config.sql_locking_style);
 
-  sql_cache_flush(queries_queue, qq_ptr, &idata, TRUE);
+  sql_cache_flush(sql_queries_queue, qq_ptr, &idata, TRUE);
 
   dump_writers_count();
   if (dump_writers_get_flags() != CHLD_ALERT) {
     if (dump_writers_get_flags() == CHLD_WARNING) sql_db_fail(&p);
     (*sqlfunc_cbr.connect)(&p, config.sql_host);
-    (*sqlfunc_cbr.purge)(queries_queue, qq_ptr, &idata);
+    (*sqlfunc_cbr.purge)(sql_queries_queue, qq_ptr, &idata);
     (*sqlfunc_cbr.close)(&bed);
   }
   else Log(LOG_WARNING, "WARN ( %s/%s ): Maximum number of writer processes reached (%d).\n", config.name, config.type, dump_writers_get_active());
@@ -1152,6 +1198,9 @@ int sql_evaluate_primitives(int primitive)
     if (config.what_to_count & COUNT_SRC_LOCAL_PREF) what_to_count |= COUNT_SRC_LOCAL_PREF;
     if (config.what_to_count & COUNT_SRC_MED) what_to_count |= COUNT_SRC_MED;
 
+    if (config.what_to_count_2 & COUNT_SRC_ROA) what_to_count_2 |= COUNT_SRC_ROA;
+    if (config.what_to_count_2 & COUNT_DST_ROA) what_to_count_2 |= COUNT_DST_ROA;
+
     if (config.sql_table_version < 6) {
       if (config.what_to_count & COUNT_SRC_AS) what_to_count |= COUNT_SRC_AS;
       else if (config.what_to_count & COUNT_SUM_AS) what_to_count |= COUNT_SUM_AS; 
@@ -1220,10 +1269,14 @@ int sql_evaluate_primitives(int primitive)
     if (config.what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM) what_to_count_2 |= COUNT_MPLS_LABEL_BOTTOM;
     if (config.what_to_count_2 & COUNT_MPLS_STACK_DEPTH) what_to_count_2 |= COUNT_MPLS_STACK_DEPTH;
 
+    if (config.what_to_count_2 & COUNT_TUNNEL_SRC_MAC) what_to_count_2 |= COUNT_TUNNEL_SRC_MAC;
+    if (config.what_to_count_2 & COUNT_TUNNEL_DST_MAC) what_to_count_2 |= COUNT_TUNNEL_DST_MAC;
     if (config.what_to_count_2 & COUNT_TUNNEL_SRC_HOST) what_to_count_2 |= COUNT_TUNNEL_SRC_HOST;
     if (config.what_to_count_2 & COUNT_TUNNEL_DST_HOST) what_to_count_2 |= COUNT_TUNNEL_DST_HOST;
     if (config.what_to_count_2 & COUNT_TUNNEL_IP_PROTO) what_to_count_2 |= COUNT_TUNNEL_IP_PROTO;
     if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) what_to_count_2 |= COUNT_TUNNEL_IP_TOS;
+    if (config.what_to_count_2 & COUNT_TUNNEL_SRC_PORT) what_to_count_2 |= COUNT_TUNNEL_SRC_PORT;
+    if (config.what_to_count_2 & COUNT_TUNNEL_DST_PORT) what_to_count_2 |= COUNT_TUNNEL_DST_PORT;
 
     if (config.what_to_count_2 & COUNT_TIMESTAMP_START) what_to_count_2 |= COUNT_TIMESTAMP_START;
     if (config.what_to_count_2 & COUNT_TIMESTAMP_END) what_to_count_2 |= COUNT_TIMESTAMP_END;
@@ -1813,6 +1866,34 @@ int sql_evaluate_primitives(int primitive)
     primitive++;
   }
 
+  if (what_to_count_2 & COUNT_SRC_ROA) {
+    if (primitive) {
+      strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+      strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+      strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    }
+    strncat(insert_clause, "roa_src", SPACELEFT(insert_clause));
+    strncat(values[primitive].string, "%s", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, "roa_src=%s", SPACELEFT(where[primitive].string));
+    values[primitive].type = where[primitive].type = COUNT_INT_SRC_ROA;
+    values[primitive].handler = where[primitive].handler = count_src_roa_handler;
+    primitive++;
+  }
+
+  if (what_to_count_2 & COUNT_DST_ROA) {
+    if (primitive) {
+      strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+      strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+      strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    }
+    strncat(insert_clause, "roa_dst", SPACELEFT(insert_clause));
+    strncat(values[primitive].string, "%s", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, "roa_dst=%s", SPACELEFT(where[primitive].string));
+    values[primitive].type = where[primitive].type = COUNT_INT_DST_ROA;
+    values[primitive].handler = where[primitive].handler = count_dst_roa_handler;
+    primitive++;
+  }
+
   if (what_to_count & COUNT_MPLS_VPN_RD) {
     if (primitive) {
       strncat(insert_clause, ", ", SPACELEFT(insert_clause));
@@ -1824,6 +1905,20 @@ int sql_evaluate_primitives(int primitive)
     strncat(where[primitive].string, "mpls_vpn_rd=\'%s\'", SPACELEFT(where[primitive].string));
     values[primitive].type = where[primitive].type = COUNT_INT_MPLS_VPN_RD;
     values[primitive].handler = where[primitive].handler = count_mpls_vpn_rd_handler;
+    primitive++;
+  }
+
+  if (what_to_count_2 & COUNT_MPLS_PW_ID) {
+    if (primitive) {
+      strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+      strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+      strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    }
+    strncat(insert_clause, "mpls_pw_id", SPACELEFT(insert_clause));
+    strncat(values[primitive].string, "%u", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, "mpls_pw_id=%u", SPACELEFT(where[primitive].string));
+    values[primitive].type = where[primitive].type = COUNT_INT_MPLS_PW_ID;
+    values[primitive].handler = where[primitive].handler = count_mpls_pw_id_handler;
     primitive++;
   }
 
@@ -2168,11 +2263,17 @@ int sql_evaluate_primitives(int primitive)
       strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
     }
     strncat(insert_clause, "lat_ip_src", SPACELEFT(insert_clause));
-    strncat(values[primitive].string, "%f", SPACELEFT(values[primitive].string));
-    strncat(where[primitive].string, "lat_ip_src=%f", SPACELEFT(where[primitive].string));
+    strncat(values[primitive].string, "\'%f\'", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, "lat_ip_src=\'%f\'", SPACELEFT(where[primitive].string));
+
+    strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+    strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+
     strncat(insert_clause, "lon_ip_src", SPACELEFT(insert_clause));
-    strncat(values[primitive].string, "%f", SPACELEFT(values[primitive].string));
-    strncat(where[primitive].string, "lon_ip_src=%f", SPACELEFT(where[primitive].string));
+    strncat(values[primitive].string, "\'%f\'", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    strncat(where[primitive].string, "lon_ip_src=\'%f\'", SPACELEFT(where[primitive].string));
     values[primitive].type = where[primitive].type = COUNT_INT_SRC_HOST_COORDS;
     values[primitive].handler = where[primitive].handler = count_src_host_coords_handler;
     primitive++;
@@ -2185,11 +2286,17 @@ int sql_evaluate_primitives(int primitive)
       strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
     }
     strncat(insert_clause, "lat_ip_dst", SPACELEFT(insert_clause));
-    strncat(values[primitive].string, "%f", SPACELEFT(values[primitive].string));
-    strncat(where[primitive].string, "lat_ip_dst=%f", SPACELEFT(where[primitive].string));
+    strncat(values[primitive].string, "\'%f\'", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, "lat_ip_dst=\'%f\'", SPACELEFT(where[primitive].string));
+
+    strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+    strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+
     strncat(insert_clause, "lon_ip_dst", SPACELEFT(insert_clause));
-    strncat(values[primitive].string, "%f", SPACELEFT(values[primitive].string));
-    strncat(where[primitive].string, "lon_ip_dst=%f", SPACELEFT(where[primitive].string));
+    strncat(values[primitive].string, "\'%f\'", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    strncat(where[primitive].string, "lon_ip_dst=\'%f\'", SPACELEFT(where[primitive].string));
     values[primitive].type = where[primitive].type = COUNT_INT_DST_HOST_COORDS;
     values[primitive].handler = where[primitive].handler = count_dst_host_coords_handler;
     primitive++;
@@ -2217,7 +2324,7 @@ int sql_evaluate_primitives(int primitive)
       strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
     }
     strncat(insert_clause, "sampling_direction", SPACELEFT(insert_clause));
-    strncat(values[primitive].string, "%s", SPACELEFT(values[primitive].string));
+    strncat(values[primitive].string, "\'%s\'", SPACELEFT(values[primitive].string));
     strncat(where[primitive].string, "sampling_direction=\'%s\'", SPACELEFT(where[primitive].string));
     values[primitive].type = where[primitive].type = COUNT_INT_SAMPLING_DIRECTION;
     values[primitive].handler = where[primitive].handler = count_sampling_direction_handler;
@@ -2356,6 +2463,34 @@ int sql_evaluate_primitives(int primitive)
     primitive++;
   }
 
+  if (what_to_count_2 & COUNT_TUNNEL_SRC_MAC) {
+    if (primitive) {
+      strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+      strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+      strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    }
+    strncat(insert_clause, "tunnel_mac_src", SPACELEFT(insert_clause));
+    strncat(values[primitive].string, "\'%s\'", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, "tunnel_mac_src=\'%s\'", SPACELEFT(where[primitive].string));
+    values[primitive].type = where[primitive].type = COUNT_INT_TUNNEL_SRC_MAC;
+    values[primitive].handler = where[primitive].handler = count_tunnel_src_mac_handler;
+    primitive++;
+  }
+
+  if (what_to_count_2 & COUNT_TUNNEL_DST_MAC) {
+    if (primitive) {
+      strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+      strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+      strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    }
+    strncat(insert_clause, "tunnel_mac_dst", SPACELEFT(insert_clause));
+    strncat(values[primitive].string, "\'%s\'", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, "tunnel_mac_dst=\'%s\'", SPACELEFT(where[primitive].string));
+    values[primitive].type = where[primitive].type = COUNT_INT_TUNNEL_DST_MAC;
+    values[primitive].handler = where[primitive].handler = count_tunnel_dst_mac_handler;
+    primitive++;
+  }
+
   if (what_to_count_2 & COUNT_TUNNEL_SRC_HOST) {
     if (primitive) {
       strncat(insert_clause, ", ", SPACELEFT(insert_clause));
@@ -2439,6 +2574,48 @@ int sql_evaluate_primitives(int primitive)
     primitive++;
   }
 
+  if (what_to_count_2 & COUNT_TUNNEL_SRC_PORT) {
+    if (primitive) {
+      strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+      strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+      strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    }
+    strncat(insert_clause, "tunnel_port_src", SPACELEFT(insert_clause));
+    strncat(where[primitive].string, "tunnel_port_src=%u", SPACELEFT(where[primitive].string));
+    strncat(values[primitive].string, "%u", SPACELEFT(values[primitive].string));
+    values[primitive].type = where[primitive].type = COUNT_INT_TUNNEL_SRC_PORT;
+    values[primitive].handler = where[primitive].handler = count_tunnel_src_port_handler;
+    primitive++;
+  }
+
+  if (what_to_count_2 & COUNT_TUNNEL_DST_PORT) {
+    if (primitive) {
+      strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+      strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+      strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    }
+    strncat(insert_clause, "tunnel_port_dst", SPACELEFT(insert_clause));
+    strncat(where[primitive].string, "tunnel_port_dst=%u", SPACELEFT(where[primitive].string));
+    strncat(values[primitive].string, "%u", SPACELEFT(values[primitive].string));
+    values[primitive].type = where[primitive].type = COUNT_INT_TUNNEL_DST_PORT;
+    values[primitive].handler = where[primitive].handler = count_tunnel_dst_port_handler;
+    primitive++;
+  }
+
+  if (what_to_count_2 & COUNT_VXLAN) {
+    if (primitive) {
+      strncat(insert_clause, ", ", SPACELEFT(insert_clause));
+      strncat(values[primitive].string, delim_buf, SPACELEFT(values[primitive].string));
+      strncat(where[primitive].string, " AND ", SPACELEFT(where[primitive].string));
+    }
+    strncat(insert_clause, "vxlan", SPACELEFT(insert_clause));
+    strncat(values[primitive].string, "%u", SPACELEFT(values[primitive].string));
+    strncat(where[primitive].string, "vxlan=%u", SPACELEFT(where[primitive].string));
+    values[primitive].type = where[primitive].type = COUNT_INT_VXLAN;
+    values[primitive].handler = where[primitive].handler = count_vxlan_handler;
+    primitive++;
+  }
+
   if (what_to_count_2 & COUNT_TIMESTAMP_START) {
     int use_copy=0;
 
@@ -2463,8 +2640,8 @@ int sql_evaluate_primitives(int primitive)
 	  use_copy = TRUE;
 	}
 	else {
-          strncat(where[primitive].string, "timestamp_start=ABSTIME(%u)::Timestamp", SPACELEFT(where[primitive].string));
-          strncat(values[primitive].string, "ABSTIME(%u)::Timestamp", SPACELEFT(values[primitive].string));
+          strncat(where[primitive].string, "timestamp_start=to_timestamp(%u)", SPACELEFT(where[primitive].string));
+          strncat(values[primitive].string, "to_timestamp(%u)", SPACELEFT(values[primitive].string));
 	}
       }
       else if (!strcmp(config.type, "sqlite3")) {
@@ -2521,8 +2698,8 @@ int sql_evaluate_primitives(int primitive)
           use_copy = TRUE;
         }
         else {
-          strncat(where[primitive].string, "timestamp_end=ABSTIME(%u)::Timestamp", SPACELEFT(where[primitive].string));
-          strncat(values[primitive].string, "ABSTIME(%u)::Timestamp", SPACELEFT(values[primitive].string));
+          strncat(where[primitive].string, "timestamp_end=to_timestamp(%u)", SPACELEFT(where[primitive].string));
+          strncat(values[primitive].string, "to_timestamp(%u)", SPACELEFT(values[primitive].string));
         }
       }
       else if (!strcmp(config.type, "sqlite3")) {
@@ -2579,8 +2756,8 @@ int sql_evaluate_primitives(int primitive)
           use_copy = TRUE;
         }
         else {
-          strncat(where[primitive].string, "timestamp_arrival=ABSTIME(%u)::Timestamp", SPACELEFT(where[primitive].string));
-          strncat(values[primitive].string, "ABSTIME(%u)::Timestamp", SPACELEFT(values[primitive].string));
+          strncat(where[primitive].string, "timestamp_arrival=to_timestamp(%u)", SPACELEFT(where[primitive].string));
+          strncat(values[primitive].string, "to_timestamp(%u)", SPACELEFT(values[primitive].string));
         }
       }
       else if (!strcmp(config.type, "sqlite3")) {
@@ -2638,8 +2815,8 @@ int sql_evaluate_primitives(int primitive)
           use_copy = TRUE;
         }
         else {
-          strncat(where[primitive].string, "timestamp_min=ABSTIME(%u)::Timestamp", SPACELEFT(where[primitive].string));
-          strncat(values[primitive].string, "ABSTIME(%u)::Timestamp", SPACELEFT(values[primitive].string));
+          strncat(where[primitive].string, "timestamp_min=to_timestamp(%u)", SPACELEFT(where[primitive].string));
+          strncat(values[primitive].string, "to_timestamp(%u)", SPACELEFT(values[primitive].string));
         }
       }
       else if (!strcmp(config.type, "sqlite3")) {
@@ -2693,8 +2870,8 @@ int sql_evaluate_primitives(int primitive)
           use_copy = TRUE;
         }
         else {
-          strncat(where[primitive].string, "timestamp_max=ABSTIME(%u)::Timestamp", SPACELEFT(where[primitive].string));
-          strncat(values[primitive].string, "ABSTIME(%u)::Timestamp", SPACELEFT(values[primitive].string));
+          strncat(where[primitive].string, "timestamp_max=to_timestamp(%u)", SPACELEFT(where[primitive].string));
+          strncat(values[primitive].string, "to_timestamp(%u)", SPACELEFT(values[primitive].string));
         }
       }
       else if (!strcmp(config.type, "sqlite3")) {
@@ -2785,8 +2962,7 @@ int sql_evaluate_primitives(int primitive)
       cp_entry = &config.cpptrs.primitive[cp_idx];
       strncat(insert_clause, cp_entry->name, SPACELEFT(insert_clause));
       strncat(where[primitive].string, cp_entry->name, SPACELEFT(where[primitive].string));
-      if (cp_entry->ptr->semantics == CUSTOM_PRIMITIVE_TYPE_UINT ||
-	  cp_entry->ptr->semantics == CUSTOM_PRIMITIVE_TYPE_HEX) {
+      if (cp_entry->ptr->semantics == CUSTOM_PRIMITIVE_TYPE_UINT) {
 	strncat(where[primitive].string, "=%s", SPACELEFT(where[primitive].string));
         strncat(values[primitive].string, "%s", SPACELEFT(values[primitive].string));
       }
@@ -3315,7 +3491,6 @@ int sql_compose_static_set(int have_flows)
 {
   int set_primitives=0;
 
-#if defined HAVE_64BIT_COUNTERS
   strncpy(set[set_primitives].string, "SET packets=packets+%llu, bytes=bytes+%llu", SPACELEFT(set[set_primitives].string));
   set[set_primitives].type = COUNT_INT_COUNTERS;
   set[set_primitives].handler = count_counters_setclause_handler;
@@ -3328,20 +3503,6 @@ int sql_compose_static_set(int have_flows)
     set[set_primitives].handler = count_flows_setclause_handler;
     set_primitives++;
   }
-#else
-  strncpy(set[set_primitives].string, "SET packets=packets+%u, bytes=bytes+%u", SPACELEFT(set[set_primitives].string));
-  set[set_primitives].type = COUNT_INT_COUNTERS;
-  set[set_primitives].handler = count_counters_setclause_handler;
-  set_primitives++;
-
-  if (have_flows) {
-    strncpy(set[set_primitives].string, ", ", SPACELEFT(set[set_primitives].string));
-    strncat(set[set_primitives].string, "flows=flows+%u", SPACELEFT(set[set_primitives].string));
-    set[set_primitives].type = COUNT_INT_FLOWS;
-    set[set_primitives].handler = count_flows_setclause_handler;
-    set_primitives++;
-  }
-#endif
 
   if (config.what_to_count & COUNT_TCPFLAGS) {
     strncpy(set[set_primitives].string, ", ", SPACELEFT(set[set_primitives].string));

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,10 +19,12 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __LOG_C
-
 /* includes */
 #include "pmacct.h"
+
+/* Global variables */
+struct _log_notifications log_notifications;
+
 
 /* functions */
 void Log(short int level, char *msg, ...)

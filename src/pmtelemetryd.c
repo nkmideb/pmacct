@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -18,9 +18,6 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
-
-/* defines */
-#define __PMTELEMETRYD_C
 
 /* includes */
 #include "pmacct.h"
@@ -82,6 +79,10 @@ int main(int argc,char **argv, char **envp)
   extern int optind, opterr, optopt;
   int errflag, cp;
 
+#ifdef WITH_REDIS
+  struct p_redis_host redis_host;
+#endif
+
 #if defined HAVE_MALLOPT
   mallopt(M_CHECK_ACTION, 0);
 #endif
@@ -91,6 +92,7 @@ int main(int argc,char **argv, char **envp)
   memset(cfg_cmdline, 0, sizeof(cfg_cmdline));
   memset(&config, 0, sizeof(struct configuration));
   memset(&config_file, 0, sizeof(config_file));
+  memset(empty_mem_area_256b, 0, sizeof(empty_mem_area_256b));
 
   log_notifications_init(&log_notifications);
   config.acct_type = ACCT_PMTELE;
@@ -176,9 +178,6 @@ int main(int argc,char **argv, char **envp)
     }
   }
 
-  Log(LOG_INFO, "INFO ( %s/core ): %s %s (%s)\n", config.name, PMTELEMETRYD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
-  Log(LOG_INFO, "INFO ( %s/core ): %s\n", config.name, PMACCT_COMPILE_ARGS);
-
   /* post-checks and resolving conflicts */
   if (strlen(config_file)) {
     if (parse_configuration_file(config_file) != SUCCESS)
@@ -203,12 +202,6 @@ int main(int argc,char **argv, char **envp)
 
   if (config.files_umask) umask(config.files_umask);
 
-  if (config.daemon) {
-    if (debug || config.debug)
-      printf("WARN ( %s/core ): debug is enabled; forking in background. Logging to standard error (stderr) will get lost.\n", config.name);
-    daemonize();
-  }
-
   initsetproctitle(argc, argv, envp);
   if (config.syslog) {
     logf = parse_log_facility(config.syslog);
@@ -220,13 +213,22 @@ int main(int argc,char **argv, char **envp)
     Log(LOG_INFO, "INFO ( %s/core ): Start logging ...\n", config.name);
   }
 
-  if (config.logfile)
-  {
+  if (config.logfile) {
     config.logfile_fd = open_output_file(config.logfile, "a", FALSE);
     while (list) {
       list->cfg.logfile_fd = config.logfile_fd ;
       list = list->next;
     }
+  }
+
+  if (config.daemon) {
+    if (!config.syslog && !config.logfile) {
+      if (debug || config.debug) {
+	printf("WARN ( %s/core ): debug is enabled; forking in background. Logging to standard error (stderr) will get lost.\n", config.name);
+      }
+    }
+
+    daemonize();
   }
 
   if (config.proc_priority) {
@@ -236,6 +238,9 @@ int main(int argc,char **argv, char **envp)
     if (ret) Log(LOG_WARNING, "WARN ( %s/core ): proc_priority failed (errno: %d)\n", config.name, errno);
     else Log(LOG_INFO, "INFO ( %s/core ): proc_priority set to %d\n", config.name, getpriority(PRIO_PROCESS, 0));
   }
+
+  Log(LOG_INFO, "INFO ( %s/core ): %s %s (%s)\n", config.name, PMTELEMETRYD_USAGE_HEADER, PMACCT_VERSION, PMACCT_BUILD);
+  Log(LOG_INFO, "INFO ( %s/core ): %s\n", config.name, PMACCT_COMPILE_ARGS);
 
   if (strlen(config_file)) {
     char canonical_path[PATH_MAX], *canonical_path_ptr;
@@ -248,12 +253,52 @@ int main(int argc,char **argv, char **envp)
   pm_setproctitle("%s [%s]", "Core Process", config.proc_name);
 
   /* signal handling we want to inherit to plugins (when not re-defined elsewhere) */
-  signal(SIGCHLD, startup_handle_falling_child); /* takes note of plugins failed during startup phase */
-  signal(SIGHUP, reload); /* handles reopening of syslog channel */
-  signal(SIGUSR1, SIG_IGN);
-  signal(SIGUSR2, reload_maps); /* sets to true the reload_maps flag */
-  signal(SIGPIPE, SIG_IGN); /* we want to exit gracefully when a pipe is broken */
+  memset(&sighandler_action, 0, sizeof(sighandler_action)); /* To ensure the struct holds no garbage values */
+  sigemptyset(&sighandler_action.sa_mask);  /* Within a signal handler all the signals are enabled */
+  sighandler_action.sa_flags = SA_RESTART;  /* To enable re-entering a system call afer done with signal handling */
+
+  sighandler_action.sa_handler = startup_handle_falling_child;
+  sigaction(SIGCHLD, &sighandler_action, NULL);
+
+  /* handles reopening of syslog channel */
+  sighandler_action.sa_handler = reload;
+  sigaction(SIGHUP, &sighandler_action, NULL);
+
+  /* logs various statistics via Log() calls */
+  sighandler_action.sa_handler = SIG_IGN;
+  sigaction(SIGUSR1, &sighandler_action, NULL);
+
+  /* sets to true the reload_maps flag */
+  sighandler_action.sa_handler = reload_maps;
+  sigaction(SIGUSR2, &sighandler_action, NULL);
+
+  /* we want to exit gracefully when a pipe is broken */
+  sighandler_action.sa_handler = SIG_IGN;
+  sigaction(SIGPIPE, &sighandler_action, NULL);
+
+  sighandler_action.sa_handler = PM_sigint_handler;
+  sigaction(SIGINT, &sighandler_action, NULL);
+
+  sighandler_action.sa_handler = PM_sigint_handler;
+  sigaction(SIGTERM, &sighandler_action, NULL);
+
+  sighandler_action.sa_handler = handle_falling_child;
+  sigaction(SIGCHLD, &sighandler_action, NULL);
+
+  sighandler_action.sa_handler = PM_sigalrm_noop_handler;
+  sigaction(SIGALRM, &sighandler_action, NULL);
+
+#ifdef WITH_REDIS
+  if (config.redis_host) {
+    char log_id[SHORTBUFLEN];
+
+    snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+    p_redis_init(&redis_host, log_id, p_redis_thread_produce_common_core_handler);
+  }
+#endif
 
   telemetry_prepare_daemon(&t_data);
   telemetry_daemon(&t_data);
+
+  return 0;
 }

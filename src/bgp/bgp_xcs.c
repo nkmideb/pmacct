@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -18,8 +18,6 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
-
-#define __BGP_XCS_C
 
 #include "pmacct.h"
 #include "addr.h"
@@ -71,7 +69,7 @@ int bgp_xcs_map_dst_handler(char *filename, struct id_entry *e, char *value, str
   struct bgp_xconnect *target = NULL;
 
   if (table && table->pool) {
-    if (table->num < config.nfacctd_bgp_max_peers) {
+    if (table->num < config.bgp_daemon_max_peers) {
       target = &table->pool[table->num];
       target->dst_len = sizeof(target->dst);
       if (bgp_xcs_parse_hostport(value, (struct sockaddr *)&target->dst, &target->dst_len)) { 
@@ -94,7 +92,7 @@ int bgp_xcs_map_src_handler(char *filename, struct id_entry *e, char *value, str
   struct bgp_xconnect *target = NULL;
 
   if (table && table->pool) {
-    if (table->num < config.nfacctd_bgp_max_peers) {
+    if (table->num < config.bgp_daemon_max_peers) {
       target = &table->pool[table->num];
       target->src_len = sizeof(target->src);
 

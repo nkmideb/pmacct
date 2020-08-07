@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -32,8 +32,12 @@
 #define BGP_LOG_TYPE_UPDATE	1
 #define BGP_LOG_TYPE_WITHDRAW	2
 #define BGP_LOG_TYPE_DELETE	3
-#define BGP_LOG_TYPE_OPEN	4
-#define BGP_LOG_TYPE_CLOSE	5
+
+#define BGP_LOG_TYPE_LOGINIT	65500
+#define BGP_LOG_TYPE_LOGCLOSE	65501
+#define BGP_LOG_TYPE_DUMPINIT	65502
+#define BGP_LOG_TYPE_DUMPCLOSE	65503
+#define BGP_LOG_TYPE_MAX 	65503
 
 #define BGP_LOGSEQ_ROLLOVER_BIT	0x8000000000000000ULL
 #define BGP_LOGSEQ_MASK		0x7FFFFFFFFFFFFFFFULL	
@@ -52,28 +56,33 @@ struct bgp_dump_stats {
 };
 
 /* prototypes */
-#if (!defined __BGP_LOGDUMP_C)
-#define EXT extern
-#else
-#define EXT
+extern int bgp_peer_log_init(struct bgp_peer *, int, int);
+extern int bgp_peer_log_close(struct bgp_peer *, int, int);
+extern int bgp_peer_log_dynname(char *, int, char *, struct bgp_peer *);
+extern int bgp_peer_log_msg(struct bgp_node *, struct bgp_info *, afi_t, safi_t, char *, int, char **, int);
+
+extern void bgp_peer_log_seq_init(u_int64_t *);
+extern void bgp_peer_log_seq_increment(u_int64_t *);
+extern u_int64_t bgp_peer_log_seq_get(u_int64_t *);
+extern void bgp_peer_log_seq_set(u_int64_t *, u_int64_t);
+extern int bgp_peer_log_seq_has_ro_bit(u_int64_t *);
+
+extern int bgp_peer_dump_init(struct bgp_peer *, int, int);
+extern int bgp_peer_dump_close(struct bgp_peer *, struct bgp_dump_stats *, int, int);
+extern void bgp_handle_dump_event();
+extern void bgp_daemon_msglog_init_amqp_host();
+extern void bgp_table_dump_init_amqp_host();
+extern int bgp_daemon_msglog_init_kafka_host();
+extern int bgp_table_dump_init_kafka_host();
+
+#if defined WITH_AVRO
+extern avro_schema_t p_avro_schema_build_bgp(int, char *);
+extern avro_schema_t p_avro_schema_build_bgp_log_initclose(int, char *);
+extern avro_schema_t p_avro_schema_build_bgp_dump_init(int, char *);
+extern avro_schema_t p_avro_schema_build_bgp_dump_close(int, char *);
+extern void p_avro_schema_init_bgp(avro_schema_t *, avro_schema_t *, avro_schema_t *, avro_schema_t *, int, char *);
+extern void p_avro_schema_build_bgp_common(avro_schema_t *, avro_schema_t *, avro_schema_t *, avro_schema_t *, int);
+extern void p_avro_schema_build_bgp_route(avro_schema_t *, avro_schema_t *, avro_schema_t *, avro_schema_t *);
 #endif
-EXT int bgp_peer_log_init(struct bgp_peer *, int, int);
-EXT int bgp_peer_log_close(struct bgp_peer *, int, int);
-EXT void bgp_peer_log_dynname(char *, int, char *, struct bgp_peer *);
-EXT int bgp_peer_log_msg(struct bgp_node *, struct bgp_info *, afi_t, safi_t, char *, int, char **, int);
 
-EXT void bgp_peer_log_seq_init(u_int64_t *);
-EXT void bgp_peer_log_seq_increment(u_int64_t *);
-EXT u_int64_t bgp_peer_log_seq_get(u_int64_t *);
-EXT void bgp_peer_log_seq_set(u_int64_t *, u_int64_t);
-EXT int bgp_peer_log_seq_has_ro_bit(u_int64_t *);
-
-EXT int bgp_peer_dump_init(struct bgp_peer *, int, int, int);
-EXT int bgp_peer_dump_close(struct bgp_peer *, struct bgp_dump_stats *, int, int, int);
-EXT void bgp_handle_dump_event();
-EXT void bgp_daemon_msglog_init_amqp_host();
-EXT void bgp_table_dump_init_amqp_host();
-EXT int bgp_daemon_msglog_init_kafka_host();
-EXT int bgp_table_dump_init_kafka_host();
-#undef EXT
 #endif 
