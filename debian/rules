@@ -11,7 +11,7 @@ endif
 
 
 override_dh_auto_configure:
-	dh_auto_configure -- \
+	export CFLAGS=-fcommon; dh_auto_configure -- \
 		--with-pgsql-includes=`pg_config --includedir` \
 		--enable-l2           \
 		--enable-ipv6         \
