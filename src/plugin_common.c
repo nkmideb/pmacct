@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -19,17 +19,34 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __PLUGIN_COMMON_C
-
 /* includes */
 #include "pmacct.h"
+#include "plugin_common.h"
 #include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
-#include "plugin_common.h"
 #include "ip_flow.h"
 #include "classifier.h"
 #include "crc32.h"
+#include "preprocess-internal.h"
+
+/* Global variables */
+void (*insert_func)(struct primitives_ptrs *, struct insert_data *); /* pointer to INSERT function */
+void (*purge_func)(struct chained_cache *[], int, int); /* pointer to purge function */ 
+struct scratch_area sa;
+struct chained_cache *cache;
+struct chained_cache **queries_queue, **pending_queries_queue, *pqq_container;
+struct timeval flushtime;
+int qq_ptr, pqq_ptr, pp_size, pb_size, pn_size, pm_size, pt_size, pc_size;
+int dbc_size, quit; 
+time_t refresh_deadline;
+
+void (*basetime_init)(time_t);
+void (*basetime_eval)(struct timeval *, struct timeval *, time_t);
+int (*basetime_cmp)(struct timeval *, struct timeval *);
+struct timeval basetime, ibasetime, new_basetime;
+time_t timeslot;
+int dyn_table, dyn_table_time_only;
 
 /* Functions */
 void P_set_signals()
@@ -86,7 +103,7 @@ void P_init_default_values()
   sa.num = config.print_cache_entries*AVERAGE_CHAIN_LEN;
   sa.size = sa.num*dbc_size;
 
-  Log(LOG_INFO, "INFO ( %s/%s ): cache entries=%llu base cache memory=%llu bytes\n", config.name, config.type,
+  Log(LOG_INFO, "INFO ( %s/%s ): cache entries=%d base cache memory=%" PRIu64 " bytes\n", config.name, config.type,
 	config.print_cache_entries, ((config.print_cache_entries * dbc_size) + (2 * ((sa.num +
 	config.print_cache_entries) * sizeof(struct chained_cache *))) + sa.size));
 
@@ -102,6 +119,7 @@ void P_init_default_values()
   memset(pending_queries_queue, 0, (sa.num+config.print_cache_entries)*sizeof(struct chained_cache *));
   memset(sa.base, 0, sa.size);
   memset(&flushtime, 0, sizeof(flushtime));
+  memset(empty_mem_area_256b, 0, sizeof(empty_mem_area_256b));
 
   /* handling purge preprocessor */
   set_preprocess_funcs(config.sql_preprocess, &prep, PREP_DICT_PRINT);
@@ -128,7 +146,7 @@ unsigned int P_cache_modulo(struct primitives_ptrs *prim_ptrs)
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
+  u_char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   register unsigned int modulo;
 
@@ -151,7 +169,7 @@ struct chained_cache *P_cache_search(struct primitives_ptrs *prim_ptrs)
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
+  u_char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   unsigned int modulo = P_cache_modulo(prim_ptrs);
   struct chained_cache *cache_ptr = &cache[modulo];
@@ -216,7 +234,7 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
+  u_char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   unsigned int modulo = P_cache_modulo(prim_ptrs);
   struct chained_cache *cache_ptr = &cache[modulo];
@@ -521,7 +539,10 @@ void P_cache_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata
       switch (ret = fork()) {
       case 0: /* Child */
 	pm_setproctitle("%s %s [%s]", config.type, "Plugin -- Writer (urgent)", config.name);
+	config.is_forked = TRUE;
+
         (*purge_func)(queries_queue, qq_ptr, TRUE);
+
         exit_gracefully(0);
       default: /* Parent */
         if (ret == -1) Log(LOG_WARNING, "WARN ( %s/%s ): Unable to fork writer: %s\n", config.name, config.type, strerror(errno));
@@ -621,7 +642,10 @@ void P_cache_handle_flush_event(struct ports_table *pt)
     switch (ret = fork()) {
     case 0: /* Child */
       pm_setproctitle("%s %s [%s]", config.type, "Plugin -- Writer", config.name);
+      config.is_forked = TRUE;
+
       (*purge_func)(queries_queue, qq_ptr, FALSE);
+
       exit_gracefully(0);
     default: /* Parent */
       if (ret == -1) Log(LOG_WARNING, "WARN ( %s/%s ): Unable to fork writer: %s\n", config.name, config.type, strerror(errno));
@@ -648,6 +672,11 @@ void P_cache_handle_flush_event(struct ports_table *pt)
     load_networks(config.networks_file, &nt, &nc);
     load_ports(config.ports_file, pt);
     reload_map = FALSE;
+  }
+
+  if (reload_log) {
+    reload_logs();
+    reload_log = FALSE;
   }
 }
 
@@ -724,12 +753,12 @@ void P_cache_flush(struct chained_cache *queue[], int index)
 
 struct chained_cache *P_cache_attach_new_node(struct chained_cache *elem)
 {
-  if ((sa.ptr+sizeof(struct chained_cache)) <= (sa.base+sa.size)) {
+  if ((sa.ptr + (2 * sizeof(struct chained_cache))) <= (sa.base + sa.size)) {
     sa.ptr += sizeof(struct chained_cache);
     elem->next = (struct chained_cache *) sa.ptr;
     return (struct chained_cache *) sa.ptr;
   }
-  else return NULL; /* XXX */
+  else return NULL;
 }
 
 void P_sum_host_insert(struct primitives_ptrs *prim_ptrs, struct insert_data *idata)

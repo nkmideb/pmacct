@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -19,8 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __TEE_PLUGIN_C
-
 #include "pmacct.h"
 #include "addr.h"
 #ifdef WITH_KAFKA
@@ -30,6 +28,12 @@
 #include "plugin_hooks.h"
 #include "plugin_common.h"
 #include "tee_plugin.h"
+#include "nfacctd.h"
+
+/* Global variables */
+char tee_send_buf[65535];
+struct tee_receivers receivers; 
+int err_cant_bridge_af;
 
 void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 {
@@ -39,22 +43,23 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   int refresh_timeout, ret, pool_idx, recv_idx, recv_budget, poll_bypass;
   struct ring *rg = &((struct channels_list_entry *)ptr)->rg;
   struct ch_status *status = ((struct channels_list_entry *)ptr)->status;
-  struct plugins_list_entry *plugin_data = ((struct channels_list_entry *)ptr)->plugin;
   u_int32_t bufsz = ((struct channels_list_entry *)ptr)->bufsize;
-  pid_t core_pid = ((struct channels_list_entry *)ptr)->core_pid;
-  char *dataptr;
+  unsigned char *dataptr;
   struct tee_receiver *target = NULL;
   struct plugin_requests req;
 
   unsigned char *rgptr;
   int pollagain = TRUE;
   u_int32_t seq = 1, rg_err_count = 0;
-  time_t now;
 
 #ifdef WITH_ZMQ
   struct p_zmq_host *zmq_host = &((struct channels_list_entry *)ptr)->zmq_host;
 #else
   void *zmq_host = NULL;
+#endif
+
+#ifdef WITH_REDIS
+  struct p_redis_host redis_host;
 #endif
 
   memcpy(&config, cfgptr, sizeof(struct configuration));
@@ -91,6 +96,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     exit_gracefully(1);
   }
 
+  memset(empty_mem_area_256b, 0, sizeof(empty_mem_area_256b));
   memset(&receivers, 0, sizeof(receivers));
   memset(&req, 0, sizeof(req));
   reload_map = FALSE;
@@ -132,13 +138,20 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   if (config.pipe_zmq) P_zmq_pipe_init(zmq_host, &pipe_fd, &seq);
   else setnonblocking(pipe_fd);
 
-  now = time(NULL);
-
   memset(pipebuf, 0, config.buffer_size);
   err_cant_bridge_af = 0;
 
   /* Arrange send socket */
   Tee_init_socks();
+
+#ifdef WITH_REDIS
+  if (config.redis_host) {
+    char log_id[SHORTBUFLEN];
+
+    snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+    p_redis_init(&redis_host, log_id, p_redis_thread_produce_common_plugin_handler);
+  }
+#endif
 
   /* plugin main loop */
   for (;;) {
@@ -167,7 +180,10 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       reload_map = FALSE;
     }
 
-    now = time(NULL);
+    if (reload_log) {
+      reload_logs();
+      reload_log = FALSE;
+    }
 
     recv_budget = 0;
     if (poll_bypass) {
@@ -207,7 +223,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
           else {
             rg_err_count++;
             if (config.debug || (rg_err_count > MAX_RG_COUNT_ERR)) {
-              Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected (plugin_buffer_size=%llu plugin_pipe_size=%llu).\n",
+              Log(LOG_WARNING, "WARN ( %s/%s ): Missing data detected (plugin_buffer_size=%" PRIu64 " plugin_pipe_size=%" PRIu64 ").\n",
                         config.name, config.type, config.buffer_size, config.pipe_size);
               Log(LOG_WARNING, "WARN ( %s/%s ): Increase values or look for plugin_buffer_size, plugin_pipe_size in CONFIG-KEYS document.\n\n",
                         config.name, config.type);
@@ -241,7 +257,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
       msg->payload = (pipebuf+sizeof(struct ch_buf_hdr)+PmsgSz);
 
       if (config.debug_internal_msg) 
-        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%llu seq=%u num_entries=%u\n",
+        Log(LOG_DEBUG, "DEBUG ( %s/%s ): buffer received len=%" PRIu64 " seq=%u num_entries=%u\n",
                 config.name, config.type, ((struct ch_buf_hdr *)pipebuf)->len, seq,
                 ((struct ch_buf_hdr *)pipebuf)->num);
 
@@ -251,7 +267,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 	    if (!receivers.pools[pool_idx].balance.func) {
 	      for (recv_idx = 0; recv_idx < receivers.pools[pool_idx].num; recv_idx++) {
 	        target = &receivers.pools[pool_idx].receivers[recv_idx];
-	        Tee_send(msg, (struct sockaddr *) &target->dest, target->fd);
+	        Tee_send(msg, (struct sockaddr *) &target->dest, target->fd, config.tee_transparent);
 	      }
 
 #ifdef WITH_KAFKA
@@ -270,7 +286,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 	    }
 	    else {
 	      target = receivers.pools[pool_idx].balance.func(&receivers.pools[pool_idx], msg);
-	      Tee_send(msg, (struct sockaddr *) &target->dest, target->fd);
+	      Tee_send(msg, (struct sockaddr *) &target->dest, target->fd, config.tee_transparent);
 	    }
 	  }
 	}
@@ -296,34 +312,35 @@ void Tee_exit_now(int signum)
   exit_gracefully(0);
 }
 
-int Tee_craft_transparent_msg(struct pkt_msg *msg, struct sockaddr *target)
+size_t Tee_craft_transparent_msg(struct pkt_msg *msg, struct sockaddr *target)
 {
   char *buf_ptr = tee_send_buf;
-  struct sockaddr_in *sa = (struct sockaddr_in *) &msg->agent;
+  struct sockaddr *sa = (struct sockaddr *) &msg->agent;
+  struct sockaddr_in *sa4 = (struct sockaddr_in *) &msg->agent;
   struct pm_iphdr *i4h = (struct pm_iphdr *) buf_ptr;
-#if defined ENABLE_IPV6
   struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) &msg->agent;
   struct ip6_hdr *i6h = (struct ip6_hdr *) buf_ptr;
-#endif
   struct pm_udphdr *uh;
-  int msglen = 0;
+  size_t msglen = 0;
 
-  if (msg->agent.sa_family == target->sa_family) {
+  if (sa->sa_family == target->sa_family) {
     /* UDP header first */
     if (target->sa_family == AF_INET) {
       buf_ptr += IP4HdrSz;
       uh = (struct pm_udphdr *) buf_ptr;
-      uh->uh_sport = sa->sin_port;
+      uh->uh_sport = sa4->sin_port;
       uh->uh_dport = ((struct sockaddr_in *)target)->sin_port;
     }
-#if defined ENABLE_IPV6
     else if (target->sa_family == AF_INET6) {
       buf_ptr += IP6HdrSz;
       uh = (struct pm_udphdr *) buf_ptr;
       uh->uh_sport = sa6->sin6_port;
       uh->uh_dport = ((struct sockaddr_in6 *)target)->sin6_port;
     }
-#endif
+    else {
+      assert(0);
+      return msglen;
+    }
 
     uh->uh_ulen = htons(msg->len+UDPHdrSz);
     uh->uh_sum = 0;
@@ -350,10 +367,9 @@ int Tee_craft_transparent_msg(struct pkt_msg *msg, struct sockaddr *target)
       i4h->ip_ttl = 255;
       i4h->ip_p = IPPROTO_UDP;
       i4h->ip_sum = 0;
-      i4h->ip_src.s_addr = sa->sin_addr.s_addr;
+      i4h->ip_src.s_addr = sa4->sin_addr.s_addr;
       i4h->ip_dst.s_addr = ((struct sockaddr_in *)target)->sin_addr.s_addr;
     }
-#if defined ENABLE_IPV6
     else if (target->sa_family == AF_INET6) {
       i6h->ip6_vfc = 6;
       i6h->ip6_vfc <<= 4;
@@ -363,7 +379,6 @@ int Tee_craft_transparent_msg(struct pkt_msg *msg, struct sockaddr *target)
       memcpy(&i6h->ip6_src, &sa6->sin6_addr, IP6AddrSz);
       memcpy(&i6h->ip6_dst, &((struct sockaddr_in6 *)target)->sin6_addr, IP6AddrSz);
     }
-#endif
 
     /* Put everything together and send */
     buf_ptr += UDPHdrSz;
@@ -383,16 +398,16 @@ int Tee_craft_transparent_msg(struct pkt_msg *msg, struct sockaddr *target)
   return msglen;
 }
 
-void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
+void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd, int transparent)
 {
   struct host_addr r;
-  u_char recv_addr[50];
+  char recv_addr[50];
   u_int16_t recv_port;
 
   if (config.debug) {
     char *flow = NULL, netflow[] = "NetFlow/IPFIX", sflow[] = "sFlow";
     struct host_addr a;
-    u_char agent_addr[50];
+    char agent_addr[50];
     u_int16_t agent_port;
 
     sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
@@ -409,10 +424,10 @@ void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
 			recv_addr, recv_port);
   }
 
-  if (!config.tee_transparent) {
+  if (!transparent) {
     if (send(fd, msg->payload, msg->len, 0) == -1) {
       struct host_addr a;
-      u_char agent_addr[50];
+      char agent_addr[50];
       u_int16_t agent_port;
 
       sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
@@ -427,13 +442,13 @@ void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
     }
   }
   else {
-    int msglen;
+    size_t msglen;
 
     msglen = Tee_craft_transparent_msg(msg, target);
 
     if (msglen && send(fd, tee_send_buf, msglen, 0) == -1) {
       struct host_addr a;
-      u_char agent_addr[50];
+      char agent_addr[50];
       u_int16_t agent_port;
 
       sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
@@ -453,18 +468,20 @@ void Tee_send(struct pkt_msg *msg, struct sockaddr *target, int fd)
 void Tee_kafka_send(struct pkt_msg *msg, struct tee_receivers_pool *pool)
 {
   struct p_kafka_host *kafka_host = &pool->kafka_host; 
-  struct sockaddr target;
+  struct sockaddr *sa, target;
   time_t last_fail, now;
-  int msglen = 0;
+  size_t msglen = 0;
 
   memset(&target, 0, sizeof(target));
-  target.sa_family = msg->agent.sa_family;
+  sa = (struct sockaddr *) &msg->agent;
+
+  target.sa_family = sa->sa_family;
 
   if (config.debug) {
     char *flow = NULL, netflow[] = "NetFlow/IPFIX", sflow[] = "sFlow";
     char *broker, *topic;
     struct host_addr a;
-    u_char agent_addr[50];
+    char agent_addr[50];
     u_int16_t agent_port;
 
     sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
@@ -502,18 +519,20 @@ void Tee_kafka_send(struct pkt_msg *msg, struct tee_receivers_pool *pool)
 void Tee_zmq_send(struct pkt_msg *msg, struct tee_receivers_pool *pool)
 {
   struct p_zmq_host *zmq_host = &pool->zmq_host; 
-  struct sockaddr target;
-  time_t last_fail, now;
-  int msglen = 0;
+  struct sockaddr *sa, target;
+  size_t msglen = 0;
+  int ret;
 
   memset(&target, 0, sizeof(target));
-  target.sa_family = msg->agent.sa_family;
+  sa = (struct sockaddr *) &msg->agent;
+
+  target.sa_family = sa->sa_family;
 
   if (config.debug) {
     char *flow = NULL, netflow[] = "NetFlow/IPFIX", sflow[] = "sFlow";
     char *address;
     struct host_addr a;
-    u_char agent_addr[50];
+    char agent_addr[50];
     u_int16_t agent_port;
 
     sa_to_addr((struct sockaddr *)msg, &a, &agent_port);
@@ -531,7 +550,15 @@ void Tee_zmq_send(struct pkt_msg *msg, struct tee_receivers_pool *pool)
   if (config.tee_transparent) {
     msglen = Tee_craft_transparent_msg(msg, &target);
 
-    if (msglen) p_zmq_send_bin(&zmq_host->sock, tee_send_buf, msglen);
+    if (msglen) {
+      ret = p_zmq_send_bin(&zmq_host->sock, tee_send_buf, msglen, TRUE);
+      if (ret == ERR && errno == EAGAIN) {
+	char *address;
+
+	address = p_zmq_get_address(zmq_host);
+	Log(LOG_WARNING, "WARN ( %s/%s ): Queue full: ZeroMQ [%s]\n", config.name, config.type, address);
+      }
+    }
   }
 }
 #endif
@@ -583,7 +610,6 @@ void Tee_init_socks()
     for (recv_idx = 0; recv_idx < receivers.pools[pool_idx].num; recv_idx++) {
       target = &receivers.pools[pool_idx].receivers[recv_idx];
       sa = (struct sockaddr *) &target->dest;
-      target->dest_len = sizeof(target->dest);
 
       if (sa->sa_family != 0) {
         if ((err = getnameinfo(sa, target->dest_len, dest_addr, sizeof(dest_addr),
@@ -593,11 +619,12 @@ void Tee_init_socks()
         }
       }
 
-      target->fd = Tee_prepare_sock((struct sockaddr *) &target->dest, target->dest_len, receivers.pools[pool_idx].src_port);
+      target->fd = Tee_prepare_sock((struct sockaddr *) &target->dest, target->dest_len, receivers.pools[pool_idx].src_port,
+				    config.tee_transparent, config.tee_pipe_size);
 
       if (config.debug) {
 	struct host_addr recv_addr;
-        u_char recv_addr_str[INET6_ADDRSTRLEN];
+        char recv_addr_str[INET6_ADDRSTRLEN];
 	u_int16_t recv_port;
 
 	sa_to_addr((struct sockaddr *)&target->dest, &recv_addr, &recv_port); 
@@ -652,6 +679,7 @@ void Tee_init_zmq_host(struct p_zmq_host *zmq_host, char *zmq_address, u_int32_t
   p_zmq_init_push(zmq_host, zmq_address);
   snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
   p_zmq_set_log_id(zmq_host, log_id);
+  p_zmq_set_hwm(zmq_host, PM_ZMQ_DEFAULT_FLOW_HWM); 
   p_zmq_push_setup(zmq_host);
 
   if (config.debug) {
@@ -663,43 +691,25 @@ void Tee_init_zmq_host(struct p_zmq_host *zmq_host, char *zmq_address, u_int32_t
 }
 #endif
 
-int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port)
+int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port, int transparent, int pipe_size)
 {
   int s, ret = 0;
 
-  if (!config.tee_transparent) {
+  if (!transparent) {
     struct host_addr source_ip;
-#if defined ENABLE_IPV6
     struct sockaddr_storage ssource_ip;
-#else
-    struct sockaddr ssource_ip;
-#endif
 
     memset(&source_ip, 0, sizeof(source_ip));
     memset(&ssource_ip, 0, sizeof(ssource_ip));
 
-    if (config.nfprobe_source_ip) {
-      ret = str_to_addr(config.nfprobe_source_ip, &source_ip);
-      addr_to_sa((struct sockaddr *) &ssource_ip, &source_ip, src_port);
-    }
-    else {
-      if (src_port) { 
-	source_ip.family = addr->sa_family; 
-	ret = addr_to_sa((struct sockaddr *) &ssource_ip, &source_ip, src_port);
-      }
+    if (src_port) { 
+      source_ip.family = addr->sa_family; 
+      ret = addr_to_sa((struct sockaddr *) &ssource_ip, &source_ip, src_port);
     }
 
     if ((s = socket(addr->sa_family, SOCK_DGRAM, 0)) == -1) {
       Log(LOG_ERR, "ERROR ( %s/%s ): socket() error: %s\n", config.name, config.type, strerror(errno));
       exit_gracefully(1);
-    }
-
-    if (config.nfprobe_ipprec) {
-      int opt = config.nfprobe_ipprec << 5;
-      int rc;
-
-      rc = setsockopt(s, IPPROTO_IP, IP_TOS, &opt, sizeof(opt));
-      if (rc < 0) Log(LOG_WARNING, "WARN ( %s/%s ): setsockopt() failed for IP_TOS: %s\n", config.name, config.type, strerror(errno));
     }
 
     if (ret && bind(s, (struct sockaddr *) &ssource_ip, sizeof(ssource_ip)) == -1)
@@ -713,23 +723,23 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port)
 
 
 #if defined BSD
-    setsockopt(s, IPPROTO_IP, IP_HDRINCL, &hincl, sizeof(hincl));
+    setsockopt(s, IPPROTO_IP, IP_HDRINCL, &hincl, (socklen_t) sizeof(hincl));
 #endif
   }
 
-  if (config.tee_pipe_size) {
-    int l = sizeof(config.tee_pipe_size);
+  if (pipe_size) {
+    socklen_t l = sizeof(pipe_size);
     int saved = 0, obtained = 0;
     
     getsockopt(s, SOL_SOCKET, SO_SNDBUF, &saved, &l);
-    Setsocksize(s, SOL_SOCKET, SO_SNDBUF, &config.tee_pipe_size, sizeof(config.tee_pipe_size));
+    Setsocksize(s, SOL_SOCKET, SO_SNDBUF, &pipe_size, (socklen_t) sizeof(pipe_size));
     getsockopt(s, SOL_SOCKET, SO_SNDBUF, &obtained, &l);
   
     if (obtained < saved) {
       Setsocksize(s, SOL_SOCKET, SO_SNDBUF, &saved, l);
       getsockopt(s, SOL_SOCKET, SO_SNDBUF, &obtained, &l);
     }
-    Log(LOG_INFO, "INFO ( %s/%s ): tee_pipe_size: obtained=%d target=%d.\n", config.name, config.type, obtained, config.tee_pipe_size);
+    Log(LOG_INFO, "INFO ( %s/%s ): tee_pipe_size: obtained=%d target=%d.\n", config.name, config.type, obtained, pipe_size);
   }
 
   if (connect(s, (struct sockaddr *)addr, len) == -1) {
@@ -808,10 +818,11 @@ struct tee_receiver *Tee_hash_agent_balance(void *pool, struct pkt_msg *msg)
 {
   struct tee_receivers_pool *p = pool;
   struct tee_receiver *target = NULL;
+  struct sockaddr *sa = (struct sockaddr *) &msg->agent;
   struct sockaddr_in *sa4 = (struct sockaddr_in *) &msg->agent;
 
   if (p) {
-    if (msg->agent.sa_family == AF_INET) target = &p->receivers[sa4->sin_addr.s_addr & p->num];
+    if (sa->sa_family == AF_INET) target = &p->receivers[sa4->sin_addr.s_addr & p->num];
     /* XXX: hashing against IPv6 agents is not supported (yet) */
   }
 
@@ -826,4 +837,100 @@ struct tee_receiver *Tee_hash_tag_balance(void *pool, struct pkt_msg *msg)
   if (p) target = &p->receivers[msg->tag % p->num];
 
   return target;
+}
+
+void Tee_select_templates(unsigned char *pkt, int pkt_len, int nfv, unsigned char *tpl_pkt, int *tpl_pkt_len)
+{
+  struct struct_header_v9 *hdr_v9 = NULL;
+  struct struct_header_ipfix *hdr_v10 = NULL;
+  struct data_hdr_v9 *hdr_flowset = NULL;
+
+  unsigned char *src_ptr = pkt, *dst_ptr = tpl_pkt;
+  u_int16_t flowsetNo = 0, flowsetCount = 0, flowsetTplCount = 0;
+  int tmp_len = 0, hdr_len = 0, term1 = 0, term2 = 0;
+
+  if (!pkt || !pkt_len || !tpl_pkt || !tpl_pkt_len) return;
+  if (nfv != 9 && nfv != 10) return;
+  if (pkt_len > NETFLOW_MSG_SIZE) return;
+
+  (*tpl_pkt_len) = 0;
+
+  /* NetFlow v9 */
+  if (nfv == 9) {
+    hdr_v9 = (struct struct_header_v9 *) tpl_pkt;
+    hdr_len = sizeof(struct struct_header_v9);
+  }
+  else if (nfv == 10) { 
+    hdr_v10 = (struct struct_header_ipfix *) tpl_pkt;
+    hdr_len = sizeof(struct struct_header_ipfix);
+  }
+
+  if (pkt_len < hdr_len) return;
+    
+  memcpy(dst_ptr, src_ptr, hdr_len);
+  src_ptr += hdr_len; 
+  dst_ptr += hdr_len;
+  pkt_len -= hdr_len;
+  tmp_len += hdr_len;
+
+  if (nfv == 9) {
+    flowsetNo = htons(hdr_v9->count);
+    term1 = (flowsetNo + 1); /* trick to use > operator */
+    term2 = flowsetCount;
+  }
+  else if (nfv == 10) {
+    term1 = pkt_len;
+    term2 = 0;
+  }
+
+  hdr_flowset = (struct data_hdr_v9 *) src_ptr;
+
+  while (term1 > term2) {
+    int fset_id = ntohs(hdr_flowset->flow_id);
+    int fset_len = ntohs(hdr_flowset->flow_len);
+    int fset_hdr_len = sizeof(struct data_hdr_v9);
+
+    if (!fset_len || (fset_hdr_len + fset_len) > pkt_len) break;
+
+    /* if template, copy over */
+    if (((nfv == 9) && (fset_id == 0 || fset_id == 1)) ||
+       ((nfv == 10) && (fset_id == 2 || fset_id == 3))) {
+      memcpy(dst_ptr, src_ptr, fset_len);
+
+      src_ptr += fset_len;
+      dst_ptr += fset_len;
+
+      pkt_len -= fset_len;
+      tmp_len += fset_len;
+
+      flowsetTplCount++;
+    }
+    /* if data, skip */
+    else {
+      src_ptr += fset_len;
+      pkt_len -= fset_len;
+    }
+
+    if (nfv == 9) {
+      flowsetCount++;
+      term2 = flowsetCount;
+    }
+    else if (nfv == 10) {
+      term1 = pkt_len;
+    }
+
+    hdr_flowset = (struct data_hdr_v9 *) src_ptr;
+  }
+
+  /* if we have at least one template, let's update the template packet */
+  if (flowsetTplCount) {
+    if (nfv == 9) {
+      hdr_v9->count = htons(flowsetTplCount);
+    }
+    else if (nfv == 10) {
+      hdr_v10->len = htons(tmp_len);
+    }
+
+    (*tpl_pkt_len) = tmp_len;
+  }
 }

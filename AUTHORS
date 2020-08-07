@@ -1,5 +1,5 @@
-pmacct [IP traffic accounting : BGP : BMP : IGP : Streaming Telemetry]
-pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+pmacct [IP traffic accounting : BGP : BMP : RPKI : IGP : Streaming Telemetry]
+pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 
 Founder:
 
@@ -14,6 +14,10 @@ Package maintainers:
 	netmon (Gentoo)			<netmon@gentoo.org>
    KP Kirchdoerfer (LEAF Bering-uClibc)	<kapeka@users.sourceforge.net> 
 	Slava Dubrovskyi (ALTLinux)	<dubrsl@gmail.com>
+
+A (non-exhaustive) list of code and documentation contributors:
+
+https://github.com/pmacct/pmacct/graphs/contributors 
 
 Thanks to the following people for their strong support along the time: 
 
@@ -54,6 +58,7 @@ Thanks to the following people for their strong support along the time:
 	Job Snijders
 	Gabriel Snook
 	Rene Stoutjesdijk
+	Marc Sune
 	Thomas Telkamp
 	Matthieu Texier
 	Stig Thormodsrud

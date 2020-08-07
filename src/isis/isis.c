@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -19,9 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-/* defines */
-#define __ISIS_C
-
 /* includes */
 #include "pmacct.h"
 #include "pmacct-dlt.h"
@@ -29,7 +26,6 @@
 #include "isis.h"
 #include "thread_pool.h"
 
-#include "linklist.h"
 #include "stream.h"
 #include "hash.h"
 #include "prefix.h"
@@ -74,8 +70,8 @@ void nfacctd_isis_wrapper()
 void skinny_isis_daemon()
 {
   char errbuf[PCAP_ERRBUF_SIZE];
-  struct pcap_device device;
-  struct pcap_isis_callback_data cb_data;
+  struct pm_pcap_device device;
+  struct pm_pcap_isis_callback_data cb_data;
   struct host_addr addr;
   struct prefix_ipv4 *ipv4;
   struct plugin_requests req;
@@ -86,7 +82,7 @@ void skinny_isis_daemon()
   struct isis_circuit *circuit;
   struct interface interface;
 
-  memset(&device, 0, sizeof(struct pcap_device));
+  memset(&device, 0, sizeof(struct pm_pcap_device));
   memset(&cb_data, 0, sizeof(cb_data));
   memset(&interface, 0, sizeof(interface));
   memset(&isis_spf_deadline, 0, sizeof(isis_spf_deadline));
@@ -148,7 +144,7 @@ void skinny_isis_daemon()
   area->area_tag = area_tag;
   area->is_type = IS_LEVEL_2;
   area->newmetric = TRUE;
-  isis_listnode_add(isis->area_list, area);
+  pm_listnode_add(isis->area_list, area);
   Log(LOG_DEBUG, "DEBUG ( %s/core/ISIS ): New IS-IS area instance %s\n", config.name, area->area_tag);
   if (config.nfacctd_isis_net) area_net_title(area, config.nfacctd_isis_net);
   else {
@@ -186,8 +182,8 @@ void skinny_isis_daemon()
   ipv4 = isis_prefix_ipv4_new();
   ipv4->prefixlen = 32;
   ipv4->prefix.s_addr = addr.address.ipv4.s_addr;
-  circuit->ip_addrs = isis_list_new();
-  isis_listnode_add(circuit->ip_addrs, ipv4);
+  circuit->ip_addrs = pm_list_new();
+  pm_listnode_add(circuit->ip_addrs, ipv4);
 
   circuit_update_nlpids(circuit);
   isis_circuit_configure(circuit, area);
@@ -232,15 +228,14 @@ void skinny_isis_daemon()
 
 void isis_pdu_runner(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *buf)
 {
-  struct pcap_isis_callback_data *cb_data = (struct pcap_isis_callback_data *) user;
-  struct pcap_device *device = cb_data->device;
+  struct pm_pcap_isis_callback_data *cb_data = (struct pm_pcap_isis_callback_data *) user;
+  struct pm_pcap_device *device = cb_data->device;
   struct isis_circuit *circuit = cb_data->circuit;
   struct packet_ptrs pptrs;
-  struct thread thread;
   int ret;
 
   struct stream stm;
-  char *ssnpa;
+  u_char *ssnpa;
 
   /* Let's export a time reference */
   memcpy(&isis_now, &pkthdr->ts, sizeof(struct timeval));
@@ -290,6 +285,7 @@ void isis_pdu_runner(u_char *user, const struct pcap_pkthdr *pkthdr, const u_cha
     if (circuit->area->is_type & IS_LEVEL_2) {
       if (circuit->area->ip_circuits) {
 	ret = isis_run_spf(circuit->area, 2, AF_INET);
+        (void)ret; //TODO treat error
 	isis_route_validate_table (circuit->area, circuit->area->route_table[1]);
       }
       /* XXX: IPv6 handled here */
@@ -325,6 +321,7 @@ void isis_sll_handler(const struct pcap_pkthdr *h, register struct packet_ptrs *
   }
 
   p = pptrs->packet_ptr;
+  (void)p; //TODO treat error
 
   sllp = (const struct sll_header *) pptrs->packet_ptr;
   etype = ntohs(sllp->sll_protocol);
@@ -354,9 +351,7 @@ void isis_srcdst_lookup(struct packet_ptrs *pptrs)
   char area_tag[] = "default";
   int level;
   struct in_addr pref4;
-#if defined ENABLE_IPV6
   struct in6_addr pref6;
-#endif
 
   pptrs->igp_src = NULL;
   pptrs->igp_dst = NULL;
@@ -397,7 +392,6 @@ void isis_srcdst_lookup(struct packet_ptrs *pptrs)
 	}
       }
     }
-#if defined ENABLE_IPV6
     else if (area && pptrs->l3_proto == ETHERTYPE_IPV6) {
       if (!pptrs->igp_src) {
         memcpy(&pref6, &((struct ip6_hdr *)pptrs->iph_ptr)->ip6_src, sizeof(struct in6_addr));
@@ -427,7 +421,6 @@ void isis_srcdst_lookup(struct packet_ptrs *pptrs)
 	}
       }
     }
-#endif
   }
 }
 
@@ -473,7 +466,7 @@ int igp_daemon_map_adj_metric_handler(char *filename, struct id_entry *e, char *
 {
   struct igp_map_entry *entry = (struct igp_map_entry *) req->key_value_table;
   char *str_ptr, *token, *sep, *ip_str, *metric_str, *endptr;
-  int idx = 0, debug_idx;
+  int idx = 0;
   
   str_ptr = strdup(value);
   if (!str_ptr) {
@@ -524,7 +517,7 @@ int igp_daemon_map_reach_metric_handler(char *filename, struct id_entry *e, char
 {
   struct igp_map_entry *entry = (struct igp_map_entry *) req->key_value_table;
   char *str_ptr, *token, *sep, *ip_str, *metric_str, *endptr;
-  int idx = 0, debug_idx;
+  int idx = 0;
 
   str_ptr = strdup(value);
   if (!str_ptr) {
@@ -571,12 +564,11 @@ int igp_daemon_map_reach_metric_handler(char *filename, struct id_entry *e, char
   return FALSE; 
 }
 
-#if defined ENABLE_IPV6
 int igp_daemon_map_reach6_metric_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
 {
   struct igp_map_entry *entry = (struct igp_map_entry *) req->key_value_table;
   char *str_ptr, *token, *sep, *ip_str, *metric_str, *endptr;
-  int idx = 0, debug_idx;
+  int idx = 0;
 
   str_ptr = strdup(value);
   if (!str_ptr) {
@@ -622,7 +614,6 @@ int igp_daemon_map_reach6_metric_handler(char *filename, struct id_entry *e, cha
 
   return FALSE;
 }
-#endif
 
 void igp_daemon_map_validate(char *filename, struct plugin_requests *req)
 {
@@ -631,17 +622,15 @@ void igp_daemon_map_validate(char *filename, struct plugin_requests *req)
 
   if (entry) {
     if (entry->node.family && entry->area_id && (entry->adj_metric_num || entry->reach_metric_num || entry->reach6_metric_num)) {
-      char isis_dgram[RECEIVE_LSP_BUFFER_SIZE+sizeof(struct chdlc_header)+sizeof(struct isis_fixed_hdr)];
-      char *isis_dgram_ptr = isis_dgram;
+      u_char isis_dgram[RECEIVE_LSP_BUFFER_SIZE+sizeof(struct chdlc_header)+sizeof(struct isis_fixed_hdr)];
+      u_char *isis_dgram_ptr = isis_dgram;
       struct chdlc_header *chdlc_hdr;
       struct isis_fixed_hdr *isis_hdr;
       struct isis_link_state_hdr *lsp_hdr;
       struct idrp_info *adj_hdr, *reach_v4_hdr, *reach_v6_hdr, *proto_supported_hdr, *area_address_hdr;
       struct is_neigh *adj;
       struct ipv4_reachability *reach_v4;
-#ifdef ENABLE_IPV6
       struct ipv6_reachability *reach_v6;
-#endif
       struct area_address *area_addr;
       int rem_len = sizeof(isis_dgram), cnt, tlvs_cnt = 0, pdu_len = 0;
 
@@ -685,11 +674,9 @@ void igp_daemon_map_validate(char *filename, struct plugin_requests *req)
       *isis_dgram_ptr = (u_char) 0xCC;
       isis_dgram_ptr++;
       proto_supported_hdr->len++;
-#if defined ENABLE_IPV6
       *isis_dgram_ptr = (u_char) 0x8E;
       isis_dgram_ptr++;
       proto_supported_hdr->len++;
-#endif
       if (igp_daemon_map_handle_len(&rem_len, proto_supported_hdr->len, req, filename)) return;
       pdu_len += proto_supported_hdr->len;
       tlvs_cnt++;
@@ -767,7 +754,6 @@ void igp_daemon_map_validate(char *filename, struct plugin_requests *req)
 	tlvs_cnt++;
       }
 
-#ifdef ENABLE_IPV6
       if (entry->reach6_metric_num) {
 	int prefix_len = 0;
 
@@ -795,7 +781,6 @@ void igp_daemon_map_validate(char *filename, struct plugin_requests *req)
 
         tlvs_cnt++;
       }
-#endif
 
       /* wrapping up: fix lsp length */
       pdu_len += sizeof(struct isis_fixed_hdr)+ISIS_LSP_HDR_LEN+(ISIS_TLV_HDR_LEN*tlvs_cnt);
@@ -804,7 +789,7 @@ void igp_daemon_map_validate(char *filename, struct plugin_requests *req)
       if (config.debug && config.igp_daemon_map_msglog) {
 	memset(&phdr, 0, sizeof(phdr));
 	phdr.len = phdr.caplen = sizeof(isis_dgram)-rem_len;
-	pcap_dump((char *) idmm_fd, &phdr, isis_dgram);
+	pcap_dump((u_char *) idmm_fd, &phdr, isis_dgram);
       }
     }
     else {
@@ -848,7 +833,7 @@ int igp_daemon_map_handle_len(int *rem_len, int len, struct plugin_requests *req
   return FALSE;
 }
 
-int igp_daemon_map_handle_lsp_id(char *lsp_id, struct host_addr *addr)
+int igp_daemon_map_handle_lsp_id(u_char *lsp_id, struct host_addr *addr)
 {
   u_char sysid[ISIS_SYS_ID_LEN];
   int idx;

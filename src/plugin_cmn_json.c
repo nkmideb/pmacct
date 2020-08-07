@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,8 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __PLUGIN_CMN_JSON_C
-
 /* includes */
 #include "pmacct.h"
 #include "addr.h"
@@ -30,12 +28,17 @@
 #include "ip_flow.h"
 #include "classifier.h"
 #include "bgp/bgp.h"
+#include "rpki/rpki.h"
 #if defined (WITH_NDPI)
 #include "ndpi/ndpi.h"
 #endif
 
-/* Functions */
 #ifdef WITH_JANSSON
+
+/* Global variables */
+compose_json_handler cjhandler[N_PRIMITIVES];
+
+/* Functions */
 void compose_json(u_int64_t wtc, u_int64_t wtc_2)
 {
   int idx = 0;
@@ -141,6 +144,11 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
     idx++;
   }
 
+  if (wtc_2 & COUNT_DST_ROA) {
+    cjhandler[idx] = compose_json_dst_roa;
+    idx++;
+  }
+
   if (wtc & COUNT_PEER_SRC_AS) {
     cjhandler[idx] = compose_json_peer_src_as;
     idx++;
@@ -191,6 +199,11 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
     idx++;
   }
 
+  if (wtc_2 & COUNT_SRC_ROA) {
+    cjhandler[idx] = compose_json_src_roa;
+    idx++;
+  }
+
   if (wtc & COUNT_IN_IFACE) {
     cjhandler[idx] = compose_json_in_iface;
     idx++;
@@ -203,6 +216,11 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
 
   if (wtc & COUNT_MPLS_VPN_RD) {
     cjhandler[idx] = compose_json_mpls_vpn_rd;
+    idx++;
+  }
+
+  if (wtc_2 & COUNT_MPLS_PW_ID) {
+    cjhandler[idx] = compose_json_mpls_pw_id;
     idx++;
   }
 
@@ -355,6 +373,16 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
     idx++;
   }
 
+  if (wtc_2 & COUNT_TUNNEL_SRC_MAC) {
+    cjhandler[idx] = compose_json_tunnel_src_mac;
+    idx++;
+  }
+
+  if (wtc_2 & COUNT_TUNNEL_DST_MAC) {
+    cjhandler[idx] = compose_json_tunnel_dst_mac;
+    idx++;
+  }
+
   if (wtc_2 & COUNT_TUNNEL_SRC_HOST) {
     cjhandler[idx] = compose_json_tunnel_src_host;
     idx++;
@@ -372,6 +400,21 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
     
   if (wtc_2 & COUNT_TUNNEL_IP_TOS) {
     cjhandler[idx] = compose_json_tunnel_tos;
+    idx++;
+  }
+
+  if (wtc_2 & COUNT_TUNNEL_SRC_PORT) {
+    cjhandler[idx] = compose_json_tunnel_src_port;
+    idx++;
+  }
+
+  if (wtc_2 & COUNT_TUNNEL_DST_PORT) {
+    cjhandler[idx] = compose_json_tunnel_dst_port;
+    idx++;
+  }
+
+  if (wtc_2 & COUNT_VXLAN) {
+    cjhandler[idx] = compose_json_vxlan;
     idx++;
   }
 
@@ -600,6 +643,11 @@ void compose_json_med(json_t *obj, struct chained_cache *cc)
   json_object_set_new_nocheck(obj, "med", json_integer((json_int_t)cc->pbgp->med));
 }
 
+void compose_json_dst_roa(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "roa_dst", json_string(rpki_roa_print(cc->pbgp->dst_roa)));
+}
+
 void compose_json_peer_src_as(json_t *obj, struct chained_cache *cc)
 {
   json_object_set_new_nocheck(obj, "peer_as_src", json_integer((json_int_t)cc->pbgp->peer_src_as));
@@ -640,7 +688,7 @@ void compose_json_src_std_comm(json_t *obj, struct chained_cache *cc)
   }
   else str_ptr = empty_string;
 
-  json_object_set_new_nocheck(obj, "src_comms", json_string(str_ptr));
+  json_object_set_new_nocheck(obj, "comms_src", json_string(str_ptr));
 }
 
 void compose_json_src_ext_comm(json_t *obj, struct chained_cache *cc)
@@ -657,7 +705,7 @@ void compose_json_src_ext_comm(json_t *obj, struct chained_cache *cc)
   }
   else str_ptr = empty_string;
 
-  json_object_set_new_nocheck(obj, "src_ecomms", json_string(str_ptr));
+  json_object_set_new_nocheck(obj, "ecomms_src", json_string(str_ptr));
 }
 
 void compose_json_src_lrg_comm(json_t *obj, struct chained_cache *cc)
@@ -674,7 +722,7 @@ void compose_json_src_lrg_comm(json_t *obj, struct chained_cache *cc)
   }
   else str_ptr = empty_string;
 
-  json_object_set_new_nocheck(obj, "src_lcomms", json_string(str_ptr));
+  json_object_set_new_nocheck(obj, "lcomms_src", json_string(str_ptr));
 }
 
 void compose_json_src_as_path(json_t *obj, struct chained_cache *cc)
@@ -691,17 +739,22 @@ void compose_json_src_as_path(json_t *obj, struct chained_cache *cc)
   }
   else str_ptr = empty_string;
 
-  json_object_set_new_nocheck(obj, "src_as_path", json_string(str_ptr));
+  json_object_set_new_nocheck(obj, "as_path_src", json_string(str_ptr));
 }
 
 void compose_json_src_local_pref(json_t *obj, struct chained_cache *cc)
 {
-  json_object_set_new_nocheck(obj, "src_local_pref", json_integer((json_int_t)cc->pbgp->src_local_pref));
+  json_object_set_new_nocheck(obj, "local_pref_src", json_integer((json_int_t)cc->pbgp->src_local_pref));
 }
 
 void compose_json_src_med(json_t *obj, struct chained_cache *cc)
 {
-  json_object_set_new_nocheck(obj, "src_med", json_integer((json_int_t)cc->pbgp->src_med));
+  json_object_set_new_nocheck(obj, "med_src", json_integer((json_int_t)cc->pbgp->src_med));
+}
+
+void compose_json_src_roa(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "roa_src", json_string(rpki_roa_print(cc->pbgp->src_roa)));
 }
 
 void compose_json_in_iface(json_t *obj, struct chained_cache *cc)
@@ -720,6 +773,11 @@ void compose_json_mpls_vpn_rd(json_t *obj, struct chained_cache *cc)
 
   bgp_rd2str(rd_str, &cc->pbgp->mpls_vpn_rd);
   json_object_set_new_nocheck(obj, "mpls_vpn_rd", json_string(rd_str));
+}
+
+void compose_json_mpls_pw_id(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "mpls_pw_id", json_integer((json_int_t)cc->pbgp->mpls_pw_id));
 }
 
 void compose_json_src_host(json_t *obj, struct chained_cache *cc)
@@ -859,10 +917,9 @@ void compose_json_tcp_flags(json_t *obj, struct chained_cache *cc)
 
 void compose_json_proto(json_t *obj, struct chained_cache *cc)
 {
-  if (!config.num_protos && (cc->primitives.proto < protocols_number))
-    json_object_set_new_nocheck(obj, "ip_proto", json_string(_protocols[cc->primitives.proto].name));
-  else
-    json_object_set_new_nocheck(obj, "ip_proto", json_integer((json_int_t)cc->primitives.proto));
+  char proto[PROTO_NUM_STRLEN];
+
+  json_object_set_new_nocheck(obj, "ip_proto", json_string(ip_proto_print(cc->primitives.proto, proto, PROTO_NUM_STRLEN)));
 }
 
 void compose_json_tos(json_t *obj, struct chained_cache *cc)
@@ -926,6 +983,22 @@ void compose_json_mpls_stack_depth(json_t *obj, struct chained_cache *cc)
   json_object_set_new_nocheck(obj, "mpls_stack_depth", json_integer((json_int_t)cc->pmpls->mpls_stack_depth));
 }
 
+void compose_json_tunnel_src_mac(json_t *obj, struct chained_cache *cc)
+{
+  char mac[18];
+
+  etheraddr_string(cc->ptun->tunnel_eth_shost, mac);
+  json_object_set_new_nocheck(obj, "tunnel_mac_src", json_string(mac));
+}
+
+void compose_json_tunnel_dst_mac(json_t *obj, struct chained_cache *cc)
+{
+  char mac[18];
+
+  etheraddr_string(cc->ptun->tunnel_eth_dhost, mac);
+  json_object_set_new_nocheck(obj, "tunnel_mac_dst", json_string(mac));
+}
+
 void compose_json_tunnel_src_host(json_t *obj, struct chained_cache *cc)
 {
   char ip_address[INET6_ADDRSTRLEN];
@@ -944,15 +1017,29 @@ void compose_json_tunnel_dst_host(json_t *obj, struct chained_cache *cc)
 
 void compose_json_tunnel_proto(json_t *obj, struct chained_cache *cc)
 {
-  if (!config.num_protos && (cc->ptun->tunnel_proto < protocols_number))
-    json_object_set_new_nocheck(obj, "tunnel_ip_proto", json_string(_protocols[cc->ptun->tunnel_proto].name));
-  else
-    json_object_set_new_nocheck(obj, "tunnel_ip_proto", json_integer((json_int_t)cc->ptun->tunnel_proto));
+  char proto[PROTO_NUM_STRLEN];
+
+  json_object_set_new_nocheck(obj, "tunnel_ip_proto", json_string(ip_proto_print(cc->ptun->tunnel_proto, proto, PROTO_NUM_STRLEN)));
 }
 
 void compose_json_tunnel_tos(json_t *obj, struct chained_cache *cc)
 {
   json_object_set_new_nocheck(obj, "tunnel_tos", json_integer((json_int_t)cc->ptun->tunnel_tos));
+}
+
+void compose_json_tunnel_src_port(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "tunnel_port_src", json_integer((json_int_t)cc->ptun->tunnel_src_port));
+}
+
+void compose_json_tunnel_dst_port(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "tunnel_port_dst", json_integer((json_int_t)cc->ptun->tunnel_dst_port));
+}
+
+void compose_json_vxlan(json_t *obj, struct chained_cache *cc)
+{
+  json_object_set_new_nocheck(obj, "vxlan", json_integer((json_int_t)cc->ptun->tunnel_id));
 }
 
 void compose_json_timestamp_start(json_t *obj, struct chained_cache *cc)
@@ -1111,10 +1198,14 @@ void compose_json(u_int64_t wtc, u_int64_t wtc_2)
 void *compose_purge_init_json(char *writer_name, pid_t writer_pid)
 {
   if (config.debug) Log(LOG_DEBUG, "DEBUG ( %s/%s ): compose_purge_init_json(): JSON object not created due to missing --enable-jansson\n", config.name, config.type);
+
+  return NULL;
 }
 
 void *compose_purge_close_json(char *writer_name, pid_t writer_pid, int purged_entries, int total_entries, int duration)
 {
   if (config.debug) Log(LOG_DEBUG, "DEBUG ( %s/%s ): compose_purge_close_json(): JSON object not created due to missing --enable-jansson\n", config.name, config.type);
+
+  return NULL;
 }
 #endif

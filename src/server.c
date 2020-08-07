@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -18,8 +18,6 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
-
-#define __SERVER_C
 
 /* includes */
 #include "pmacct.h"
@@ -564,11 +562,14 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
     if (w & COUNT_SRC_LOCAL_PREF) d2->src_local_pref = s2->src_local_pref;
     if (w & COUNT_MED) d2->med = s2->med;
     if (w & COUNT_SRC_MED) d2->src_med = s2->src_med;
+    if (w2 & COUNT_DST_ROA) d2->dst_roa = s2->dst_roa;
+    if (w2 & COUNT_SRC_ROA) d2->src_roa = s2->src_roa;
     if (w & COUNT_PEER_SRC_AS) d2->peer_src_as = s2->peer_src_as;
     if (w & COUNT_PEER_DST_AS) d2->peer_dst_as = s2->peer_dst_as;
     if (w & COUNT_PEER_SRC_IP) memcpy(&d2->peer_src_ip, &s2->peer_src_ip, sizeof(d2->peer_src_ip));
     if (w & COUNT_PEER_DST_IP) memcpy(&d2->peer_dst_ip, &s2->peer_dst_ip, sizeof(d2->peer_dst_ip));
     if (w & COUNT_MPLS_VPN_RD) memcpy(&d2->mpls_vpn_rd, &s2->mpls_vpn_rd, sizeof(rd_t)); 
+    if (w2 & COUNT_MPLS_PW_ID) memcpy(&d2->mpls_pw_id, &s2->mpls_pw_id, sizeof(d2->mpls_pw_id)); 
   }
 
   if (extras->off_pkt_lbgp_primitives && s5) {
@@ -600,10 +601,15 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
   }
 
   if (extras->off_pkt_tun_primitives && s6) {
+    if (w2 & COUNT_TUNNEL_SRC_MAC) memcpy(&d6->tunnel_eth_shost, &s6->tunnel_eth_shost, sizeof(d6->tunnel_eth_shost));
+    if (w2 & COUNT_TUNNEL_DST_MAC) memcpy(&d6->tunnel_eth_dhost, &s6->tunnel_eth_dhost, sizeof(d6->tunnel_eth_dhost));
     if (w2 & COUNT_TUNNEL_SRC_HOST) memcpy(&d6->tunnel_src_ip, &s6->tunnel_src_ip, sizeof(d6->tunnel_src_ip));
     if (w2 & COUNT_TUNNEL_DST_HOST) memcpy(&d6->tunnel_src_ip, &s6->tunnel_dst_ip, sizeof(d6->tunnel_dst_ip));
     if (w2 & COUNT_TUNNEL_IP_PROTO) memcpy(&d6->tunnel_proto, &s6->tunnel_proto, sizeof(d6->tunnel_proto));
     if (w2 & COUNT_TUNNEL_IP_TOS) memcpy(&d6->tunnel_tos, &s6->tunnel_tos, sizeof(d6->tunnel_tos));
+    if (w2 & COUNT_TUNNEL_SRC_PORT) memcpy(&d6->tunnel_src_port, &s6->tunnel_src_port, sizeof(d6->tunnel_src_port));
+    if (w2 & COUNT_TUNNEL_DST_PORT) memcpy(&d6->tunnel_dst_port, &s6->tunnel_dst_port, sizeof(d6->tunnel_dst_port));
+    if (w2 & COUNT_VXLAN) memcpy(&d6->tunnel_id, &s6->tunnel_id, sizeof(d6->tunnel_id));
   }
 }
 

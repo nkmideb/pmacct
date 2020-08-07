@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -18,9 +18,6 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
-
-/* defines */
-#define __SFACCTD_C
 
 /* includes */
 #include "pmacct.h"
@@ -49,10 +46,18 @@
 #endif
 #if defined (WITH_NDPI)
 #include "ndpi/ndpi.h"
+#include "ndpi/ndpi_util.h"
 #endif
 
 /* variables to be exported away */
 struct channels_list_entry channels_list[MAX_N_PLUGINS]; /* communication channels: core <-> plugins */
+int sfacctd_counter_backend_methods;
+struct bgp_misc_structs *sf_cnt_misc_db;
+struct host_addr debug_a;
+char debug_agent_addr[50];
+u_int16_t debug_agent_port;
+
+
 
 /* Functions */
 void usage_daemon(char *prog_name)
@@ -91,6 +96,7 @@ void usage_daemon(char *prog_name)
   printf("  -r  \tRefresh time (in seconds)\n");
   printf("  -O  \t[ formatted | csv | json | avro ] \n\tOutput format\n");
   printf("  -o  \tPath to output file\n");
+  printf("  -M  \tPrint event init/close marker messages\n");
   printf("  -A  \tAppend output (applies to -o)\n");
   printf("  -E  \tCSV format separator (applies to -O csv, DEFAULT: ',')\n");
   printf("\n");
@@ -109,7 +115,7 @@ int main(int argc,char **argv, char **envp)
   struct packet_ptrs_vector pptrs;
   char config_file[SRVBUFLEN];
   unsigned char *sflow_packet;
-  int logf, rc, yes=1, no=0, allowed;
+  int logf, rc, yes=1, allowed;
   struct host_addr addr;
   struct hosts_table allow;
   struct id_table bpas_table;
@@ -120,21 +126,16 @@ int main(int argc,char **argv, char **envp)
   struct id_table bitr_table;
   struct id_table sampling_table;
   u_int32_t idx;
-  int pipe_fd = 0, capture_methods = 0;
-  int ret;
+  int capture_methods = 0;
+  int ret, alloc_sppi = FALSE;
   SFSample spp;
 
-#if defined ENABLE_IPV6
   struct sockaddr_storage server, client;
   struct ipv6_mreq multi_req6;
-#else
-  struct sockaddr server, client;
-#endif
-  int clen = sizeof(client), slen;
+  socklen_t  clen = sizeof(client), slen = 0;
   struct ip_mreq multi_req4;
 
-  struct pcap_device device;
-  int pcap_savefile_round = 0;
+  int pm_pcap_savefile_round = 0;
 
   unsigned char dummy_packet[64]; 
   unsigned char dummy_packet_vlan[64]; 
@@ -145,7 +146,6 @@ int main(int argc,char **argv, char **envp)
   struct pcap_pkthdr dummy_pkthdr_mpls;
   struct pcap_pkthdr dummy_pkthdr_vlan_mpls;
 
-#if defined ENABLE_IPV6
   unsigned char dummy_packet6[92]; 
   unsigned char dummy_packet_vlan6[92]; 
   unsigned char dummy_packet_mpls6[128]; 
@@ -154,15 +154,19 @@ int main(int argc,char **argv, char **envp)
   struct pcap_pkthdr dummy_pkthdr_vlan6;
   struct pcap_pkthdr dummy_pkthdr_mpls6;
   struct pcap_pkthdr dummy_pkthdr_vlan_mpls6;
-#endif
 
   struct packet_ptrs recv_pptrs;
   struct pcap_pkthdr recv_pkthdr;
 
+  sigset_t signal_set;
+
   /* getopt() stuff */
   extern char *optarg;
-  extern int optind, opterr, optopt;
   int errflag, cp; 
+
+#ifdef WITH_REDIS
+  struct p_redis_host redis_host;
+#endif
 
 #if defined HAVE_MALLOPT
   mallopt(M_CHECK_ACTION, 0);
@@ -173,6 +177,7 @@ int main(int argc,char **argv, char **envp)
 
   /* a bunch of default definitions */ 
   reload_map = FALSE;
+  print_stats = FALSE;
   reload_geoipv2_file = FALSE;
   reload_log_sf_cnt = FALSE;
   bpas_map_allocated = FALSE;
@@ -205,6 +210,7 @@ int main(int argc,char **argv, char **envp)
   memset(&spp, 0, sizeof(spp));
   memset(&class, 0, sizeof(class));
   memset(&xflow_status_table, 0, sizeof(xflow_status_table));
+  memset(empty_mem_area_256b, 0, sizeof(empty_mem_area_256b));
 
   memset(&bpas_table, 0, sizeof(bpas_table));
   memset(&blp_table, 0, sizeof(blp_table));
@@ -272,9 +278,12 @@ int main(int argc,char **argv, char **envp)
       strncat(cfg_cmdline[rows], optarg, CFG_LINE_LEN(cfg_cmdline[rows]));
       rows++;
       break;
+    case 'M':
+      strlcpy(cfg_cmdline[rows], "print_markers: true", SRVBUFLEN);
+      rows++;
+      break;
     case 'A':
-      strlcpy(cfg_cmdline[rows], "print_output_file_append: ", SRVBUFLEN);
-      strncat(cfg_cmdline[rows], optarg, CFG_LINE_LEN(cfg_cmdline[rows]));
+      strlcpy(cfg_cmdline[rows], "print_output_file_append: true", SRVBUFLEN);
       rows++;
       break;
     case 'E':
@@ -399,18 +408,6 @@ int main(int argc,char **argv, char **envp)
 
   if (config.files_umask) umask(config.files_umask);
 
-  if (config.daemon) {
-    list = plugins_list;
-    while (list) {
-      if (!strcmp(list->type.string, "print") && !list->cfg.print_output_file)
-        printf("INFO ( %s/%s ): Daemonizing. Bye bye screen.\n", list->name, list->type.string);
-      list = list->next;
-    }
-    if (debug || config.debug)
-      printf("WARN ( %s/core ): debug is enabled; forking in background. Logging to standard error (stderr) will get lost.\n", config.name); 
-    daemonize();
-  }
-
   initsetproctitle(argc, argv, envp);
   if (config.syslog) {
     logf = parse_log_facility(config.syslog);
@@ -422,14 +419,30 @@ int main(int argc,char **argv, char **envp)
     Log(LOG_INFO, "INFO ( %s/core ): Start logging ...\n", config.name);
   }
 
-  if (config.logfile)
-  {
+  if (config.logfile) {
     config.logfile_fd = open_output_file(config.logfile, "a", FALSE);
     list = plugins_list;
     while (list) {
       list->cfg.logfile_fd = config.logfile_fd ;
       list = list->next;
     }
+  }
+
+  if (config.daemon) {
+    list = plugins_list;
+    while (list) {
+      if (!strcmp(list->type.string, "print") && !list->cfg.print_output_file)
+	printf("INFO ( %s/%s ): Daemonizing. Bye bye screen.\n", list->name, list->type.string);
+      list = list->next;
+    }
+
+    if (!config.syslog && !config.logfile) {
+      if (debug || config.debug) {
+	printf("WARN ( %s/core ): debug is enabled; forking in background. Logging to standard error (stderr) will get lost.\n", config.name);
+      }
+    }
+
+    daemonize();
   }
 
   if (config.proc_priority) {
@@ -485,9 +498,13 @@ int main(int argc,char **argv, char **envp)
                         COUNT_MPLS_STACK_DEPTH))
           list->cfg.data_type |= PIPE_TYPE_MPLS;
 
-	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_HOST|COUNT_TUNNEL_DST_HOST|
-			COUNT_TUNNEL_IP_PROTO|COUNT_TUNNEL_IP_TOS))
+	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_MAC|COUNT_TUNNEL_DST_MAC|
+			COUNT_TUNNEL_SRC_HOST|COUNT_TUNNEL_DST_HOST|COUNT_TUNNEL_IP_PROTO|
+			COUNT_TUNNEL_IP_TOS|COUNT_TUNNEL_SRC_PORT|COUNT_TUNNEL_DST_PORT|
+			COUNT_VXLAN)) {
 	  list->cfg.data_type |= PIPE_TYPE_TUN;
+	  alloc_sppi = TRUE;
+	}
 
         if (list->cfg.what_to_count_2 & (COUNT_LABEL))
           list->cfg.data_type |= PIPE_TYPE_VLEN;
@@ -502,7 +519,7 @@ int main(int argc,char **argv, char **envp)
 	    Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation was selected but NO 'networks_file' specified. Exiting...\n\n", list->name, list->type.string);
 	    exit_gracefully(1);
 	  }
-          if (!list->cfg.nfacctd_bgp && !list->cfg.nfacctd_bmp && list->cfg.nfacctd_as == NF_AS_BGP) {
+          if (!list->cfg.bgp_daemon && !list->cfg.bmp_daemon && list->cfg.nfacctd_as == NF_AS_BGP) {
             Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation selected but 'bgp_daemon' or 'bmp_daemon' is not enabled. Exiting...\n\n", list->name, list->type.string);
             exit_gracefully(1);
 	  }
@@ -518,7 +535,7 @@ int main(int argc,char **argv, char **envp)
           else {
             if ((list->cfg.nfacctd_net == NF_NET_NEW && !list->cfg.networks_file) ||
                 (list->cfg.nfacctd_net == NF_NET_STATIC && !list->cfg.networks_mask) ||
-                (list->cfg.nfacctd_net == NF_NET_BGP && !list->cfg.nfacctd_bgp && !list->cfg.nfacctd_bmp) ||
+                (list->cfg.nfacctd_net == NF_NET_BGP && !list->cfg.bgp_daemon && !list->cfg.bmp_daemon) ||
                 (list->cfg.nfacctd_net == NF_NET_IGP && !list->cfg.nfacctd_isis)) {
               Log(LOG_ERR, "ERROR ( %s/%s ): network aggregation selected but none of 'bgp_daemon', 'bmp_daemon', 'isis_daemon', 'networks_file', 'networks_mask' is specified. Exiting ...\n\n", list->name, list->type.string);
               exit_gracefully(1);
@@ -535,7 +552,7 @@ int main(int argc,char **argv, char **envp)
 
 #if defined (WITH_NDPI)
 	if (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS) {
-          config.handle_fragments = TRUE;
+          enable_ip_fragment_handler();
           config.classifier_ndpi = TRUE;
 	}
 
@@ -595,44 +612,61 @@ int main(int argc,char **argv, char **envp)
 #endif
 
   /* signal handling we want to inherit to plugins (when not re-defined elsewhere) */
-  signal(SIGCHLD, startup_handle_falling_child); /* takes note of plugins failed during startup phase */
-  signal(SIGHUP, reload); /* handles reopening of syslog channel */
-  signal(SIGUSR1, push_stats); /* logs various statistics via Log() calls */ 
-  signal(SIGUSR2, reload_maps); /* sets to true the reload_maps flag */
-  signal(SIGPIPE, SIG_IGN); /* we want to exit gracefully when a pipe is broken */
+  memset(&sighandler_action, 0, sizeof(sighandler_action)); /* To ensure the struct holds no garbage values */
+  sigemptyset(&sighandler_action.sa_mask);  /* Within a signal handler all the signals are enabled */
+  sighandler_action.sa_flags = SA_RESTART;  /* To enable re-entering a system call afer done with signal handling */
+
+  sighandler_action.sa_handler = startup_handle_falling_child;
+  sigaction(SIGCHLD, &sighandler_action, NULL);
+
+  /* handles reopening of syslog channel */
+  sighandler_action.sa_handler = reload;
+  sigaction(SIGHUP, &sighandler_action, NULL);
+
+  /* logs various statistics via Log() calls */
+  sighandler_action.sa_handler = push_stats;
+  sigaction(SIGUSR1, &sighandler_action, NULL);
+
+  /* sets to true the reload_maps flag */
+  sighandler_action.sa_handler = reload_maps;
+  sigaction(SIGUSR2, &sighandler_action, NULL);
+
+  /* we want to exit gracefully when a pipe is broken */
+  sighandler_action.sa_handler = SIG_IGN;
+  sigaction(SIGPIPE, &sighandler_action, NULL);
+
+  sighandler_action.sa_handler = PM_sigalrm_noop_handler;
+  sigaction(SIGALRM, &sighandler_action, NULL);
 
   if (config.pcap_savefile) {
     open_pcap_savefile(&device, config.pcap_savefile);
-    pcap_savefile_round = 1;
+    pm_pcap_savefile_round = 1;
 
-    config.handle_fragments = TRUE;
-    init_ip_fragment_handler();
+    enable_ip_fragment_handler();
   }
 #ifdef WITH_KAFKA
   else if (config.nfacctd_kafka_broker_host) {
     SF_init_kafka_host(&nfacctd_kafka_host);
-
-    config.handle_fragments = TRUE;
-    init_ip_fragment_handler();
-
     recv_pptrs.pkthdr = &recv_pkthdr;
+
+    enable_ip_fragment_handler();
   }
 #endif
 #ifdef WITH_ZMQ
   else if (config.nfacctd_zmq_address) {
+    int pipe_fd = 0;
     SF_init_zmq_host(&nfacctd_zmq_host, &pipe_fd);
-
-    config.handle_fragments = TRUE;
-    init_ip_fragment_handler();
-
     recv_pptrs.pkthdr = &recv_pkthdr;
+
+    enable_ip_fragment_handler();
   }
 #endif
   else {
     /* If no IP address is supplied, let's set our default
        behaviour: IPv4 address, INADDR_ANY, port 2100 */
     if (!config.nfacctd_port) config.nfacctd_port = DEFAULT_SFACCTD_PORT;
-#if (defined ENABLE_IPV6)
+    collector_port = config.nfacctd_port;
+
     if (!config.nfacctd_ip) {
       struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)&server;
 
@@ -640,16 +674,6 @@ int main(int argc,char **argv, char **envp)
       sa6->sin6_port = htons(config.nfacctd_port);
       slen = sizeof(struct sockaddr_in6);
     }
-#else
-    if (!config.nfacctd_ip) {
-      struct sockaddr_in *sa4 = (struct sockaddr_in *)&server;
-
-      sa4->sin_family = AF_INET;
-      sa4->sin_addr.s_addr = htonl(0);
-      sa4->sin_port = htons(config.nfacctd_port);
-      slen = sizeof(struct sockaddr_in);
-    }
-#endif
     else {
       trim_spaces(config.nfacctd_ip);
       ret = str_to_addr(config.nfacctd_ip, &addr);
@@ -663,7 +687,6 @@ int main(int argc,char **argv, char **envp)
     /* socket creation */
     config.sock = socket(((struct sockaddr *)&server)->sa_family, SOCK_DGRAM, 0);
     if (config.sock < 0) {
-#if (defined ENABLE_IPV6)
       /* retry with IPv4 */
       if (!config.nfacctd_ip) {
         struct sockaddr_in *sa4 = (struct sockaddr_in *)&server;
@@ -675,7 +698,6 @@ int main(int argc,char **argv, char **envp)
 
         config.sock = socket(((struct sockaddr *)&server)->sa_family, SOCK_DGRAM, 0);
       }
-#endif
 
       if (config.sock < 0) {
         Log(LOG_ERR, "ERROR ( %s/core ): socket() failed.\n", config.name);
@@ -685,24 +707,28 @@ int main(int argc,char **argv, char **envp)
 
     /* bind socket to port */
 #if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
-    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *)&yes, sizeof(yes));
+    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT.\n", config.name);
 #else
-    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, sizeof(yes));
+    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
 #endif
 
-#if (defined ENABLE_IPV6) && (defined IPV6_BINDV6ONLY)
-    rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
-    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for IPV6_BINDV6ONLY.\n", config.name);
+#if (defined IPV6_BINDV6ONLY)
+    {
+      int no=0;
+
+      rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for IPV6_BINDV6ONLY.\n", config.name);
+    }
 #endif
 
     if (config.nfacctd_pipe_size) {
-      int l = sizeof(config.nfacctd_pipe_size);
+      socklen_t l = sizeof(config.nfacctd_pipe_size);
       int saved = 0, obtained = 0;
 
       getsockopt(config.sock, SOL_SOCKET, SO_RCVBUF, &saved, &l);
-      Setsocksize(config.sock, SOL_SOCKET, SO_RCVBUF, &config.nfacctd_pipe_size, sizeof(config.nfacctd_pipe_size));
+      Setsocksize(config.sock, SOL_SOCKET, SO_RCVBUF, &config.nfacctd_pipe_size, (socklen_t) sizeof(config.nfacctd_pipe_size));
       getsockopt(config.sock, SOL_SOCKET, SO_RCVBUF, &obtained, &l);
 
       if (obtained < saved) {
@@ -717,21 +743,19 @@ int main(int argc,char **argv, char **envp)
       if (mcast_groups[idx].family == AF_INET) {
         memset(&multi_req4, 0, sizeof(multi_req4));
         multi_req4.imr_multiaddr.s_addr = mcast_groups[idx].address.ipv4.s_addr;
-        if (setsockopt(config.sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&multi_req4, sizeof(multi_req4)) < 0) {
+        if (setsockopt(config.sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (char *)&multi_req4, (socklen_t) sizeof(multi_req4)) < 0) {
 	  Log(LOG_ERR, "ERROR ( %s/core ): IPv4 multicast address - ADD membership failed.\n", config.name);
 	  exit_gracefully(1);
 	}
       }
-#if defined ENABLE_IPV6
       if (mcast_groups[idx].family == AF_INET6) {
 	memset(&multi_req6, 0, sizeof(multi_req6));
 	ip6_addr_cpy(&multi_req6.ipv6mr_multiaddr, &mcast_groups[idx].address.ipv6);
-	if (setsockopt(config.sock, IPPROTO_IPV6, IPV6_JOIN_GROUP, (char *)&multi_req6, sizeof(multi_req6)) < 0) {
+	if (setsockopt(config.sock, IPPROTO_IPV6, IPV6_JOIN_GROUP, (char *)&multi_req6, (socklen_t) sizeof(multi_req6)) < 0) {
 	  Log(LOG_ERR, "ERROR ( %s/core ): IPv6 multicast address - ADD membership failed.\n", config.name);
 	  exit_gracefully(1);
 	}
       }
-#endif
     }
   }
 
@@ -764,7 +788,7 @@ int main(int argc,char **argv, char **envp)
     list = list->next;
   }
 
-  if (config.nfacctd_bgp && config.nfacctd_bmp) {
+  if (config.bgp_daemon && config.bmp_daemon) {
     Log(LOG_ERR, "ERROR ( %s/core ): bgp_daemon and bmp_daemon are currently mutual exclusive. Exiting.\n", config.name);
     exit_gracefully(1);
   }
@@ -776,25 +800,27 @@ int main(int argc,char **argv, char **envp)
     nfacctd_isis_wrapper();
 
     /* Let's give the ISIS thread some advantage to create its structures */
-    sleep(5);
+    sleep(DEFAULT_SLOTH_SLEEP_TIME);
   }
 
   /* starting the BGP thread */
-  if (config.nfacctd_bgp) {
+  if (config.bgp_daemon) {
+    int sleep_time = DEFAULT_SLOTH_SLEEP_TIME;
+
     req.bpf_filter = TRUE;
 
-    if (config.nfacctd_bgp_stdcomm_pattern_to_asn && config.nfacctd_bgp_lrgcomm_pattern_to_asn) {
+    if (config.bgp_daemon_stdcomm_pattern_to_asn && config.bgp_daemon_lrgcomm_pattern_to_asn) {
       Log(LOG_ERR, "ERROR ( %s/core ): bgp_stdcomm_pattern_to_asn and bgp_lrgcomm_pattern_to_asn are mutual exclusive. Exiting.\n", config.name);
       exit_gracefully(1);
     }
 
-    load_comm_patterns(&config.nfacctd_bgp_stdcomm_pattern, &config.nfacctd_bgp_extcomm_pattern,
-                        &config.nfacctd_bgp_lrgcomm_pattern, &config.nfacctd_bgp_stdcomm_pattern_to_asn,
-                        &config.nfacctd_bgp_lrgcomm_pattern_to_asn);
+    load_comm_patterns(&config.bgp_daemon_stdcomm_pattern, &config.bgp_daemon_extcomm_pattern,
+                        &config.bgp_daemon_lrgcomm_pattern, &config.bgp_daemon_stdcomm_pattern_to_asn,
+                        &config.bgp_daemon_lrgcomm_pattern_to_asn);
 
-    if (config.nfacctd_bgp_peer_as_src_type == BGP_SRC_PRIMITIVES_MAP) {
-      if (config.nfacctd_bgp_peer_as_src_map) {
-        load_id_file(MAP_BGP_PEER_AS_SRC, config.nfacctd_bgp_peer_as_src_map, &bpas_table, &req, &bpas_map_allocated);
+    if (config.bgp_daemon_peer_as_src_type == BGP_SRC_PRIMITIVES_MAP) {
+      if (config.bgp_daemon_peer_as_src_map) {
+        load_id_file(MAP_BGP_PEER_AS_SRC, config.bgp_daemon_peer_as_src_map, &bpas_table, &req, &bpas_map_allocated);
         pptrs.v4.bpas_table = (u_char *) &bpas_table;
       }
       else {
@@ -804,9 +830,9 @@ int main(int argc,char **argv, char **envp)
     }
     else pptrs.v4.bpas_table = NULL;
 
-    if (config.nfacctd_bgp_src_local_pref_type == BGP_SRC_PRIMITIVES_MAP) {
-      if (config.nfacctd_bgp_src_local_pref_map) {
-        load_id_file(MAP_BGP_SRC_LOCAL_PREF, config.nfacctd_bgp_src_local_pref_map, &blp_table, &req, &blp_map_allocated);
+    if (config.bgp_daemon_src_local_pref_type == BGP_SRC_PRIMITIVES_MAP) {
+      if (config.bgp_daemon_src_local_pref_map) {
+        load_id_file(MAP_BGP_SRC_LOCAL_PREF, config.bgp_daemon_src_local_pref_map, &blp_table, &req, &blp_map_allocated);
         pptrs.v4.blp_table = (u_char *) &blp_table;
       }
       else {
@@ -816,9 +842,9 @@ int main(int argc,char **argv, char **envp)
     }
     else pptrs.v4.blp_table = NULL;
 
-    if (config.nfacctd_bgp_src_med_type == BGP_SRC_PRIMITIVES_MAP) {
-      if (config.nfacctd_bgp_src_med_map) {
-        load_id_file(MAP_BGP_SRC_MED, config.nfacctd_bgp_src_med_map, &bmed_table, &req, &bmed_map_allocated);
+    if (config.bgp_daemon_src_med_type == BGP_SRC_PRIMITIVES_MAP) {
+      if (config.bgp_daemon_src_med_map) {
+        load_id_file(MAP_BGP_SRC_MED, config.bgp_daemon_src_med_map, &bmed_table, &req, &bmed_map_allocated);
         pptrs.v4.bmed_table = (u_char *) &bmed_table;
       }
       else {
@@ -828,26 +854,30 @@ int main(int argc,char **argv, char **envp)
     }
     else pptrs.v4.bmed_table = NULL;
 
-    if (config.nfacctd_bgp_to_agent_map) {
-      load_id_file(MAP_BGP_TO_XFLOW_AGENT, config.nfacctd_bgp_to_agent_map, &bta_table, &req, &bta_map_allocated);
+    if (config.bgp_daemon_to_xflow_agent_map) {
+      load_id_file(MAP_BGP_TO_XFLOW_AGENT, config.bgp_daemon_to_xflow_agent_map, &bta_table, &req, &bta_map_allocated);
       pptrs.v4.bta_table = (u_char *) &bta_table;
     }
     else pptrs.v4.bta_table = NULL;
 
-    nfacctd_bgp_wrapper();
+    bgp_daemon_wrapper();
 
     /* Let's give the BGP thread some advantage to create its structures */
-    sleep(5);
+    if (config.rpki_roas_file || config.rpki_rtr_cache) sleep_time += DEFAULT_SLOTH_SLEEP_TIME;
+    sleep(sleep_time);
   }
 
   /* starting the BMP thread */
-  if (config.nfacctd_bmp) {
+  if (config.bmp_daemon) {
+    int sleep_time = DEFAULT_SLOTH_SLEEP_TIME;
+
     req.bpf_filter = TRUE;
 
-    nfacctd_bmp_wrapper();
+    bmp_daemon_wrapper();
 
     /* Let's give the BMP thread some advantage to create its structures */
-    sleep(5);
+    if (config.rpki_roas_file || config.rpki_rtr_cache) sleep_time += DEFAULT_SLOTH_SLEEP_TIME;
+    sleep(sleep_time);
   }
 
 #if defined WITH_GEOIP
@@ -874,7 +904,7 @@ int main(int argc,char **argv, char **envp)
 
 #if defined (WITH_NDPI)
   if (config.classifier_ndpi) {
-    config.handle_fragments = TRUE;
+    enable_ip_fragment_handler();
     pm_ndpi_wfl = pm_ndpi_workflow_init();
     pm_ndpi_export_proto_to_class(pm_ndpi_wfl);
   }
@@ -891,9 +921,15 @@ int main(int argc,char **argv, char **envp)
 
   /* signals to be handled only by the core process;
      we set proper handlers after plugin creation */
-  signal(SIGINT, my_sigint_handler);
-  signal(SIGTERM, my_sigint_handler);
-  signal(SIGCHLD, handle_falling_child);
+  sighandler_action.sa_handler = PM_sigint_handler;
+  sigaction(SIGINT, &sighandler_action, NULL);
+
+  sighandler_action.sa_handler = PM_sigint_handler;
+  sigaction(SIGTERM, &sighandler_action, NULL);
+
+  sighandler_action.sa_handler = handle_falling_child;
+  sigaction(SIGCHLD, &sighandler_action, NULL);
+
   kill(getpid(), SIGCHLD);
 
   /* arranging pointers to dummy packet; to speed up things into the
@@ -952,14 +988,13 @@ int main(int argc,char **argv, char **envp)
   Assign16(((struct eth_header *)pptrs.vlanmpls4.packet_ptr)->ether_type, htons(ETHERTYPE_8021Q));
   pptrs.vlanmpls4.mac_ptr = (u_char *)((struct eth_header *)pptrs.vlanmpls4.packet_ptr)->ether_dhost;
   pptrs.vlanmpls4.vlan_ptr = pptrs.vlanmpls4.packet_ptr + ETHER_HDRLEN;
-  Assign16(*(pptrs.vlanmpls4.vlan_ptr+2), htons(ETHERTYPE_MPLS));
+  Assign16(((struct vlan_header *)pptrs.vlanmpls4.vlan_ptr)->proto, htons(ETHERTYPE_MPLS));
   pptrs.vlanmpls4.mpls_ptr = pptrs.vlanmpls4.packet_ptr + ETHER_HDRLEN + IEEE8021Q_TAGLEN;
   // pptrs.vlanmpls4.pkthdr->caplen = 82; /* eth_header + vlan + upto 10 MPLS labels + pm_iphdr + pm_tlhdr */
   pptrs.vlanmpls4.pkthdr->caplen = 99;
   pptrs.vlanmpls4.pkthdr->len = 100; /* fake len */
   pptrs.vlanmpls4.l3_proto = ETHERTYPE_IP;
 
-#if defined ENABLE_IPV6
   memset(dummy_packet6, 0, sizeof(dummy_packet6));
   pptrs.v6.f_data = pptrs.v4.f_data; 
   pptrs.v6.f_agent = (u_char *) &client;
@@ -970,7 +1005,7 @@ int main(int argc,char **argv, char **envp)
   pptrs.v6.iph_ptr = pptrs.v6.packet_ptr + ETHER_HDRLEN;
   pptrs.v6.tlh_ptr = pptrs.v6.packet_ptr + ETHER_HDRLEN + sizeof(struct ip6_hdr);
   Assign16(((struct ip6_hdr *)pptrs.v6.iph_ptr)->ip6_plen, htons(100));
-  Assign16(((struct ip6_hdr *)pptrs.v6.iph_ptr)->ip6_hlim, htons(64));
+  ((struct ip6_hdr *)pptrs.v6.iph_ptr)->ip6_hlim = 64;
   // pptrs.v6.pkthdr->caplen = 60; /* eth_header + ip6_hdr + pm_tlhdr */
   pptrs.v6.pkthdr->caplen = 77;
   pptrs.v6.pkthdr->len = 100; /* fake len */
@@ -989,7 +1024,7 @@ int main(int argc,char **argv, char **envp)
   pptrs.vlan6.iph_ptr = pptrs.vlan6.packet_ptr + ETHER_HDRLEN + IEEE8021Q_TAGLEN;
   pptrs.vlan6.tlh_ptr = pptrs.vlan6.packet_ptr + ETHER_HDRLEN + IEEE8021Q_TAGLEN + sizeof(struct ip6_hdr);
   Assign16(((struct ip6_hdr *)pptrs.vlan6.iph_ptr)->ip6_plen, htons(100));
-  Assign16(((struct ip6_hdr *)pptrs.vlan6.iph_ptr)->ip6_hlim, htons(64));
+  ((struct ip6_hdr *)pptrs.vlan6.iph_ptr)->ip6_hlim = 64;
   // pptrs.vlan6.pkthdr->caplen = 64; /* eth_header + vlan + ip6_hdr + pm_tlhdr */
   pptrs.vlan6.pkthdr->caplen = 81;
   pptrs.vlan6.pkthdr->len = 100; /* fake len */
@@ -1023,7 +1058,6 @@ int main(int argc,char **argv, char **envp)
   pptrs.vlanmpls6.pkthdr->caplen = 121;
   pptrs.vlanmpls6.pkthdr->len = 128; /* fake len */
   pptrs.vlanmpls6.l3_proto = ETHERTYPE_IP;
-#endif
 
   if (config.pcap_savefile) {
     Log(LOG_INFO, "INFO ( %s/core ): reading sFlow data from: %s\n", config.name, config.pcap_savefile);
@@ -1110,10 +1144,36 @@ int main(int argc,char **argv, char **envp)
 #endif
   }
 
+#ifdef WITH_REDIS
+  if (config.redis_host) {
+    char log_id[SHORTBUFLEN];
+
+    snprintf(log_id, sizeof(log_id), "%s/%s", config.name, config.type);
+    p_redis_init(&redis_host, log_id, p_redis_thread_produce_common_core_handler);
+  }
+#endif
+
+  if (alloc_sppi) {
+    spp.sppi = malloc(sizeof(SFSample));
+    memset(spp.sppi, 0, sizeof(SFSample));
+  }
+
+  sigemptyset(&signal_set);
+  sigaddset(&signal_set, SIGCHLD);
+  sigaddset(&signal_set, SIGHUP);
+  sigaddset(&signal_set, SIGUSR1);
+  sigaddset(&signal_set, SIGUSR2);
+  sigaddset(&signal_set, SIGTERM);
+  if (config.daemon) {
+    sigaddset(&signal_set, SIGINT);
+  }
+
   /* Main loop */
   for (;;) {
+    sigprocmask(SIG_BLOCK, &signal_set, NULL);
+
     if (config.pcap_savefile) {
-      ret = recvfrom_savefile(&device, (void **) &sflow_packet, (struct sockaddr *) &client, &spp.ts, &pcap_savefile_round, &recv_pptrs);
+      ret = recvfrom_savefile(&device, (void **) &sflow_packet, (struct sockaddr *) &client, &spp.ts, &pm_pcap_savefile_round, &recv_pptrs);
     }
 #ifdef WITH_KAFKA
     else if (config.nfacctd_kafka_broker_host) {
@@ -1151,7 +1211,7 @@ int main(int argc,char **argv, char **envp)
 #endif
 #ifdef WITH_ZMQ
     else if (config.nfacctd_zmq_address) {
-      ret = p_zmq_recv_poll(&nfacctd_zmq_host, 1000);
+      ret = p_zmq_recv_poll(&nfacctd_zmq_host.sock, 1000);
 
       switch (ret) {
       case TRUE: /* got data */
@@ -1171,7 +1231,7 @@ int main(int argc,char **argv, char **envp)
     }
 #endif
     else {
-      ret = recvfrom(config.sock, sflow_packet, SFLOW_MAX_MSG_SIZE, 0, (struct sockaddr *) &client, &clen);
+      ret = recvfrom(config.sock, (unsigned char *)sflow_packet, SFLOW_MAX_MSG_SIZE, 0, (struct sockaddr *) &client, &clen);
     }
 
     spp.rawSample = pptrs.v4.f_header = sflow_packet;
@@ -1181,9 +1241,7 @@ int main(int argc,char **argv, char **envp)
     reset_tag_label_status(&pptrs);
     reset_shadow_status(&pptrs);
 
-#if defined ENABLE_IPV6
     ipv4_mapped_to_ipv4(&client);
-#endif
 
     /* check if Hosts Allow Table is loaded; if it is, we will enforce rules */
     if (allow.num) allowed = check_allow(&allow, (struct sockaddr *)&client); 
@@ -1197,14 +1255,14 @@ int main(int argc,char **argv, char **envp)
 
       load_networks(config.networks_file, &nt, &nc);
 
-      if (config.nfacctd_bgp && config.nfacctd_bgp_peer_as_src_map)
-        load_id_file(MAP_BGP_PEER_AS_SRC, config.nfacctd_bgp_peer_as_src_map, &bpas_table, &req, &bpas_map_allocated);
-      if (config.nfacctd_bgp && config.nfacctd_bgp_src_local_pref_map)
-        load_id_file(MAP_BGP_SRC_LOCAL_PREF, config.nfacctd_bgp_src_local_pref_map, &blp_table, &req, &blp_map_allocated);
-      if (config.nfacctd_bgp && config.nfacctd_bgp_src_med_map)
-        load_id_file(MAP_BGP_SRC_MED, config.nfacctd_bgp_src_med_map, &bmed_table, &req, &bmed_map_allocated);
-      if (config.nfacctd_bgp && config.nfacctd_bgp_to_agent_map)
-        load_id_file(MAP_BGP_TO_XFLOW_AGENT, config.nfacctd_bgp_to_agent_map, &bta_table, &req, &bta_map_allocated);
+      if (config.bgp_daemon && config.bgp_daemon_peer_as_src_map)
+        load_id_file(MAP_BGP_PEER_AS_SRC, config.bgp_daemon_peer_as_src_map, &bpas_table, &req, &bpas_map_allocated);
+      if (config.bgp_daemon && config.bgp_daemon_src_local_pref_map)
+        load_id_file(MAP_BGP_SRC_LOCAL_PREF, config.bgp_daemon_src_local_pref_map, &blp_table, &req, &blp_map_allocated);
+      if (config.bgp_daemon && config.bgp_daemon_src_med_map)
+        load_id_file(MAP_BGP_SRC_MED, config.bgp_daemon_src_med_map, &bmed_table, &req, &bmed_map_allocated);
+      if (config.bgp_daemon && config.bgp_daemon_to_xflow_agent_map)
+        load_id_file(MAP_BGP_TO_XFLOW_AGENT, config.bgp_daemon_to_xflow_agent_map, &bta_table, &req, &bta_map_allocated);
       if (config.nfacctd_flow_to_rd_map)
         load_id_file(MAP_FLOW_TO_RD, config.nfacctd_flow_to_rd_map, &bitr_table, &req, &bitr_map_allocated);
       if (config.sampling_map) {
@@ -1214,6 +1272,11 @@ int main(int argc,char **argv, char **envp)
 
       reload_map = FALSE;
       gettimeofday(&reload_map_tstamp, NULL);
+    }
+
+    if (reload_log) {
+      reload_logs();
+      reload_log = FALSE;
     }
 
     if (reload_log_sf_cnt) {
@@ -1229,6 +1292,13 @@ int main(int argc,char **argv, char **envp)
       }
 
       reload_log_sf_cnt = FALSE;
+    }
+
+    if (print_stats) {
+      time_t now = time(NULL);
+
+      print_status_table(now, XFLOW_STATUS_TABLE_SZ);
+      print_stats = FALSE;
     }
 
     if (sfacctd_counter_backend_methods) {
@@ -1274,7 +1344,6 @@ int main(int argc,char **argv, char **envp)
 	  sa->sa_family = AF_INET;
 	  sa4->sin_addr.s_addr = spp.agent_addr.address.ip_v4.s_addr;
 	}
-#if defined ENABLE_IPV6
 	else if (spp.agent_addr.type == SFLADDRESSTYPE_IP_V6) {
 	  struct sockaddr *sa = (struct sockaddr *) &client;
 	  struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) &client;
@@ -1282,7 +1351,6 @@ int main(int argc,char **argv, char **envp)
 	  sa->sa_family = AF_INET6;
 	  ip6_addr_cpy(&sa6->sin6_addr, &spp.agent_addr.address.ip_v6);
 	}
-#endif
 
 	process_SFv5_packet(&spp, &pptrs, &req, (struct sockaddr *) &client);
 	break;
@@ -1298,7 +1366,6 @@ int main(int argc,char **argv, char **envp)
           sa->sa_family = AF_INET;
           sa4->sin_addr.s_addr = spp.agent_addr.address.ip_v4.s_addr;
         }
-#if defined ENABLE_IPV6
         else if (spp.agent_addr.type == SFLADDRESSTYPE_IP_V6) {
           struct sockaddr *sa = (struct sockaddr *) &client;
           struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) &client;
@@ -1306,13 +1373,12 @@ int main(int argc,char **argv, char **envp)
           sa->sa_family = AF_INET6;
           ip6_addr_cpy(&sa6->sin6_addr, &spp.agent_addr.address.ip_v6);
         }
-#endif
 
 	process_SFv2v4_packet(&spp, &pptrs, &req, (struct sockaddr *) &client);
 	break;
       default:
 	if (!config.nfacctd_disable_checks) {
-	  SF_notify_malf_packet(LOG_INFO, "INFO: Discarding unknown packet", (struct sockaddr *) pptrs.v4.f_agent);
+	  SF_notify_malf_packet(LOG_INFO, "INFO", "discarding unknown packet", (struct sockaddr *) pptrs.v4.f_agent);
 	  xflow_tot_bad_datagrams++;
 	}
 	break;
@@ -1321,6 +1387,8 @@ int main(int argc,char **argv, char **envp)
     else if (tee_plugins) {
       process_SF_raw_packet(&spp, &pptrs, &req, (struct sockaddr *) &client);
     }
+    
+    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
   }
 }
 
@@ -1328,8 +1396,16 @@ void InterSampleCleanup(SFSample *spp)
 {
   u_char *start = (u_char *) spp;
   u_char *ptr = (u_char *) &spp->sampleType;
+  SFSample *sppi = (SFSample *) spp->sppi;
 
-  memset(ptr, 0, SFSampleSz-(ptr-start));
+  memset(ptr, 0, (SFSampleSz - (ptr - start)));
+  spp->sppi = (void *) sppi;
+
+  if (spp->sppi) {
+    start = (u_char *) sppi;
+    ptr = (u_char *) &sppi->sampleType;
+    memset(ptr, 0, (SFSampleSz - (ptr - start)));
+  }
 }
 
 void process_SFv2v4_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
@@ -1343,7 +1419,7 @@ void process_SFv2v4_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
   sysUpTime = spp->sysUpTime = getData32(spp);
   samplesInPacket = getData32(spp);
   
-  pptrsv->v4.f_status = sfv245_check_status(spp, &pptrsv->v4, agent);
+  pptrsv->v4.f_status = (u_char *) sfv245_check_status(spp, &pptrsv->v4, agent);
   set_vector_f_status(pptrsv);
 
   if (config.debug) {
@@ -1371,7 +1447,7 @@ void process_SFv2v4_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
       readv2v4CountersSample(spp, pptrsv);
       break;
     default:
-      SF_notify_malf_packet(LOG_INFO, "INFO: Discarding unknown v2/v4 sample", (struct sockaddr *) pptrsv->v4.f_agent);
+      SF_notify_malf_packet(LOG_INFO, "INFO", "discarding unknown v2/v4 sample", (struct sockaddr *) pptrsv->v4.f_agent);
       xflow_tot_bad_datagrams++;
       return; /* unexpected sampleType; aborting packet */
     }
@@ -1389,7 +1465,7 @@ void process_SFv5_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
   sequenceNo = spp->sequenceNo = getData32(spp);
   sysUpTime = spp->sysUpTime = getData32(spp);
   samplesInPacket = getData32(spp);
-  pptrsv->v4.f_status = sfv245_check_status(spp, &pptrsv->v4, agent);
+  pptrsv->v4.f_status = (u_char *) sfv245_check_status(spp, &pptrsv->v4, agent);
   set_vector_f_status(pptrsv);
 
   if (config.debug) {
@@ -1434,7 +1510,7 @@ SFv5_read_sampleType:
       goto SFv5_read_sampleType; /* rewind */
       break;
     default:
-      SF_notify_malf_packet(LOG_INFO, "INFO: Discarding unknown v5 sample", (struct sockaddr *) pptrsv->v4.f_agent);
+      SF_notify_malf_packet(LOG_INFO, "INFO", "discarding unknown v5 sample", (struct sockaddr *) pptrsv->v4.f_agent);
       xflow_tot_bad_datagrams++;
       return; /* unexpected sampleType; aborting packet */
     }
@@ -1462,7 +1538,7 @@ void process_SF_raw_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
     break;
   default:
     if (!config.nfacctd_disable_checks) {
-      SF_notify_malf_packet(LOG_INFO, "INFO: Discarding unknown sFlow packet", (struct sockaddr *) pptrs->f_agent);
+      SF_notify_malf_packet(LOG_INFO, "INFO", "discarding unknown sFlow packet", (struct sockaddr *) pptrs->f_agent);
       xflow_tot_bad_datagrams++;
     }
     return;
@@ -1470,7 +1546,7 @@ void process_SF_raw_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
 
   if (config.debug) {
     struct host_addr a;
-    u_char agent_addr[50];
+    char agent_addr[50];
     u_int16_t agent_port;
 
     sa_to_addr((struct sockaddr *)pptrs->f_agent, &a, &agent_port);
@@ -1494,7 +1570,7 @@ void process_SF_raw_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
       skipBytes(spp, 4); /* sysUpTime */
       dissect.samplesInPkt = (u_int32_t *) getPointer(spp);
       samplesInPacket = getData32(spp);
-      dissect.hdrEndPtr = getPointer(spp);
+      dissect.hdrEndPtr = (u_char *) getPointer(spp);
       dissect.hdrLen = (dissect.hdrEndPtr - dissect.hdrBasePtr);
       (*dissect.samplesInPkt) = htonl(1);
 
@@ -1503,7 +1579,7 @@ void process_SF_raw_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
         set_vector_sample_type(pptrsv, 0);
         spp->agentSubId = agentSubId;
 
-        dissect.flowBasePtr = getPointer(spp);
+        dissect.flowBasePtr = (u_char *) getPointer(spp);
         sampleType = getData32(spp);
         set_vector_sample_type(pptrsv, sampleType);
         sfv5_modules_db_init();
@@ -1527,7 +1603,7 @@ void process_SF_raw_packet(SFSample *spp, struct packet_ptrs_vector *pptrsv,
 
         if (config.debug) {
 	  struct host_addr a;
-	  u_char agent_addr[50];
+	  char agent_addr[50];
 	  u_int16_t agent_port;
 
 	  sa_to_addr((struct sockaddr *)pptrs->f_agent, &a, &agent_port);
@@ -1592,26 +1668,24 @@ void SF_compute_once()
   HostAddrSz = sizeof(struct host_addr);
   UDPHdrSz = sizeof(struct pm_udphdr);
 
-#if defined ENABLE_IPV6
   IP6HdrSz = sizeof(struct ip6_hdr);
   IP6AddrSz = sizeof(struct in6_addr);
   IP6TlSz = sizeof(struct ip6_hdr)+sizeof(struct pm_tlhdr);
-#endif
 }
 
-void SF_notify_malf_packet(short int severity, char *ostr, struct sockaddr *sa)
+void SF_notify_malf_packet(short int severity, char *severity_str, char *ostr, struct sockaddr *sa)
 {
   struct host_addr a;
-  u_char errstr[SRVBUFLEN];
-  u_char agent_addr[50] /* able to fit an IPv6 string aswell */, any[]="0.0.0.0";
+  char errstr[SRVBUFLEN];
+  char agent_addr[50] /* able to fit an IPv6 string aswell */, any[] = "0.0.0.0";
   u_int16_t agent_port;
 
   sa_to_addr((struct sockaddr *)sa, &a, &agent_port);
   addr_to_str(agent_addr, &a);
-  if (!config.nfacctd_ip) config.nfacctd_ip = any;
-  snprintf(errstr, SRVBUFLEN, "%s: sfacctd=%s:%u agent=%s:%u \n",
-  ostr, config.nfacctd_ip, config.nfacctd_port, agent_addr, agent_port);
-  Log(severity, errstr);
+  snprintf(errstr, SRVBUFLEN, "%s ( %s/core ): %s: sfacctd=%s:%u agent=%s:%u \n", severity_str,
+	config.name, ostr, ((config.nfacctd_ip) ? config.nfacctd_ip : any), collector_port,
+	agent_addr, agent_port);
+  Log(severity, "%s", errstr);
 }
 
 void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct plugin_requests *req)
@@ -1663,16 +1737,15 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       pptrs->l4_proto = sample->dcd_ipProtocol;
 
       if (config.nfacctd_isis) isis_srcdst_lookup(pptrs);
-      if (config.nfacctd_bgp_to_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, pptrs, &pptrs->bta, &pptrs->bta2);
+      if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, pptrs, &pptrs->bta, &pptrs->bta2);
       if (config.nfacctd_flow_to_rd_map) SF_find_id((struct id_table *)pptrs->bitr_table, pptrs, &pptrs->bitr, NULL);
-      if (config.nfacctd_bgp) bgp_srcdst_lookup(pptrs, FUNC_TYPE_BGP);
-      if (config.nfacctd_bgp_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, pptrs, &pptrs->bpas, NULL);
-      if (config.nfacctd_bgp_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, pptrs, &pptrs->blp, NULL);
-      if (config.nfacctd_bgp_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, pptrs, &pptrs->bmed, NULL);
-      if (config.nfacctd_bmp) bmp_srcdst_lookup(pptrs);
+      if (config.bgp_daemon) bgp_srcdst_lookup(pptrs, FUNC_TYPE_BGP);
+      if (config.bgp_daemon_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, pptrs, &pptrs->bpas, NULL);
+      if (config.bgp_daemon_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, pptrs, &pptrs->blp, NULL);
+      if (config.bgp_daemon_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, pptrs, &pptrs->bmed, NULL);
+      if (config.bmp_daemon) bmp_srcdst_lookup(pptrs);
       exec_plugins(pptrs, req);
       break;
-#if defined ENABLE_IPV6
     case NF9_FTYPE_IPV6:
       pptrsv->v6.flow_type = pptrs->flow_type;
 
@@ -1700,16 +1773,15 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       pptrsv->v6.l4_proto = sample->dcd_ipProtocol;
 
       if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->v6);
-      if (config.nfacctd_bgp_to_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->v6, &pptrsv->v6.bta, &pptrsv->v6.bta2);
+      if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->v6, &pptrsv->v6.bta, &pptrsv->v6.bta2);
       if (config.nfacctd_flow_to_rd_map) SF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->v6, &pptrsv->v6.bitr, NULL);
-      if (config.nfacctd_bgp) bgp_srcdst_lookup(&pptrsv->v6, FUNC_TYPE_BGP);
-      if (config.nfacctd_bgp_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->v6, &pptrsv->v6.bpas, NULL);
-      if (config.nfacctd_bgp_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->v6, &pptrsv->v6.blp, NULL);
-      if (config.nfacctd_bgp_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->v6, &pptrsv->v6.bmed, NULL);
-      if (config.nfacctd_bmp) bmp_srcdst_lookup(&pptrsv->v6);
+      if (config.bgp_daemon) bgp_srcdst_lookup(&pptrsv->v6, FUNC_TYPE_BGP);
+      if (config.bgp_daemon_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->v6, &pptrsv->v6.bpas, NULL);
+      if (config.bgp_daemon_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->v6, &pptrsv->v6.blp, NULL);
+      if (config.bgp_daemon_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->v6, &pptrsv->v6.bmed, NULL);
+      if (config.bmp_daemon) bmp_srcdst_lookup(&pptrsv->v6);
       exec_plugins(&pptrsv->v6, req);
       break;
-#endif
     case NF9_FTYPE_VLAN_IPV4:
       pptrsv->vlan4.flow_type = pptrs->flow_type;
 
@@ -1738,16 +1810,15 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       pptrsv->vlan4.l4_proto = sample->dcd_ipProtocol;
 
       if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlan4);
-      if (config.nfacctd_bgp_to_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlan4, &pptrsv->vlan4.bta, &pptrsv->vlan4.bta2);
+      if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlan4, &pptrsv->vlan4.bta, &pptrsv->vlan4.bta2);
       if (config.nfacctd_flow_to_rd_map) SF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlan4, &pptrsv->vlan4.bitr, NULL);
-      if (config.nfacctd_bgp) bgp_srcdst_lookup(&pptrsv->vlan4, FUNC_TYPE_BGP);
-      if (config.nfacctd_bgp_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->vlan4, &pptrsv->vlan4.bpas, NULL);
-      if (config.nfacctd_bgp_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->vlan4, &pptrsv->vlan4.blp, NULL);
-      if (config.nfacctd_bgp_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->vlan4, &pptrsv->vlan4.bmed, NULL);
-      if (config.nfacctd_bmp) bmp_srcdst_lookup(&pptrsv->vlan4);
+      if (config.bgp_daemon) bgp_srcdst_lookup(&pptrsv->vlan4, FUNC_TYPE_BGP);
+      if (config.bgp_daemon_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->vlan4, &pptrsv->vlan4.bpas, NULL);
+      if (config.bgp_daemon_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->vlan4, &pptrsv->vlan4.blp, NULL);
+      if (config.bgp_daemon_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->vlan4, &pptrsv->vlan4.bmed, NULL);
+      if (config.bmp_daemon) bmp_srcdst_lookup(&pptrsv->vlan4);
       exec_plugins(&pptrsv->vlan4, req);
       break;
-#if defined ENABLE_IPV6
     case NF9_FTYPE_VLAN_IPV6:
       pptrsv->vlan6.flow_type = pptrs->flow_type;
 
@@ -1776,16 +1847,15 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       pptrsv->vlan6.l4_proto = sample->dcd_ipProtocol;
 
       if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlan6);
-      if (config.nfacctd_bgp_to_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlan6, &pptrsv->vlan6.bta, &pptrsv->vlan6.bta2);
+      if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlan6, &pptrsv->vlan6.bta, &pptrsv->vlan6.bta2);
       if (config.nfacctd_flow_to_rd_map) SF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlan6, &pptrsv->vlan6.bitr, NULL);
-      if (config.nfacctd_bgp) bgp_srcdst_lookup(&pptrsv->vlan6, FUNC_TYPE_BGP);
-      if (config.nfacctd_bgp_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->vlan6, &pptrsv->vlan6.bpas, NULL);
-      if (config.nfacctd_bgp_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->vlan6, &pptrsv->vlan6.blp, NULL);
-      if (config.nfacctd_bgp_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->vlan6, &pptrsv->vlan6.bmed, NULL);
-      if (config.nfacctd_bmp) bmp_srcdst_lookup(&pptrsv->vlan6);
+      if (config.bgp_daemon) bgp_srcdst_lookup(&pptrsv->vlan6, FUNC_TYPE_BGP);
+      if (config.bgp_daemon_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->vlan6, &pptrsv->vlan6.bpas, NULL);
+      if (config.bgp_daemon_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->vlan6, &pptrsv->vlan6.blp, NULL);
+      if (config.bgp_daemon_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->vlan6, &pptrsv->vlan6.bmed, NULL);
+      if (config.bmp_daemon) bmp_srcdst_lookup(&pptrsv->vlan6);
       exec_plugins(&pptrsv->vlan6, req);
       break;
-#endif
     case NF9_FTYPE_MPLS_IPV4:
       pptrsv->mpls4.flow_type = pptrs->flow_type;
 
@@ -1827,16 +1897,15 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       pptrsv->mpls4.l4_proto = sample->dcd_ipProtocol;
 
       if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->mpls4);
-      if (config.nfacctd_bgp_to_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->mpls4, &pptrsv->mpls4.bta, &pptrsv->mpls4.bta2);
+      if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->mpls4, &pptrsv->mpls4.bta, &pptrsv->mpls4.bta2);
       if (config.nfacctd_flow_to_rd_map) SF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->mpls4, &pptrsv->mpls4.bitr, NULL);
-      if (config.nfacctd_bgp) bgp_srcdst_lookup(&pptrsv->mpls4, FUNC_TYPE_BGP);
-      if (config.nfacctd_bgp_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->mpls4, &pptrsv->mpls4.bpas, NULL);
-      if (config.nfacctd_bgp_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->mpls4, &pptrsv->mpls4.blp, NULL);
-      if (config.nfacctd_bgp_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->mpls4, &pptrsv->mpls4.bmed, NULL);
-      if (config.nfacctd_bmp) bmp_srcdst_lookup(&pptrsv->mpls4);
+      if (config.bgp_daemon) bgp_srcdst_lookup(&pptrsv->mpls4, FUNC_TYPE_BGP);
+      if (config.bgp_daemon_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->mpls4, &pptrsv->mpls4.bpas, NULL);
+      if (config.bgp_daemon_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->mpls4, &pptrsv->mpls4.blp, NULL);
+      if (config.bgp_daemon_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->mpls4, &pptrsv->mpls4.bmed, NULL);
+      if (config.bmp_daemon) bmp_srcdst_lookup(&pptrsv->mpls4);
       exec_plugins(&pptrsv->mpls4, req);
       break;
-#if defined ENABLE_IPV6
     case NF9_FTYPE_MPLS_IPV6:
       pptrsv->mpls6.flow_type = pptrs->flow_type;
 
@@ -1877,16 +1946,15 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       pptrsv->mpls6.l4_proto = sample->dcd_ipProtocol;
 
       if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->mpls6);
-      if (config.nfacctd_bgp_to_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->mpls6, &pptrsv->mpls6.bta, &pptrsv->mpls6.bta2);
+      if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->mpls6, &pptrsv->mpls6.bta, &pptrsv->mpls6.bta2);
       if (config.nfacctd_flow_to_rd_map) SF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->mpls6, &pptrsv->mpls6.bitr, NULL);
-      if (config.nfacctd_bgp) bgp_srcdst_lookup(&pptrsv->mpls6, FUNC_TYPE_BGP);
-      if (config.nfacctd_bgp_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->mpls6, &pptrsv->mpls6.bpas, NULL);
-      if (config.nfacctd_bgp_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->mpls6, &pptrsv->mpls6.blp, NULL);
-      if (config.nfacctd_bgp_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->mpls6, &pptrsv->mpls6.bmed, NULL);
-      if (config.nfacctd_bmp) bmp_srcdst_lookup(&pptrsv->mpls6);
+      if (config.bgp_daemon) bgp_srcdst_lookup(&pptrsv->mpls6, FUNC_TYPE_BGP);
+      if (config.bgp_daemon_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->mpls6, &pptrsv->mpls6.bpas, NULL);
+      if (config.bgp_daemon_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->mpls6, &pptrsv->mpls6.blp, NULL);
+      if (config.bgp_daemon_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->mpls6, &pptrsv->mpls6.bmed, NULL);
+      if (config.bmp_daemon) bmp_srcdst_lookup(&pptrsv->mpls6);
       exec_plugins(&pptrsv->mpls6, req);
       break;
-#endif
     case NF9_FTYPE_VLAN_MPLS_IPV4:
       pptrsv->vlanmpls4.flow_type = pptrs->flow_type;
 
@@ -1928,16 +1996,15 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       pptrsv->vlanmpls4.l4_proto = sample->dcd_ipProtocol;
 
       if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlanmpls4);
-      if (config.nfacctd_bgp_to_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bta, &pptrsv->vlanmpls4.bta2);
+      if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bta, &pptrsv->vlanmpls4.bta2);
       if (config.nfacctd_flow_to_rd_map) SF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bitr, NULL);
-      if (config.nfacctd_bgp) bgp_srcdst_lookup(&pptrsv->vlanmpls4, FUNC_TYPE_BGP);
-      if (config.nfacctd_bgp_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bpas, NULL);
-      if (config.nfacctd_bgp_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.blp, NULL);
-      if (config.nfacctd_bgp_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bmed, NULL);
-      if (config.nfacctd_bmp) bmp_srcdst_lookup(&pptrsv->vlanmpls4);
+      if (config.bgp_daemon) bgp_srcdst_lookup(&pptrsv->vlanmpls4, FUNC_TYPE_BGP);
+      if (config.bgp_daemon_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bpas, NULL);
+      if (config.bgp_daemon_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.blp, NULL);
+      if (config.bgp_daemon_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bmed, NULL);
+      if (config.bmp_daemon) bmp_srcdst_lookup(&pptrsv->vlanmpls4);
       exec_plugins(&pptrsv->vlanmpls4, req);
       break;
-#if defined ENABLE_IPV6
     case NF9_FTYPE_VLAN_MPLS_IPV6:
       pptrsv->vlanmpls6.flow_type = pptrs->flow_type;
 
@@ -1979,16 +2046,15 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       pptrsv->vlanmpls6.l4_proto = sample->dcd_ipProtocol;
 
       if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlanmpls6);
-      if (config.nfacctd_bgp_to_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bta, &pptrsv->vlanmpls6.bta2);
+      if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bta, &pptrsv->vlanmpls6.bta2);
       if (config.nfacctd_flow_to_rd_map) SF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bitr, NULL);
-      if (config.nfacctd_bgp) bgp_srcdst_lookup(&pptrsv->vlanmpls6, FUNC_TYPE_BGP);
-      if (config.nfacctd_bgp_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bpas, NULL);
-      if (config.nfacctd_bgp_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.blp, NULL);
-      if (config.nfacctd_bgp_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bmed, NULL);
-      if (config.nfacctd_bmp) bmp_srcdst_lookup(&pptrsv->vlanmpls6);
+      if (config.bgp_daemon) bgp_srcdst_lookup(&pptrsv->vlanmpls6, FUNC_TYPE_BGP);
+      if (config.bgp_daemon_peer_as_src_map) SF_find_id((struct id_table *)pptrs->bpas_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bpas, NULL);
+      if (config.bgp_daemon_src_local_pref_map) SF_find_id((struct id_table *)pptrs->blp_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.blp, NULL);
+      if (config.bgp_daemon_src_med_map) SF_find_id((struct id_table *)pptrs->bmed_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bmed, NULL);
+      if (config.bmp_daemon) bmp_srcdst_lookup(&pptrsv->vlanmpls6);
       exec_plugins(&pptrsv->vlanmpls6, req);
       break;
-#endif
     default:
       break;
     }
@@ -1999,9 +2065,7 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
 {
   struct sockaddr sa_local;
   struct sockaddr_in *sa4 = (struct sockaddr_in *) &sa_local;
-#if defined ENABLE_IPV6
   struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *) &sa_local;
-#endif 
   SFSample *sample = (SFSample *)pptrs->f_data; 
   int x, begin = 0, end = 0;
   pm_id_t ret = 0;
@@ -2024,11 +2088,11 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
   /* Giving a first try with index(es) */
   if (config.maps_index && pretag_index_have_one(t)) {
     struct id_entry *index_results[ID_TABLE_INDEX_RESULTS];
-    u_int32_t iterator;
+    u_int32_t iterator, num_results;
 
-    pretag_index_lookup(t, pptrs, index_results, ID_TABLE_INDEX_RESULTS);
+    num_results = pretag_index_lookup(t, pptrs, index_results, ID_TABLE_INDEX_RESULTS);
 
-    for (iterator = 0; index_results[iterator] && iterator < ID_TABLE_INDEX_RESULTS; iterator++) {
+    for (iterator = 0; index_results[iterator] && iterator < num_results; iterator++) {
       ret = pretag_entry_process(index_results[iterator], pptrs, tag, tag2);
       if (!(ret & PRETAG_MAP_RCODE_JEQ)) return ret;
     }
@@ -2043,14 +2107,12 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
     sa_local.sa_family = AF_INET;
     sa4->sin_addr.s_addr = sample->agent_addr.address.ip_v4.s_addr;
   }
-#if defined ENABLE_IPV6
   else if (sample->agent_addr.type == SFLADDRESSTYPE_IP_V6) {
     begin = t->num-t->ipv6_num;
     end = t->num;
     sa_local.sa_family = AF_INET6;
-    memcpy(sa6->sin6_addr.s6_addr, sample->agent_addr.address.ip_v6.s6_addr, 16);
+    ip6_addr_cpy(&sa6->sin6_addr, &sample->agent_addr.address.ip_v6);
   }
-#endif
 
   for (x = begin; x < end; x++) {
     if (host_addr_mask_sa_cmp(&t->e[x].key.agent_ip.a, &t->e[x].key.agent_mask, &sa_local) == 0) {
@@ -2088,12 +2150,11 @@ void set_vector_sample_type(struct packet_ptrs_vector *pptrsv, u_int32_t sample_
   pptrsv->vlan4.sample_type = sample_type;
   pptrsv->mpls4.sample_type = sample_type;
   pptrsv->vlanmpls4.sample_type = sample_type;
-#if defined ENABLE_IPV6
+
   pptrsv->v6.sample_type = sample_type;
   pptrsv->vlan6.sample_type = sample_type;
   pptrsv->mpls6.sample_type = sample_type;
   pptrsv->vlanmpls6.sample_type = sample_type;
-#endif
 }
 
 void reset_mac(struct packet_ptrs *pptrs)
@@ -2113,16 +2174,14 @@ void reset_ip4(struct packet_ptrs *pptrs)
   Assign8(((struct pm_iphdr *)pptrs->iph_ptr)->ip_vhl, 5);
 }
 
-#if defined ENABLE_IPV6
 void reset_ip6(struct packet_ptrs *pptrs)
 {
   memset(pptrs->iph_ptr, 0, IP6TlSz);
   Assign16(((struct ip6_hdr *)pptrs->iph_ptr)->ip6_plen, htons(100));
-  Assign16(((struct ip6_hdr *)pptrs->iph_ptr)->ip6_hlim, htons(64));
+  ((struct ip6_hdr *)pptrs->iph_ptr)->ip6_hlim = 64;
 }
-#endif
 
-char *sfv245_check_status(SFSample *spp, struct packet_ptrs *pptrs, struct sockaddr *sa)
+struct xflow_status_entry *sfv245_check_status(SFSample *spp, struct packet_ptrs *pptrs, struct sockaddr *sa)
 {
   struct sockaddr salocal;
   u_int32_t aux1 = spp->agentSubId;
@@ -2146,7 +2205,7 @@ char *sfv245_check_status(SFSample *spp, struct packet_ptrs *pptrs, struct socka
     }
   }
 
-  return (char *) entry;
+  return entry;
 }
 
 void sfv245_check_counter_log_init(struct packet_ptrs *pptrs)
@@ -2182,6 +2241,7 @@ int sf_cnt_log_msg(struct bgp_peer *peer, SFSample *sample, int version, u_int32
 {
   struct bgp_misc_structs *bms = bgp_select_misc_db(FUNC_TYPE_SFLOW_COUNTER);
   int ret = 0, amqp_ret = 0, kafka_ret = 0, etype = BGP_LOGDUMP_ET_NONE;
+  (void)etype;
 
   if (!bms || !peer || !sample || !event_type) {
     skipBytes(sample, len);
@@ -2298,9 +2358,9 @@ int sf_cnt_log_msg(struct bgp_peer *peer, SFSample *sample, int version, u_int32
 
 int readCounters_generic(struct bgp_peer *peer, SFSample *sample, char *event_type, int output, void *vobj)
 {
-  char msg_type[] = "sflow_cnt_generic";
   int ret = 0;
 #ifdef WITH_JANSSON
+  char msg_type[] = "sflow_cnt_generic";
   json_t *obj = (json_t *) vobj;
 
   /* parse sFlow first and foremost */
@@ -2373,9 +2433,9 @@ int readCounters_generic(struct bgp_peer *peer, SFSample *sample, char *event_ty
 
 int readCounters_ethernet(struct bgp_peer *peer, SFSample *sample, char *event_type, int output, void *vobj)
 {
-  char msg_type[] = "sflow_cnt_ethernet";
   int ret = 0;
 #ifdef WITH_JANSSON
+  char msg_type[] = "sflow_cnt_ethernet";
   json_t *obj = (json_t *) vobj;
 
   u_int32_t m32_1, m32_2, m32_3, m32_4, m32_5;
@@ -2433,9 +2493,9 @@ int readCounters_ethernet(struct bgp_peer *peer, SFSample *sample, char *event_t
 
 int readCounters_vlan(struct bgp_peer *peer, SFSample *sample, char *event_type, int output, void *vobj)
 {
-  char msg_type[] = "sflow_cnt_vlan";
   int ret = 0;
 #ifdef WITH_JANSSON
+  char msg_type[] = "sflow_cnt_vlan";
   json_t *obj = (json_t *) vobj;
 
   u_int64_t m64_1;
@@ -2611,6 +2671,7 @@ void SF_init_zmq_host(void *zh, int *pipe_fd)
   p_zmq_set_log_id(zmq_host, log_id);
 
   p_zmq_set_address(zmq_host, config.nfacctd_zmq_address);
+  p_zmq_set_hwm(zmq_host, PM_ZMQ_DEFAULT_FLOW_HWM);
   p_zmq_pull_setup(zmq_host);
   p_zmq_set_retry_timeout(zmq_host, PM_ZMQ_DEFAULT_RETRY);
 

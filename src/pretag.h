@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -18,6 +18,9 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
+
+#ifndef PRETAG_H
+#define PRETAG_H
 
 /* Pre-Tag map stuff */
 #define N_MAP_HANDLERS N_PRIMITIVES
@@ -66,6 +69,9 @@
 #define PRETAG_FWDSTATUS_ID		0x0000000400000000ULL
 #define PRETAG_SRC_NET			0x0000000800000000ULL
 #define PRETAG_DST_NET			0x0000001000000000ULL
+#define PRETAG_MPLS_PW_ID		0x0000002000000000ULL
+#define PRETAG_SRC_ROA			0x0000004000000000ULL
+#define PRETAG_DST_ROA			0x0000008000000000ULL
 
 #define PRETAG_MAP_RCODE_ID		0x00000100
 #define PRETAG_MAP_RCODE_ID2		0x00000200
@@ -77,8 +83,6 @@
 #define PRETAG_MAP_RCODE_LABEL		0x00008000
 
 #define PRETAG_FLAG_NEG			0x00000001
-
-#define IDT_INDEX_HASH_BASE(entries)	(entries * 2)
 
 typedef int (*pretag_handler) (struct packet_ptrs *, void *, void *);
 typedef pm_id_t (*pretag_stack_handler) (pm_id_t, pm_id_t);
@@ -115,7 +119,7 @@ typedef struct {
 
 typedef struct {
   u_int8_t neg;
-  char a[ETH_ADDR_LEN]; 
+  u_char a[ETH_ADDR_LEN]; 
 } pt_etheraddr_t;
 
 typedef struct {
@@ -167,6 +171,8 @@ struct id_entry_key {
   pt_uint32_t peer_dst_as;
   pt_uint32_t src_local_pref;
   pt_uint32_t local_pref;
+  pt_uint8_t src_roa;
+  pt_uint8_t dst_roa;
   pt_uint32_t mpls_label_bottom;
   pt_etheraddr_t src_mac;
   pt_etheraddr_t dst_mac;
@@ -179,6 +185,7 @@ struct id_entry_key {
   char *comms[16]; /* XXX: MAX_BGP_COMM_PATTERNS = 16 */
   pt_uint32_t mpls_vpn_id;
   pt_rd_t mpls_vpn_rd;
+  pt_uint32_t mpls_pw_id;
   pt_uint32_t fwdstatus;
   struct bpf_program filter;
 };
@@ -215,7 +222,8 @@ struct id_index_entry {
 
 struct id_table_index {
   pt_bitmap_t bitmap; 
-  int entries;
+  u_int32_t entries;
+  u_int32_t modulo;
   pretag_copier idt_handler[MAX_BITMAP_ENTRIES];
   pretag_copier fdata_handler[MAX_BITMAP_ENTRIES];
   pm_hash_serial_t hash_serializer;
@@ -228,10 +236,8 @@ struct id_table {
   unsigned int num;
   struct id_entry *ipv4_base;
   unsigned int ipv4_num;
-#if defined ENABLE_IPV6
   struct id_entry *ipv6_base;
   unsigned int ipv6_num;
-#endif
   struct id_entry *e;
   struct id_table_index index[MAX_ID_TABLE_INDEXES];
   unsigned int index_num;
@@ -260,46 +266,44 @@ struct pretag_label_filter {
 };
 
 /* prototypes */
-#if (!defined __PRETAG_C)
-#define EXT extern
-#else
-#define EXT
-#endif
-EXT void load_id_file(int, char *, struct id_table *, struct plugin_requests *, int *);
-EXT void load_pre_tag_map(int, char *, struct id_table *, struct plugin_requests *, int *, int, int);
-EXT u_int8_t pt_check_neg(char **, u_int32_t *);
-EXT char * pt_check_range(char *);
-EXT void pretag_init_vars(struct packet_ptrs *, struct id_table *);
-EXT void pretag_init_label(pt_label_t *);
-EXT int pretag_malloc_label(pt_label_t *, int);
-EXT int pretag_realloc_label(pt_label_t *, int);
-EXT int pretag_copy_label(pt_label_t *, pt_label_t *);
-EXT void pretag_free_label(pt_label_t *);
-EXT int pretag_entry_process(struct id_entry *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
-EXT pt_bitmap_t pretag_index_build_bitmap(struct id_entry *, int);
-EXT int pretag_index_insert_bitmap(struct id_table *, pt_bitmap_t);
-EXT int pretag_index_set_handlers(struct id_table *);
-EXT int pretag_index_allocate(struct id_table *);
-EXT int pretag_index_fill(struct id_table *, pt_bitmap_t, struct id_entry *);
-EXT void pretag_index_report(struct id_table *);
-EXT void pretag_index_destroy(struct id_table *);
-EXT void pretag_index_lookup(struct id_table *, struct packet_ptrs *, struct id_entry **, int);
-EXT void pretag_index_results_sort(struct id_entry **, int);
-EXT void pretag_index_results_compress(struct id_entry **, int);
-EXT void pretag_index_results_compress_jeqs(struct id_entry **, int);
-EXT int pretag_index_have_one(struct id_table *);
+extern void load_id_file(int, char *, struct id_table *, struct plugin_requests *, int *);
+extern void load_pre_tag_map(int, char *, struct id_table *, struct plugin_requests *, int *, int, int);
+extern u_int8_t pt_check_neg(char **, u_int32_t *);
+extern char * pt_check_range(char *);
+extern void pretag_init_vars(struct packet_ptrs *, struct id_table *);
+extern void pretag_init_label(pt_label_t *);
+extern int pretag_malloc_label(pt_label_t *, int);
+extern int pretag_realloc_label(pt_label_t *, int);
+extern int pretag_copy_label(pt_label_t *, pt_label_t *);
+extern int pretag_move_label(pt_label_t *, pt_label_t *);
+extern int pretag_append_label(pt_label_t *, pt_label_t *);
+extern void pretag_free_label(pt_label_t *);
+extern int pretag_entry_process(struct id_entry *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
+extern pt_bitmap_t pretag_index_build_bitmap(struct id_entry *, int);
+extern int pretag_index_insert_bitmap(struct id_table *, pt_bitmap_t);
+extern int pretag_index_set_handlers(struct id_table *);
+extern int pretag_index_allocate(struct id_table *);
+extern int pretag_index_fill(struct id_table *, pt_bitmap_t, struct id_entry *);
+extern void pretag_index_report(struct id_table *);
+extern void pretag_index_destroy(struct id_table *);
+extern u_int32_t pretag_index_lookup(struct id_table *, struct packet_ptrs *, struct id_entry **, int);
+extern void pretag_index_results_sort(struct id_entry **, int);
+extern void pretag_index_results_compress(struct id_entry **, int);
+extern void pretag_index_results_compress_jeqs(struct id_entry **, int);
+extern int pretag_index_have_one(struct id_table *);
 
-EXT int bpas_map_allocated;
-EXT int blp_map_allocated;
-EXT int bmed_map_allocated;
-EXT int biss_map_allocated;
-EXT int bta_map_allocated;
-EXT int bitr_map_allocated;
-EXT int sampling_map_allocated;
-EXT int custom_primitives_allocated;
+extern int bpas_map_allocated;
+extern int blp_map_allocated;
+extern int bmed_map_allocated;
+extern int biss_map_allocated;
+extern int bta_map_allocated;
+extern int bitr_map_allocated;
+extern int sampling_map_allocated;
+extern int custom_primitives_allocated;
 
-EXT int bta_map_caching; 
-EXT int sampling_map_caching; 
+extern int bta_map_caching; 
+extern int sampling_map_caching; 
 
-EXT int (*find_id_func)(struct id_table *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
-#undef EXT
+extern int (*find_id_func)(struct id_table *, struct packet_ptrs *, pm_id_t *, pm_id_t *);
+
+#endif //PRETAG_H

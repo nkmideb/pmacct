@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,8 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __SQL_HANDLERS_C
-
 /*
   PG_* functions are used only by PostgreSQL plugin;
   MY_* functions are used only by MySQL plugin;
@@ -37,6 +35,7 @@
 #include "ip_flow.h"
 #include "classifier.h"
 #include "bgp/bgp.h"
+#include "rpki/rpki.h"
 #if defined (WITH_NDPI)
 #include "ndpi/ndpi.h"
 #endif
@@ -54,7 +53,7 @@ void count_src_mac_handler(const struct db_cache *cache_elem, struct insert_data
   char sbuf[18];
   u_int8_t ubuf[ETH_ADDR_LEN];
 
-  memcpy(&ubuf, &cache_elem->primitives.eth_shost, ETH_ADDR_LEN);
+  memcpy(ubuf, cache_elem->primitives.eth_shost, ETH_ADDR_LEN);
   etheraddr_string(ubuf, sbuf);
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, sbuf);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, sbuf);
@@ -68,7 +67,7 @@ void count_dst_mac_handler(const struct db_cache *cache_elem, struct insert_data
   char sbuf[18];
   u_int8_t ubuf[ETH_ADDR_LEN];
 
-  memcpy(ubuf, &cache_elem->primitives.eth_dhost, ETH_ADDR_LEN);
+  memcpy(ubuf, cache_elem->primitives.eth_dhost, ETH_ADDR_LEN);
   etheraddr_string(ubuf, sbuf);
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, sbuf);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, sbuf);
@@ -245,20 +244,16 @@ void count_dst_host_pocode_handler(const struct db_cache *cache_elem, struct ins
 
 void count_src_host_coords_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.src_ip_lat);
-  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.src_ip_lat);
-  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.src_ip_lon);
-  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.src_ip_lon);
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.src_ip_lat, cache_elem->primitives.src_ip_lon);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.src_ip_lat, cache_elem->primitives.src_ip_lon);
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
 
 void count_dst_host_coords_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.dst_ip_lat);
-  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.dst_ip_lat);
-  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.dst_ip_lon);
-  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.dst_ip_lon);
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.dst_ip_lat, cache_elem->primitives.dst_ip_lon);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.dst_ip_lat, cache_elem->primitives.dst_ip_lon);
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
@@ -349,6 +344,33 @@ void count_mpls_stack_depth_handler(const struct db_cache *cache_elem, struct in
   *ptr_values += strlen(*ptr_values);
 }
 
+void count_tunnel_src_mac_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  char sbuf[18];
+  u_int8_t ubuf[ETH_ADDR_LEN];
+
+  memcpy(ubuf, cache_elem->ptun->tunnel_eth_shost, ETH_ADDR_LEN);
+  etheraddr_string(ubuf, sbuf);
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, sbuf);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, sbuf);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, sbuf);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_tunnel_dst_mac_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  char sbuf[18];
+  u_int8_t ubuf[ETH_ADDR_LEN];
+
+  memcpy(ubuf, cache_elem->ptun->tunnel_eth_dhost, ETH_ADDR_LEN);
+  etheraddr_string(ubuf, sbuf);
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, sbuf);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, sbuf);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
 void count_tunnel_src_ip_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
   char ptr[INET6_ADDRSTRLEN];
@@ -373,17 +395,11 @@ void count_tunnel_dst_ip_handler(const struct db_cache *cache_elem, struct inser
 
 void MY_count_tunnel_ip_proto_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  if (cache_elem->ptun->tunnel_proto < protocols_number) {
-    snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, _protocols[cache_elem->ptun->tunnel_proto].name);
-    snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, _protocols[cache_elem->ptun->tunnel_proto].name);
-  }
-  else {
-    char proto_str[PROTO_LEN];
+  char proto[PROTO_NUM_STRLEN];
 
-    snprintf(proto_str, sizeof(proto_str), "%d", cache_elem->ptun->tunnel_proto);
-    snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, proto_str);
-    snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, proto_str);
-  }
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, ip_proto_print(cache_elem->ptun->tunnel_proto, proto, PROTO_NUM_STRLEN));
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, ip_proto_print(cache_elem->ptun->tunnel_proto, proto, PROTO_NUM_STRLEN));
+
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
@@ -400,6 +416,30 @@ void count_tunnel_ip_tos_handler(const struct db_cache *cache_elem, struct inser
 {
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->ptun->tunnel_tos);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->ptun->tunnel_tos);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_tunnel_src_port_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->ptun->tunnel_src_port);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->ptun->tunnel_src_port);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_tunnel_dst_port_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->ptun->tunnel_dst_port);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->ptun->tunnel_dst_port);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_vxlan_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->ptun->tunnel_id);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->ptun->tunnel_id);
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
@@ -733,6 +773,22 @@ void count_src_med_handler(const struct db_cache *cache_elem, struct insert_data
   *ptr_values += strlen(*ptr_values);
 }
 
+void count_dst_roa_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, rpki_roa_print(cache_elem->pbgp->dst_roa));
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, rpki_roa_print(cache_elem->pbgp->dst_roa));
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_src_roa_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, rpki_roa_print(cache_elem->pbgp->src_roa));
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, rpki_roa_print(cache_elem->pbgp->src_roa));
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
 void count_mpls_vpn_rd_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
   char ptr[SRVBUFLEN];
@@ -740,6 +796,14 @@ void count_mpls_vpn_rd_handler(const struct db_cache *cache_elem, struct insert_
   bgp_rd2str(ptr, &cache_elem->pbgp->mpls_vpn_rd);
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, ptr);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_mpls_pw_id_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->pbgp->mpls_pw_id);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->pbgp->mpls_pw_id);
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
@@ -815,17 +879,11 @@ void count_ip_tos_handler(const struct db_cache *cache_elem, struct insert_data 
 
 void MY_count_ip_proto_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  if (cache_elem->primitives.proto < protocols_number) {
-    snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, _protocols[cache_elem->primitives.proto].name);
-    snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, _protocols[cache_elem->primitives.proto].name);
-  }
-  else {
-    char proto_str[PROTO_LEN];
+  char proto[PROTO_NUM_STRLEN];
 
-    snprintf(proto_str, sizeof(proto_str), "%d", cache_elem->primitives.proto);
-    snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, proto_str);
-    snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, proto_str);
-  }
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, ip_proto_print(cache_elem->primitives.proto, proto, PROTO_NUM_STRLEN));
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, ip_proto_print(cache_elem->primitives.proto, proto, PROTO_NUM_STRLEN));
+
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
@@ -996,15 +1054,11 @@ void fake_as_path_handler(const struct db_cache *cache_elem, struct insert_data 
 
 void count_src_host_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null; 
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null; 
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->primitives.src_ip);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
   
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1014,15 +1068,11 @@ void count_src_host_aton_handler(const struct db_cache *cache_elem, struct inser
 
 void count_dst_host_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->primitives.dst_ip);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1032,15 +1082,11 @@ void count_dst_host_aton_handler(const struct db_cache *cache_elem, struct inser
 
 void count_src_net_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->primitives.src_net);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1050,15 +1096,11 @@ void count_src_net_aton_handler(const struct db_cache *cache_elem, struct insert
 
 void count_dst_net_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->primitives.dst_net);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1068,15 +1110,11 @@ void count_dst_net_aton_handler(const struct db_cache *cache_elem, struct insert
 
 void count_peer_src_ip_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->pbgp->peer_src_ip);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1086,15 +1124,11 @@ void count_peer_src_ip_aton_handler(const struct db_cache *cache_elem, struct in
 
 void count_peer_dst_ip_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->pbgp->peer_dst_ip);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1104,15 +1138,11 @@ void count_peer_dst_ip_aton_handler(const struct db_cache *cache_elem, struct in
 
 void count_post_nat_src_ip_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->pnat->post_nat_src_ip);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1122,15 +1152,11 @@ void count_post_nat_src_ip_aton_handler(const struct db_cache *cache_elem, struc
 
 void count_post_nat_dst_ip_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->pnat->post_nat_dst_ip);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1140,15 +1166,11 @@ void count_post_nat_dst_ip_aton_handler(const struct db_cache *cache_elem, struc
 
 void count_tunnel_src_ip_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->ptun->tunnel_src_ip);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);
@@ -1158,15 +1180,11 @@ void count_tunnel_src_ip_aton_handler(const struct db_cache *cache_elem, struct 
 
 void count_tunnel_dst_ip_aton_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  char aton_v4[] = "INET_ATON", aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
+  char aton_v6[] = "INET6_ATON", aton_null[] = " ", *aton = aton_null;
   char ptr[INET6_ADDRSTRLEN];
 
   addr_to_str(ptr, &cache_elem->ptun->tunnel_dst_ip);
-#if defined ENABLE_IPV6
   aton = aton_v6;
-#else
-  aton = aton_v4;
-#endif
 
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, aton, ptr);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, aton, ptr);

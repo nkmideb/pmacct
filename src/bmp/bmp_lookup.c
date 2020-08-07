@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,13 +19,10 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-/* defines */
-#define __BMP_LOOKUP_C
-
 /* includes */
 #include "pmacct.h"
 #include "addr.h"
-#include "../bgp/bgp.h"
+#include "bgp/bgp.h"
 #include "bmp.h"
 
 void bmp_srcdst_lookup(struct packet_ptrs *pptrs)
@@ -45,12 +42,10 @@ struct bgp_peer *bgp_lookup_find_bmp_peer(struct sockaddr *sa, struct xflow_stat
       peer_idx = xs_entry->peer_v4_idx;
       peer_idx_ptr = &xs_entry->peer_v4_idx;
     }
-#if defined ENABLE_IPV6
     else if (l3_proto == ETHERTYPE_IPV6) {
       peer_idx = xs_entry->peer_v6_idx;
       peer_idx_ptr = &xs_entry->peer_v6_idx;
     }
-#endif
   }
 
   if (xs_entry && peer_idx) {
@@ -63,7 +58,7 @@ struct bgp_peer *bgp_lookup_find_bmp_peer(struct sockaddr *sa, struct xflow_stat
     }
   }
   else {
-    for (peer = NULL, peers_idx = 0; peers_idx < config.nfacctd_bmp_max_peers; peers_idx++) {
+    for (peer = NULL, peers_idx = 0; peers_idx < config.bmp_daemon_max_peers; peers_idx++) {
       /* use-case #1: BMP peer being the edge router */
       if (!sa_addr_cmp(sa, &bmp_peers[peers_idx].self.addr) || !sa_addr_cmp(sa, &bmp_peers[peers_idx].self.id)) {
         peer = &bmp_peers[peers_idx].self;
@@ -72,9 +67,14 @@ struct bgp_peer *bgp_lookup_find_bmp_peer(struct sockaddr *sa, struct xflow_stat
       }
       /* use-case #2: BMP peer being the reflector; XXX: fix caching */
       else {
-	void *ret;
+	void *ret = NULL;
 
-	ret = pm_tfind(sa, &bmp_peers[peers_idx].bgp_peers, bgp_peer_sa_addr_cmp);
+	if (sa->sa_family == AF_INET) {
+	  ret = pm_tfind(sa, &bmp_peers[peers_idx].bgp_peers_v4, bgp_peer_sa_addr_cmp);
+	}
+	else if (sa->sa_family == AF_INET6) {
+	  ret = pm_tfind(sa, &bmp_peers[peers_idx].bgp_peers_v6, bgp_peer_sa_addr_cmp);
+	}
 
 	if (ret) {
 	  peer = (*(struct bgp_peer **) ret);

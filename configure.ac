@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl configuration file for pmacct 
 
-AC_INIT([pmacct], [1.7.2-git], [paolo@pmacct.net])
+AC_INIT([pmacct], [1.7.5-git], [paolo@pmacct.net])
 AM_INIT_AUTOMAKE([foreign])
 AC_CONFIG_MACRO_DIR([m4])
 LT_INIT
@@ -32,42 +32,7 @@ if test "x$ac_cv_prog_gcc" = xyes ; then
   CFLAGS="-O2 ${CFLAGS}"
 fi
 
-dnl set debug level
-AC_MSG_CHECKING([whether to enable debugging compiler options])
-AC_ARG_ENABLE(debug,
-	[  --enable-debug                   Enable debugging compiler options (default: no)],
-	[
-	        if test x$enableval = x"yes" ; then
-			AC_MSG_RESULT(yes)
-			tmp_CFLAGS=`echo $CFLAGS | sed 's/O2/O0/g'`
-			CFLAGS="$tmp_CFLAGS"
-  			CFLAGS="$CFLAGS -g -W -Wall"
-		else
-			AC_MSG_RESULT(no)
-		fi
-	],
-	[
-		AC_MSG_RESULT(no)
-	]
-)
-
-dnl set relax level
-AC_MSG_CHECKING([whether to relax compiler optimizations])
-AC_ARG_ENABLE(relax,
-[  --enable-relax                   Relax compiler optimization (default: no)],
-	[
-		if test x$enableval = x"yes" ; then
-			AC_MSG_RESULT(yes)
-        		tmp_CFLAGS=`echo $CFLAGS | sed 's/O2/O0/g'`
-       			CFLAGS="$tmp_CFLAGS"
-		else
-			AC_MSG_RESULT(no)
-		fi
-	],
-	[
-        	AC_MSG_RESULT(no)
-	]
-)
+AC_CHECK_FUNCS([strlcpy])
 
 dnl: shared object handling
 AC_MSG_CHECKING([whether to disable linking against shared objects])
@@ -231,8 +196,11 @@ if test x"$ac_cv_unaligned" = x"unknown"; then
     #include <sys/types.h>
     #include <sys/wait.h>
     #include <stdio.h>
+    #include <stdlib.h>
+    #include <unistd.h>
+
     unsigned char a[[5]] = { 1, 2, 3, 4, 5 };
-    main () {
+    int main () {
     	unsigned int i;
         pid_t pid;
         int status;
@@ -287,46 +255,15 @@ AC_ARG_ENABLE(l2,
 	]
 )
 
-AC_MSG_CHECKING([whether to enable IPv6 code])
-AC_ARG_ENABLE(ipv6,
-        [  --enable-ipv6                    Enable IPv6 code (default: yes)],
-	[ 
-		if test x$enableval = x"yes" ; then
-        		AC_MSG_RESULT(yes)
-        		AC_CHECK_FUNCS(inet_pton)
-        		if test x"$ac_cv_func_inet_pton" = x"no"; then
-        			AC_MSG_ERROR(ERROR: missing inet_pton(); disable IPv6 hooks !)
-        		fi
+AC_CHECK_FUNCS(inet_pton)
+if test x"$ac_cv_func_inet_pton" = x"no"; then
+	AC_MSG_ERROR(ERROR: missing inet_pton())
+fi
 
-			AC_CHECK_FUNCS(inet_ntop)
-			if test x"$ac_cv_func_inet_ntop" = x"no"; then
-          			AC_MSG_ERROR(ERROR: missing inet_ntop(); disable IPv6 hooks !)
-        		fi
-
-			AC_DEFINE(ENABLE_IPV6, 1)
-			ipv6support="yes"
-		else
-			AC_MSG_RESULT(no)
-			ipv6support="no"
-		fi
-	],
-	[
-        	AC_MSG_RESULT(yes)
-        		AC_CHECK_FUNCS(inet_pton)
-        		if test x"$ac_cv_func_inet_pton" = x"no"; then
-        			AC_MSG_ERROR(ERROR: missing inet_pton(); disable IPv6 hooks !)
-        		fi
-
-			AC_CHECK_FUNCS(inet_ntop)
-			if test x"$ac_cv_func_inet_ntop" = x"no"; then
-          			AC_MSG_ERROR(ERROR: missing inet_ntop(); disable IPv6 hooks !)
-        		fi
-
-			AC_DEFINE(ENABLE_IPV6, 1)
-		ipv6support="yes"
-		COMPILE_ARGS="${COMPILE_ARGS} '--enable-ipv6'"
-	]
-)
+AC_CHECK_FUNCS(inet_ntop)
+if test x"$ac_cv_func_inet_ntop" = x"no"; then
+	AC_MSG_ERROR(ERROR: missing inet_ntop())
+fi
 
 AC_MSG_CHECKING([whether to enable IP prefix labels])
 AC_ARG_ENABLE(plabel,
@@ -448,7 +385,6 @@ if test x"$PFRING_LIB_FOUND" = x""; then
   ])])
 
   AC_CHECK_LIB([pcap], [pcap_set_protocol], [ AC_DEFINE(PCAP_SET_PROTOCOL, 1) ], [])
-  AC_CHECK_LIB([pcap], [bpf_filter], [ AC_DEFINE(PCAP_NOBPF, 1) ], [])
 else
   dnl Unable to test: we should check for these libs
   #AC_CHECK_LIB([numa], [numa_bind], [], [AC_MSG_ERROR([
@@ -461,6 +397,8 @@ else
 
   LIBS="${LIBS} -lrt -lnuma"
 fi
+
+AC_CHECK_LIB([pcap], [pcap_setdirection], [ AC_DEFINE(PCAP_SET_DIRECTION, 1) ], [])
 
 dnl packet capture type check; taken from libpcap.
 AC_MSG_CHECKING(packet capture type)
@@ -554,7 +492,7 @@ AC_ARG_ENABLE(pgsql,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([PGSQL], [libpq >= 9.3], [
+    PKG_CHECK_MODULES([PGSQL], [libpq >= 8.4], [
       PLUGINS="${PLUGINS} pgsql"
       USING_SQL="yes"
       USING_PGSQL="yes"
@@ -563,6 +501,7 @@ AC_ARG_ENABLE(pgsql,
       _save_LIBS="$LIBS"
       LIBS="$LIBS $PGSQL_LIBS"
       AC_CHECK_LIB([pq], [PQexec])
+      AC_CHECK_FUNCS([PQlibVersion])
       LIBS="$_save_LIBS"
       _save_CFLAGS="$CFLAGS"
       CFLAGS="$CFLAGS $PGSQL_CFLAGS"
@@ -777,6 +716,38 @@ AC_ARG_ENABLE(kafka,
 )
 dnl finish: Kafka handling
 
+dnl start: Redis handling
+AC_MSG_CHECKING(whether to enable Redis support)
+AC_ARG_ENABLE(redis,
+  [  --enable-redis                   Enable Redis support (default: no)],
+  [ case "$enableval" in
+  yes)
+    AC_MSG_RESULT(yes)
+    PKG_CHECK_MODULES([REDIS], [hiredis >= 0.13.0], [
+      SUPPORTS="${SUPPORTS} redis"
+      USING_REDIS="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $REDIS_CFLAGS"
+      AC_DEFINE(WITH_REDIS, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $REDIS_LIBS"
+      AC_CHECK_LIB([hiredis], [redisConnect])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $REDIS_CFLAGS"
+      AC_CHECK_HEADER([hiredis/hiredis.h])
+      CFLAGS="$_save_CFLAGS"
+    ])
+    ;;
+  no)
+    AC_MSG_RESULT(no)
+    ;;
+  esac ],
+  [
+    AC_MSG_RESULT(no)
+  ]
+)
+dnl finish: Redis handling
+
 dnl start: geoip handling
 AC_MSG_CHECKING(whether to enable GeoIP support)
 AC_ARG_ENABLE(geoip,
@@ -850,7 +821,6 @@ AC_ARG_ENABLE(jansson,
       _save_LIBS="$LIBS"
       LIBS="$LIBS $JANSSON_LIBS"
       AC_CHECK_LIB([jansson], [json_object])
-      AC_CHECK_FUNCS([json_object_update_missing])
       LIBS="$_save_LIBS"
       _save_CFLAGS="$CFLAGS"
       CFLAGS="$CFLAGS $JANSSON_CFLAGS"
@@ -912,21 +882,22 @@ AC_ARG_ENABLE(serdes,
   yes)
     AC_MSG_RESULT(yes)
 
-    PKG_CHECK_MODULES([SERDES], [serdes],, [
-      SUPPORTS="${SUPPORTS} serdes"
-      USING_SERDES="yes"
-      PMACCT_CFLAGS="$PMACCT_CFLAGS $SERDES_CFLAGS"
-      SERDES_LIBS="$SERDES_LIBS -lserdes"
-      AC_DEFINE(WITH_SERDES, 1)
-      _save_LIBS="$LIBS"
-      LIBS="$LIBS $SERDES_LIBS"
-      AC_CHECK_LIB([serdes], [serdes_new])
-      LIBS="$_save_LIBS"
-      _save_CFLAGS="$CFLAGS"
-      CFLAGS="$CFLAGS $SERDES_CFLAGS"
-      AC_CHECK_HEADER([libserdes/serdes.h])
-      CFLAGS="$_save_CFLAGS"
-    ])
+    AC_SUBST(SERDES_CFLAGS)
+    AC_SUBST(SERDES_LIBS)
+
+    SUPPORTS="${SUPPORTS} serdes"
+    USING_SERDES="yes"
+    PMACCT_CFLAGS="$PMACCT_CFLAGS $SERDES_CFLAGS"
+    SERDES_LIBS="$SERDES_LIBS -lserdes"
+    AC_DEFINE(WITH_SERDES, 1)
+    _save_LIBS="$LIBS"
+    LIBS="$LIBS $SERDES_LIBS"
+    AC_CHECK_LIB([serdes], [serdes_new],, AC_MSG_ERROR([Missing Confluent serdes library. Refer to: https://github.com/confluentinc/libserdes]))
+    LIBS="$_save_LIBS"
+    _save_CFLAGS="$CFLAGS"
+    CFLAGS="$CFLAGS $SERDES_CFLAGS"
+    AC_CHECK_HEADER([libserdes/serdes.h],, AC_MSG_ERROR([Missing Confluent serdes headers. Refer to: https://github.com/confluentinc/libserdes]))
+    CFLAGS="$_save_CFLAGS"
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -963,7 +934,7 @@ AC_ARG_ENABLE(ndpi,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([NDPI], [libndpi >= 2.2], [
+    PKG_CHECK_MODULES([NDPI], [libndpi >= 3.2], [
       SUPPORTS="${SUPPORTS} ndpi"
       USING_NDPI="yes"
 
@@ -984,22 +955,8 @@ AC_ARG_ENABLE(ndpi,
       CFLAGS="$CFLAGS $NDPI_CFLAGS"
       AC_CHECK_HEADER([libndpi/ndpi_main.h])
       CFLAGS="$_save_CFLAGS"
-
-      dnl XXX: to be improved: avoid linking both static and dynamic libs
-      if test x"$NDPI_CUST_STATIC_LIB_FOUND" = x"yes"; then
-        NDPI_LIBS_STATIC="$NDPI_CUST_STATIC_LIB/libndpi.a"
-      elif test -r /usr/lib/libndpi.a; then
-        NDPI_LIBS_STATIC="/usr/lib/libndpi.a"
-      elif test -r /usr/local/lib/libndpi.a; then
-        NDPI_LIBS_STATIC="/usr/local/lib/libndpi.a"
-      elif test -r /usr/local/nDPI/lib/libndpi.a; then
-        NDPI_LIBS_STATIC="/usr/local/nDPI/lib/libndpi.a"
-      else
-        AC_MSG_ERROR([ERROR: missing nDPI static library])
-      fi
-
-      AC_SUBST([NDPI_LIBS_STATIC])
-    ])
+    ],
+    [AC_MSG_ERROR([Missing nDPI API. Refer to: https://github.com/ntop/nDPI/])])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -1022,12 +979,19 @@ else
 	fi
 fi
 
-LIBS="${LIBS} -lpthread"
+LIBS="${LIBS} -lm -lpthread"
 
 dnl Checks for header files.
 AC_HEADER_STDC
 AC_HEADER_SYS_WAIT
 AC_CHECK_HEADERS([getopt.h sys/select.h sys/time.h])
+
+dnl Extra checks for header files
+AC_CHECK_HEADERS([arpa/inet.h assert.h ctype.h dirent.h dlfcn.h errno.h fcntl.h grp.h inttypes.h])
+AC_CHECK_HEADERS([limits.h malloc.h netdb.h net/if.h netinet/in.h netinet/in_systm.h netinet/ip.h])
+AC_CHECK_HEADERS([netinet/udp.h pthread.h pwd.h signal.h string.h sys/ansi.h sys/errno.h sys/file.h])
+AC_CHECK_HEADERS([sys/ioctl.h syslog.h sys/mbuf.h sys/mman.h sys/param.h sys/poll.h sys/resource.h])
+AC_CHECK_HEADERS([sys/socket.h sys/stat.h sys/types.h sys/un.h sys/utsname.h time.h math.h])
 
 dnl Checks for typedefs, structures, and compiler characteristics.
 AC_CHECK_TYPE(u_int64_t, [AC_DEFINE(HAVE_U_INT64_T, 1)])
@@ -1038,24 +1002,6 @@ AC_CHECK_TYPE(uint64_t, [AC_DEFINE(HAVE_UINT64_T, 1)])
 AC_CHECK_TYPE(uint32_t, [AC_DEFINE(HAVE_UINT32_T, 1)])
 AC_CHECK_TYPE(uint16_t, [AC_DEFINE(HAVE_UINT16_T, 1)])
 AC_CHECK_TYPE(uint8_t, [AC_DEFINE(HAVE_UINT8_T, 1)])
-
-AC_MSG_CHECKING([whether to enable 64bit counters])
-AC_ARG_ENABLE(64bit,
-        [  --enable-64bit                   Enable 64bit counters (default: yes)],
-	[
-          if test x$enableval = x"yes" ; then
-            AC_MSG_RESULT(yes)
-            AC_DEFINE(HAVE_64BIT_COUNTERS, 1)
-          else
-            AC_MSG_RESULT(no)
-          fi
-        ],
-	[
-          AC_MSG_RESULT(yes)
-	  AC_DEFINE(HAVE_64BIT_COUNTERS, 1)
-	  COMPILE_ARGS="${COMPILE_ARGS} '--enable-64bit'"
-	]
-)
 
 AC_MSG_CHECKING(whether to enable NFLOG support)
 AC_ARG_ENABLE(nflog,
@@ -1158,7 +1104,7 @@ AC_ARG_ENABLE(st-bins,
 dnl Checks for library functions.
 AC_TYPE_SIGNAL
 
-AC_CHECK_FUNCS([strlcpy vsnprintf setproctitle mallopt tdestroy])
+AC_CHECK_FUNCS([setproctitle mallopt tdestroy])
 
 dnl Check for SO_REUSEPORT
 AC_CHECK_DECL([SO_REUSEPORT],
@@ -1167,6 +1113,26 @@ AC_CHECK_DECL([SO_REUSEPORT],
 		  #include <sys/types.h>
 		  #include <sys/socket.h>
 		]
+)
+
+dnl set debug level
+AC_MSG_CHECKING([whether to enable debugging compiler options])
+AC_ARG_ENABLE(debug,
+	[  --enable-debug                   Enable debugging compiler options (default: no)],
+	[
+		if test x$enableval = x"yes" ; then
+			AC_MSG_RESULT(yes)
+			tmp_CFLAGS=`echo $CFLAGS | sed 's/O2/O0/g'`
+			CFLAGS="$tmp_CFLAGS"
+			CFLAGS="$CFLAGS -g -Wall -Werror"
+		else
+			CFLAGS="$CFLAGS -Wall -Werror"
+			AC_MSG_RESULT(no)
+		fi
+	],
+	[
+		AC_MSG_RESULT(no)
+	]
 )
 
 dnl final checks
@@ -1198,7 +1164,6 @@ https://github.com/pmacct/pmacct
 
 "
 
-AC_SUBST([EXTRABIN])
 AC_SUBST([PMACCT_CFLAGS])
 
 AM_CONDITIONAL([WITH_MYSQL], [test x"$USING_MYSQL" = x"yes"])
@@ -1208,7 +1173,9 @@ AM_CONDITIONAL([WITH_SQLITE3], [test x"$USING_SQLITE3" = x"yes"])
 AM_CONDITIONAL([WITH_RABBITMQ], [test x"$USING_RABBITMQ" = x"yes"])
 AM_CONDITIONAL([WITH_ZMQ], [test x"$USING_ZMQ" = x"yes"])
 AM_CONDITIONAL([WITH_KAFKA], [test x"$USING_KAFKA" = x"yes"])
+AM_CONDITIONAL([WITH_REDIS], [test x"$USING_REDIS" = x"yes"])
 AM_CONDITIONAL([USING_SQL], [test x"$USING_SQL" = x"yes"])
+AM_CONDITIONAL([WITH_JANSSON], [test x"$USING_JANSSON" = x"yes"])
 AM_CONDITIONAL([WITH_AVRO], [test x"$USING_AVRO" = x"yes"])
 AM_CONDITIONAL([WITH_SERDES], [test x"$USING_SERDES" = x"yes"])
 AM_CONDITIONAL([WITH_NDPI], [test x"$USING_NDPI" = x"yes"])
@@ -1221,5 +1188,7 @@ AC_OUTPUT([ Makefile \
 	    src/Makefile src/nfprobe_plugin/Makefile \
 	    src/sfprobe_plugin/Makefile src/bgp/Makefile \
 	    src/tee_plugin/Makefile src/isis/Makefile \
-	    src/bmp/Makefile src/telemetry/Makefile \
-	    src/ndpi/Makefile examples/lg/Makefile ])
+	    src/bmp/Makefile src/rpki/Makefile \
+	    src/telemetry/Makefile src/ndpi/Makefile \
+	    src/filters/Makefile examples/lg/Makefile \
+	    examples/custom/Makefile	])

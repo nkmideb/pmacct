@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,9 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __NDPI_UTIL_C
-
-#ifdef WITH_NDPI
 #include "../pmacct.h"
 #include "../ip_flow.h"
 #include "../classifier.h"
@@ -32,7 +29,8 @@ struct pm_ndpi_workflow *pm_ndpi_workflow_init()
     
   NDPI_PROTOCOL_BITMASK all;
     
-  struct ndpi_detection_module_struct *module = ndpi_init_detection_module();
+  ndpi_init_prefs pm_ndpi_init_prefs = ndpi_no_prefs;
+  struct ndpi_detection_module_struct *module = ndpi_init_detection_module(pm_ndpi_init_prefs);
   struct pm_ndpi_workflow *workflow = ndpi_calloc(1, sizeof(struct pm_ndpi_workflow));
 
   log_notification_init(&log_notifications.ndpi_cache_full);
@@ -105,4 +103,3 @@ void pm_ndpi_export_proto_to_class(struct pm_ndpi_workflow *workflow)
     }
   }
 }
-#endif

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -23,8 +23,6 @@ You should have received a copy of the GNU General Public License
 along with GNU Zebra; see the file COPYING.  If not, write to the Free
 Software Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA
 02111-1307, USA.  */
-
-#define __BGP_ECOMMUNITY_C
 
 #include "pmacct.h"
 #include "bgp_prefix.h"
@@ -195,7 +193,8 @@ void
 ecommunity_unintern (struct bgp_peer *peer, struct ecommunity *ecom)
 {
   struct bgp_rt_structs *inter_domain_routing_db;
-  struct ecommunity *ret;
+  struct ecommunity *ret = NULL;
+  (void) ret;
 
   if (!peer) return;
 
@@ -425,4 +424,21 @@ ecommunity_ecom2str (struct bgp_peer *peer, struct ecommunity *ecom, int format)
 	}
     }
   return str_buf;
+}
+
+struct ecommunity *ecommunity_dup(struct ecommunity *ecom)
+{
+  struct ecommunity *new;
+
+  new = malloc(sizeof(struct ecommunity));
+
+  new->size = ecom->size;
+
+  if (new->size) {
+    new->val = malloc(ecom->size * ECOMMUNITY_SIZE);
+    memcpy (new->val, ecom->val, ecom->size * ECOMMUNITY_SIZE);
+  }
+  else new->val = NULL;
+
+  return new;
 }

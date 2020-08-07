@@ -11,13 +11,15 @@
 ! nfacctd: valid keys: set_tag, set_tag2, set_label, set_tos, ip, in, out,
 ! engine_type, engine_id, source_id, flowset_id, nexthop, bgp_nexthop, filter,
 ! sample_type, direction, nat_event, src_mac, dst_mac, vlan, cvlan, src_net,
-! dst_net.
+! dst_net, mpls_pw_id.
 !
 ! sfacctd: valid keys: set_tag, set_tag2, set_label, set_tos, ip, in, out,
 ! nexthop, bgp_nexthop, filter, agent_id, sample_type, direction, src_mac,
-! dst_mac, vlan, src_net, dst_net.
+! dst_mac, vlan, src_net, dst_net, mpls_pw_id.
 !
 ! pmacctd: valid keys: set_tag, set_tag2, set_label, direction and filter.
+!
+! uacctd: valid keys: set_tag, set_tag2 and set_label. 
 !
 ! nfacctd when in 'tee' mode: valid keys: set_tag, set_tag2, set_label, ip,
 ! in, out, src_mac, dst_mac, vlan, src_net, dst_net, bgp_nexthop, engine_type,
@@ -28,7 +30,8 @@
 !
 ! BGP-related keys are independent of the collection method in use, hence apply
 ! to all daemons (BGP daemon must be enabled): src_as, dst_as, src_comms, comms,
-! peer_src_as, peer_dst_as, src_local_pref, local_pref, mpls_vpn_rd.
+! peer_src_as, peer_dst_as, src_local_pref, local_pref, src_roa, dst_roa,
+! mpls_vpn_rd.
 !
 ! list of currently supported keys follows:
 !
@@ -38,7 +41,7 @@
 !			within the same rule. The resulting value is written to
 !			the 'tag' field when using memory tables and 'agent_id'
 !			when using a SQL plugin (unless a schema v9 is used).
-!			Legacy name for this primitive is 'id'.  
+!			Valid tag values are in the range 1 to (2^64-1).
 ! 'set_tag2'		SET: tag assigned to a matching packet, flow or sample;
 !			tag can be also defined auto-increasing, ie. <tag #>++;
 !			its use is mutually exclusive to set_tag and set_label
@@ -46,8 +49,8 @@
 !			the 'tag2' field when using memory tables and 'agent_id2'
 !			when using a SQL plugin (unless a schema v9 is used).
 !			If using a SQL plugin, read more about the 'agent_id2'
-!			field in the 'sql/README.agent_id2' document. Legacy
-!			name for this primitive is 'id2'.
+!			field in the 'sql/README.agent_id2' document. Valid tag
+!			values are in the range 1 to (2^64-1).
 ! 'set_label'		SET: string label assigned to a matching packet, flow
 !			or sample; its use is mutually exclusive to tags within
 !			the same rule. The resulting value is written to the
@@ -117,23 +120,39 @@
 ! 'dst_as'              MATCH: destination Autonomous System Number. Same 'src_as'
 !			remarks hold here. Please read them above.
 ! 'peer_src_as'		MATCH: peering source Autonomous System Number. This is
-!			compared against the corresponding (or mapped) BGP RIB
-!			of the exporting device (see 'bgp_daemon' configuration
-!			directive).
+!			compared against the source of info configured in
+!			bgp_peer_src_as_type.
 ! 'peer_dst_as'		MATCH: peering destination Autonomous System Number. Same
 !			'peer_src_as' remarks hold here. Please read them above.
+! 'src_local_pref'	MATCH: source IP prefix BGP Local Preference attribute.
+!			This is compared against the source of info configured in
+!			bgp_src_local_pref_type.
 ! 'local_pref'		MATCH: destination IP prefix BGP Local Preference attribute.
 !			This is compared against the BGP RIB of the exporting
 !			device.  
+! 'src_roa'		MATCH: source IP prefix RPKI/ROA status. This is compared
+!			against the BGP RIB of the exporting device.  
+! 'dst_roa'		MATCH: destination IP prefix RPKI/ROA status. This is
+!			compared against the BGP RIB of the exporting device.  
+! 'src_comms'		MATCH: Destination IP prefix BGP standard communities;
+!			multiple elements, up to 16, can be supplied, comma-
+!			separated (no spaces allowed); the check is successful
+!			if any of the communities is matched. This is compared
+!			against the source of info configured in
+!			bgp_src_std_comm_type.
 ! 'comms'		MATCH: Destination IP prefix BGP standard communities;
 !			multiple elements, up to 16, can be supplied, comma-
 !			separated (no spaces allowed); the check is successful
 !			if any of the communities is matched. This is compared
 !			against the BGP RIB of the exporting device. See examples
 !			below.
-! 'mpls_vpn_rd'		MATCH: Destination IP prefix BGP-signalled MPLS L2/L3
-!			VPN Route Distinguisher (RD) value. Encoding types #0, #1
+! 'mpls_vpn_rd'		MATCH: Destination IP prefix BGP-signalled MPLS L3 VPN
+!			Route Distinguisher (RD) value. Encoding types #0, #1
 !			and #2 are supported as per rfc4364. See example below.
+! 'mpls_pw_id'		MATCH: Signalled MPLS L2 VPNs Pseudowire ID. In NetFlow
+!			v9/IPFIX this is compared against IE #249; in sFlow v5
+!			this is compared against vll_vc_id field, extended MPLS
+!			VC object.
 ! 'src_mac'		MATCH: In NFv9/IPFIX this is compared against IE #56,
 !			in sFlow against source MAC address field part of the
 !			Extended Switch object.
@@ -281,11 +300,13 @@ set_tag2=7 label=sevenseven
 ! ===
 !
 ! === Basic set_label example
-! Tag as "blabla,blabla2" all NetFlow/sFlow data received from any exporter.
+! Tag as "blabla,blabla2" NetFlow/sFlow data received from all exporters.
 ! If, ie. as a result of JEQ's in a pre_tag_map, multiple 'set_label' are
-! applied, then default operation is append labels and separate by a comma.
+! matched, then labels are appended and separated by a comma (warning: if
+! using print plugin with CSV output, the file separator should be changed
+! with print_output_separator)
 !
-set_label=blabla        ip=0.0.0.0/0    jeq=blabla2
+set_label=blabla        ip=0.0.0.0/0    label=blabla	jeq=blabla2
 set_label=blabla2       ip=0.0.0.0/0    label=blabla2
 !
 !

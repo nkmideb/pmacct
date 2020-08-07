@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,25 +19,21 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
+#ifndef PMACCT_NETWORK_H
+#define PMACCT_NETWORK_H
+
 #include "../include/extract.h"
 #include "../include/llc.h"
 #include "../include/sll.h"
 #include "../include/ieee802_11.h"
-
-#if defined ENABLE_IPV6
 #include "../include/ip6.h"
 #include "../include/ah.h"
-#endif
 
-#define min(a,b) ((a)>(b)?(b):(a))
-
-#if defined ENABLE_IPV6
 #ifndef IN6_IS_ADDR_V4MAPPED
 #define IN6_IS_ADDR_V4MAPPED(a) \
         ((((__const uint32_t *) (a))[0] == 0)                                 \
          && (((__const uint32_t *) (a))[1] == 0)                              \
          && (((__const uint32_t *) (a))[2] == htonl (0xffff)))
-#endif
 #endif
 
 #define ETH_ADDR_LEN    	6               /* Octets in one ethernet addr   */
@@ -45,23 +41,31 @@
 #define ETHERMTU		1500
 #define ETHER_JUMBO_MTU		9000
 #define IEEE8021Q_TAGLEN	4
+#define CFP_TAGLEN	        16
+#define CVNT_TAGLEN		6
 #define IEEE8021AH_LEN		10
 #define PPP_TAGLEN              2
 #define MAX_MCAST_GROUPS	20
-#define ROUTING_SEGMENT_MAX	16
 #if defined ENABLE_PLABEL
 #define PREFIX_LABEL_LEN	16
 #define AF_PLABEL		255
 #endif
 #define PRIMPTRS_FUNCS_N	16
 
-/* 10Mb/s ethernet header */
+/* Ethernet header */
 struct eth_header
 {
   u_int8_t  ether_dhost[ETH_ADDR_LEN];      /* destination eth addr */
   u_int8_t  ether_shost[ETH_ADDR_LEN];      /* source ether addr    */
   u_int16_t ether_type;                     /* packet type ID field */
 };
+
+/* 802.1Q header */
+struct vlan_header
+{
+  u_int16_t tci;		/* priority and VLAN ID */
+  u_int16_t proto;		/* packet type ID or len */
+} __attribute__ ((packed));
 
 #define CHDLC_MCAST_ADDR	0x8F
 #define CHDLC_FIXED_CONTROL	0x00
@@ -72,20 +76,6 @@ struct chdlc_header {
   u_int16_t protocol;
 };
 
-#define TR_RIF_LENGTH(trp)		((ntohs((trp)->token_rcf) & 0x1f00) >> 8)
-#define TR_IS_SOURCE_ROUTED(trp)	((trp)->token_shost[0] & 0x80)
-#define TOKEN_FC_LLC			1
-
-struct token_header {
-        u_int8_t  token_ac;
-        u_int8_t  token_fc;
-        u_int8_t  token_dhost[ETH_ADDR_LEN];
-        u_int8_t  token_shost[ETH_ADDR_LEN];
-        u_int16_t token_rcf;
-        u_int16_t token_rseg[ROUTING_SEGMENT_MAX];
-};
-
-
 /* Ethernet protocol ID's */
 #define ETHERTYPE_IP		0x0800          /* IP */
 #define ETHERTYPE_IPV6          0x86dd		/* IPv6 */
@@ -93,9 +83,10 @@ struct token_header {
 #define ETHERTYPE_8021Q		0x8100          /* 802.1Q */
 #define ETHERTYPE_MPLS          0x8847		/* MPLS */
 #define ETHERTYPE_MPLS_MULTI    0x8848		/* MPLS */
-#define ETHERTYPE_8021AH        0x88A8		/* 802.1ah */
 #define ETHERTYPE_ISO		0xFEFE		/* OSI */
 #define ETHERTYPE_GRE_ISO	0x00FE		/* OSI over GRE */
+#define ETHERTYPE_CFP		0x8903		/* Cisco FabricPath */
+#define ETHERTYPE_CVNT		0x8926		/* Cisco Virtual Network TAG */
 
 /* PPP protocol definitions */
 #define PPP_HDRLEN      4       /* octets for standard ppp header */
@@ -206,6 +197,8 @@ struct pm_tcp_md5sig
   u_int8_t      tcpm_key[TCP_MD5SIG_MAXKEYLEN]; /* Key (binary).  */
 };
 
+#define UDP_PORT_VXLAN	4789
+
 struct pm_udphdr
 {
   u_int16_t uh_sport;           /* source port */
@@ -218,6 +211,16 @@ struct pm_tlhdr {
    u_int16_t	src_port;	/* source and destination ports */
    u_int16_t	dst_port;
 };
+
+#define VXLAN_FLAG_I	0x8
+
+/* according to rfc7348 */
+struct vxlan_hdr {
+  u_int8_t flags;
+  u_char reserved1[3];
+  u_char vni[3];
+  u_int8_t reserved2;
+} __attribute__ ((packed));
 
 #define MAX_GTP_TRIALS	8
 
@@ -323,6 +326,8 @@ struct packet_ptrs {
   char *bgp_dst_info; /* pointer to bgp_info structure for destination prefix, if any */ 
   char *bgp_peer; /* record BGP peer's Router-ID */
   char *bgp_nexthop_info; /* record bgp_info of BGP next-hop in case of follow-up */
+  u_int8_t src_roa; /* record ROA status for source prefix */
+  u_int8_t dst_roa; /* record ROA status for destination prefix */
   char *igp_src; /* pointer to IGP node structure for source prefix, if any */
   char *igp_dst; /* pointer to IGP node structure for destination prefix, if any */
   char *igp_src_info; /* pointer to IGP node info structure for source prefix, if any */
@@ -341,6 +346,7 @@ struct packet_ptrs {
   u_char *mpls_ptr; /* ptr to base MPLS label */
   u_char *iph_ptr; /* ptr to ip header */
   u_char *tlh_ptr; /* ptr to transport level protocol header */
+  u_char *vxlan_ptr; /* ptr to VXLAN VNI */
   u_char *payload_ptr; /* classifiers: ptr to packet payload */
   pm_class_t class; /* classifiers: class id */
   struct class_st cst; /* classifiers: class status */
@@ -349,15 +355,16 @@ struct packet_ptrs {
   u_int32_t ifindex_in;  /* input ifindex; used by pmacctd/uacctd */
   u_int32_t ifindex_out; /* output ifindex; used by pmacctd/uacctd */
   u_int8_t direction; /* packet sampling direction; used by pmacctd/uacctd */
-  u_int8_t tun_stack; /* tunnelling stack */
-  u_int8_t tun_layer; /* tunnelling layer count */
+  u_char *tun_pptrs; /* tunnel packet pointers */
+  u_int8_t tun_stack; /* tunnell stack */
+  u_int8_t tun_layer; /* tunnell layer count */
   u_int32_t sample_type; /* sFlow sample type */
   u_int32_t seqno; /* sFlow/NetFlow sequence number */
   u_int16_t f_len; /* sFlow/NetFlow payload length */
   char *tee_dissect; /* pointer to flow tee dissection structure */
   int tee_dissect_bcast; /* is the tee dissected element to be broadcasted? */
   u_int8_t renormalized; /* Is it renormalized yet ? */
-  char *pkt_data_ptrs[CUSTOM_PRIMITIVE_MAX_PPTRS_IDX]; /* indexed packet pointers */
+  u_char *pkt_data_ptrs[CUSTOM_PRIMITIVE_MAX_PPTRS_IDX]; /* indexed packet pointers */
   u_int16_t pkt_proto[CUSTOM_PRIMITIVE_MAX_PPTRS_IDX]; /* indexed packet protocols */
 #if defined (WITH_GEOIPV2)
   MMDB_lookup_result_s geoipv2_src;
@@ -372,11 +379,9 @@ struct host_addr {
   u_int8_t family;
   union {
     struct in_addr ipv4;
-#if defined ENABLE_IPV6
     struct in6_addr ipv6;
-#endif
 #if defined ENABLE_PLABEL
-    u_char plabel[PREFIX_LABEL_LEN];
+    char plabel[PREFIX_LABEL_LEN];
 #endif
   } address;
 };
@@ -386,9 +391,7 @@ struct host_mask {
   u_int8_t len;
   union {
     u_int32_t m4;
-#if defined ENABLE_IPV6
     u_int8_t m6[16];
-#endif
   } mask;
 };
 
@@ -486,10 +489,10 @@ struct pkt_extras {
 
 #define PKT_MSG_SIZE 10000
 struct pkt_msg {
-  struct sockaddr agent;
+  struct sockaddr_storage agent;
   u_int32_t seqno;
   u_int16_t len;
-  char *payload;
+  u_char *payload;
   pm_id_t tag;
   pm_id_t tag2;
   u_int8_t bcast;
@@ -525,7 +528,7 @@ struct primitives_ptrs {
   struct pkt_nat_primitives *pnat;
   struct pkt_mpls_primitives *pmpls;
   struct pkt_tunnel_primitives *ptun;
-  char *pcust;
+  u_char *pcust;
   struct pkt_extras *pextras;
   struct pkt_vlen_hdr_primitives *pvlen;
 
@@ -544,6 +547,9 @@ struct pkt_bgp_primitives {
   u_int32_t src_local_pref;
   u_int32_t src_med;
   rd_t mpls_vpn_rd;
+  u_int32_t mpls_pw_id;
+  u_int8_t src_roa;
+  u_int8_t dst_roa;
 };
 
 struct pkt_legacy_bgp_primitives {
@@ -575,10 +581,15 @@ struct pkt_mpls_primitives {
 };
 
 struct pkt_tunnel_primitives {
+  u_int8_t tunnel_eth_dhost[ETH_ADDR_LEN];
+  u_int8_t tunnel_eth_shost[ETH_ADDR_LEN];
   struct host_addr tunnel_src_ip;
   struct host_addr tunnel_dst_ip;
   u_int8_t tunnel_tos;
   u_int8_t tunnel_proto;
+  u_int16_t tunnel_src_port;
+  u_int16_t tunnel_dst_port;
+  u_int32_t tunnel_id; /* ie. VXLAN VNI */
 };
 
 /* same as pkt_legacy_bgp_primitives but pointers in place of strings */
@@ -599,12 +610,10 @@ struct packet_ptrs_vector {
   struct packet_ptrs vlan4;
   struct packet_ptrs mpls4;
   struct packet_ptrs vlanmpls4;
-#if defined ENABLE_IPV6
   struct packet_ptrs v6;
   struct packet_ptrs vlan6;
   struct packet_ptrs mpls6;
   struct packet_ptrs vlanmpls6;
-#endif
 };
 
 struct hosts_table_entry {
@@ -642,16 +651,11 @@ struct tunnel_handler {
 typedef int (*tunnel_configurator)(struct tunnel_handler *, char *);
 
 struct tunnel_entry {
-  u_char type[TUNNEL_PROTO_STRING];
+  char type[TUNNEL_PROTO_STRING];
   tunnel_func tf;
   tunnel_configurator tc;
 };
 
 /* global variables */
-#if (!defined __PMACCTD_C) && (!defined __NFACCTD_C) && (!defined __SFACCTD_C) && (!defined __UACCTD_C) && (!defined __PMTELEMETRYD_C) && (!defined __PMBGPD_C) && (!defined __PMBMPD_C)
-#define EXT extern
-#else
-#define EXT
-#endif
-EXT struct tunnel_handler tunnel_registry[TUNNEL_REGISTRY_STACKS][TUNNEL_REGISTRY_ENTRIES];
-#undef EXT
+extern struct tunnel_handler tunnel_registry[TUNNEL_REGISTRY_STACKS][TUNNEL_REGISTRY_ENTRIES];
+#endif //PMACCT_NETWORK_H

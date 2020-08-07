@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,8 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __CLASSIFIER_C
-
 #include "pmacct.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
@@ -31,11 +29,13 @@
 #include <dlfcn.h>
 #endif
 
+/* Global variables */
+struct pkt_classifier *class;
 u_int32_t class_trivial_hash_rnd = 140281;
 
 void init_classifiers(char *path)
 {
-  char fname[MAX_FN_LEN];
+  char fname[2*MAX_FN_LEN+2]; //Allow space for %s/%s
   struct dirent **namelist;
   struct stat st;
   struct pkt_classifier css;
@@ -203,9 +203,7 @@ void init_class_accumulators(struct packet_ptrs *pptrs, struct ip_flow_common *f
 void handle_class_accumulators(struct packet_ptrs *pptrs, struct ip_flow_common *fp, unsigned int idx)
 {
   struct pm_iphdr *iphp = (struct pm_iphdr *)pptrs->iph_ptr; 
-#if defined ENABLE_IPV6
   struct ip6_hdr *ip6hp = (struct ip6_hdr *)pptrs->iph_ptr; 
-#endif
 
   /* The flow doesn't have a class yet */
   if (!fp->class[idx]) { 
@@ -215,10 +213,8 @@ void handle_class_accumulators(struct packet_ptrs *pptrs, struct ip_flow_common 
       pptrs->cst.tentatives = fp->cst[idx].tentatives; // XXX
       if (pptrs->l3_proto == ETHERTYPE_IP)
 	fp->cst[idx].ba += ntohs(iphp->ip_len); 
-#if defined ENABLE_IPV6
       else if (pptrs->l3_proto == ETHERTYPE_IPV6)
 	fp->cst[idx].ba += (IP6HdrSz+ntohs(ip6hp->ip6_plen));
-#endif
       if (pptrs->frag_sum_bytes) {
 	fp->cst[idx].ba += pptrs->frag_sum_bytes;
 	pptrs->frag_sum_bytes = 0;

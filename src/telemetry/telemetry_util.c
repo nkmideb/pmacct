@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
 */
 
 /*
@@ -19,13 +19,10 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-/* defines */
-#define __TELEMETRY_UTIL_C
-
 /* includes */
 #include "pmacct.h"
 #include "addr.h"
-#include "../bgp/bgp.h"
+#include "bgp/bgp.h"
 #include "telemetry.h"
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
@@ -95,23 +92,34 @@ u_int32_t telemetry_cisco_hdr_v0_get_type(telemetry_peer *peer)
   return type;
 }
 
-u_int16_t telemetry_cisco_hdr_v1_get_len(telemetry_peer *peer)
+u_int32_t telemetry_cisco_hdr_v1_get_len(telemetry_peer *peer)
 {
-  u_int16_t len;
+  u_int32_t len;
 
-  memcpy(&len, (peer->buf.base + 2), 2);
-  len = ntohs(len);
+  memcpy(&len, (peer->buf.base + 8), 4);
+  len = ntohl(len);
 
   return len;
 }
 
-u_int8_t telemetry_cisco_hdr_v1_get_type(telemetry_peer *peer)
+u_int16_t telemetry_cisco_hdr_v1_get_type(telemetry_peer *peer)
 {
-  u_int8_t type;
+  u_int16_t type;
 
-  memcpy(&type, (peer->buf.base + 1), 1);
+  memcpy(&type, peer->buf.base, 2);
+  type = ntohs(type);
 
   return type;
+}
+
+u_int16_t telemetry_cisco_hdr_v1_get_encap(telemetry_peer *peer)
+{
+  u_int16_t encap;
+
+  memcpy(&encap, (peer->buf.base + 2), 2);
+  encap = ntohs(encap);
+
+  return encap;
 }
 
 int telemetry_tpc_addr_cmp(const void *a, const void *b)
@@ -168,9 +176,10 @@ int telemetry_validate_input_output_decoders(int input, int output)
 
 void telemetry_log_peer_stats(telemetry_peer *peer, struct telemetry_data *t_data)
 {
-  Log(LOG_INFO, "INFO ( %s/%s ): [%s:%u] pkts=%u pktBytes=%u msgBytes=%u msgErrors=%u\n",
-	config.name, t_data->log_str, peer->addr_str, peer->tcp_port, peer->stats.packets,
-	peer->stats.packet_bytes, peer->stats.msg_bytes, peer->stats.msg_errors);
+  Log(LOG_INFO, "INFO ( %s/%s ): [%s:%u] pkts=%llu pktBytes=%llu msgBytes=%llu msgErrors=%llu\n",
+	config.name, t_data->log_str, peer->addr_str, peer->tcp_port,
+	(unsigned long long)peer->stats.packets, (unsigned long long)peer->stats.packet_bytes,
+	(unsigned long long)peer->stats.msg_bytes, (unsigned long long)peer->stats.msg_errors);
 
   t_data->global_stats.packets += peer->stats.packets;
   t_data->global_stats.packet_bytes += peer->stats.packet_bytes;
@@ -185,9 +194,10 @@ void telemetry_log_peer_stats(telemetry_peer *peer, struct telemetry_data *t_dat
 
 void telemetry_log_global_stats(struct telemetry_data *t_data)
 {
-  Log(LOG_INFO, "INFO ( %s/%s ): [Total] pkts=%u pktBytes=%u msgBytes=%u msgErrors=%u\n",
-        config.name, t_data->log_str, t_data->global_stats.packets, t_data->global_stats.packet_bytes,
-	t_data->global_stats.msg_bytes, t_data->global_stats.msg_errors);
+  Log(LOG_INFO, "INFO ( %s/%s ): [Total] pkts=%llu pktBytes=%llu msgBytes=%llu msgErrors=%llu\n",
+        config.name, t_data->log_str, (unsigned long long)t_data->global_stats.packets,
+	(unsigned long long)t_data->global_stats.packet_bytes, (unsigned long long)t_data->global_stats.msg_bytes,
+	(unsigned long long)t_data->global_stats.msg_errors);
 
   t_data->global_stats.packets = 0;
   t_data->global_stats.packet_bytes = 0;
@@ -211,5 +221,19 @@ void telemetry_init_zmq_host(void *zh, int *pipe_fd)
   p_zmq_set_retry_timeout(zmq_host, PM_ZMQ_DEFAULT_RETRY);
 
   if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
+}
+#endif
+
+#ifdef WITH_KAFKA
+void telemetry_init_kafka_host(void *kh)
+{
+  struct p_kafka_host *kafka_host = kh;
+
+  p_kafka_init_host(kafka_host, config.telemetry_kafka_config_file);
+  p_kafka_connect_to_consume(kafka_host);
+  p_kafka_set_broker(kafka_host, config.telemetry_kafka_broker_host, config.telemetry_kafka_broker_port);
+  p_kafka_set_topic(kafka_host, config.telemetry_kafka_topic);
+  p_kafka_set_content_type(kafka_host, PM_KAFKA_CNT_TYPE_STR);
+  p_kafka_manage_consumer(kafka_host, TRUE);
 }
 #endif

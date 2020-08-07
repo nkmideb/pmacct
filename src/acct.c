@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,8 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __ACCT_C
-
 /* includes */
 #include "pmacct.h"
 #include "imt_plugin.h"
@@ -37,8 +35,8 @@ struct acc *search_accounting_structure(struct primitives_ptrs *prim_ptrs)
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
-  struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
+  u_char *pcust = prim_ptrs->pcust;
+  //struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   struct acc *elem_acc;
   unsigned int hash, pos;
   unsigned int pp_size = sizeof(struct pkt_primitives); 
@@ -83,7 +81,7 @@ int compare_accounting_structure(struct acc *elem, struct primitives_ptrs *prim_
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
+  u_char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   int res_data = TRUE, res_bgp = TRUE, res_nat = TRUE, res_mpls = TRUE, res_tun = TRUE;
   int res_cust = TRUE, res_vlen = TRUE, res_lbgp = TRUE;
@@ -118,7 +116,7 @@ int compare_accounting_structure(struct acc *elem, struct primitives_ptrs *prim_
   if (pvlen && elem->pvlen) res_vlen = vlen_prims_cmp(elem->pvlen, pvlen);
   else res_vlen = FALSE;
 
-  return res_data | res_bgp | res_lbgp | res_nat | res_mpls | res_cust | res_vlen;
+  return res_data | res_bgp | res_lbgp | res_nat | res_mpls | res_tun | res_cust | res_vlen;
 }
 
 void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
@@ -130,7 +128,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
   struct pkt_nat_primitives *pnat = prim_ptrs->pnat;
   struct pkt_mpls_primitives *pmpls = prim_ptrs->pmpls;
   struct pkt_tunnel_primitives *ptun = prim_ptrs->ptun;
-  char *pcust = prim_ptrs->pcust;
+  u_char *pcust = prim_ptrs->pcust;
   struct pkt_vlen_hdr_primitives *pvlen = prim_ptrs->pvlen;
   struct acc *elem_acc;
   unsigned char *elem, *new_elem;
@@ -310,7 +308,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
 
       if (pcust) {
 	if (!elem_acc->pcust) {
-	  elem_acc->pcust = (char *) malloc(pc_size);
+	  elem_acc->pcust = malloc(pc_size);
 	  if (!elem_acc->pcust) {
             Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (insert_accounting_structure). Exiting ..\n", config.name, config.type);
             exit_gracefully(1);
@@ -443,7 +441,7 @@ void insert_accounting_structure(struct primitives_ptrs *prim_ptrs)
       else elem_acc->ptun = NULL;
 
       if (pcust) {
-        elem_acc->pcust = (char *) malloc(pc_size);
+        elem_acc->pcust = malloc(pc_size);
 	if (!elem_acc->pcust) {
           Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (insert_accounting_structure). Exiting ..\n", config.name, config.type);
           exit_gracefully(1);

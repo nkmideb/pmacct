@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2018 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
 */
 
 /*
@@ -19,8 +19,6 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#define __CONNTRACK_C
-
 #include "pmacct.h"
 #include "addr.h"
 #include "pmacct-data.h"
@@ -29,8 +27,19 @@
 #include "classifier.h"
 #include "jhash.h"
 
+
+/* Global variables */
+struct conntrack_ipv4 *conntrack_ipv4_table;
+struct conntrack_ipv6 *conntrack_ipv6_table;
 u_int32_t conntrack_total_nodes_v4;
 u_int32_t conntrack_total_nodes_v6;
+struct conntrack_helper_entry __attribute__((unused)) conntrack_helper_list[4] = {
+  { "ftp", conntrack_ftp_helper },
+  { "sip", conntrack_sip_helper },
+//  { "irc", conntrack_irc_helper },
+  { "rtsp", conntrack_rtsp_helper },
+  { "", NULL },
+};
 
 void init_conntrack_table()
 {
@@ -38,11 +47,9 @@ void init_conntrack_table()
   else conntrack_total_nodes_v4 = DEFAULT_CONNTRACK_BUFFER_SIZE / sizeof(struct conntrack_ipv4);
   conntrack_ipv4_table = NULL;
 
-#if defined ENABLE_IPV6
   if (config.conntrack_bufsz) conntrack_total_nodes_v6 = config.conntrack_bufsz / sizeof(struct conntrack_ipv6);
   else conntrack_total_nodes_v6 = DEFAULT_CONNTRACK_BUFFER_SIZE / sizeof(struct conntrack_ipv6);
   conntrack_ipv6_table = NULL;
-#endif
 }
 
 void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
@@ -52,7 +59,7 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
   int len;
 
   if (!pptrs->payload_ptr) return;
-  len = strlen(pptrs->payload_ptr); 
+  len = strlen((char *)pptrs->payload_ptr); 
  
   /* truncated payload */
   if (len < 4) return;
@@ -63,8 +70,8 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
        pptrs->payload_ptr[2] == 'R' && pptrs->payload_ptr[3] == 'T') ||
       (pptrs->payload_ptr[0] == 'L' && pptrs->payload_ptr[1] == 'P' &&
        pptrs->payload_ptr[2] == 'R' && pptrs->payload_ptr[3] == 'T')) { 
-    start = strchr(pptrs->payload_ptr, ' ');
-    end = strchr(pptrs->payload_ptr, '\r'); 
+    start = strchr((char *)pptrs->payload_ptr, ' ');
+    end = strchr((char *)pptrs->payload_ptr, '\r'); 
     if (start && end) { 
       /* getting the port number */
       ptr = end;
@@ -84,13 +91,11 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
                         ((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
                         port[0]*256+port[1], 0, IPPROTO_TCP, pptrs->class,
 			NULL, CONNTRACK_GENERIC_LIFETIME);
-#if defined ENABLE_IPV6
       else if (pptrs->l3_proto == ETHERTYPE_IPV6) insert_conntrack_ipv6(now,
                         &((struct ip6_hdr *) pptrs->iph_ptr)->ip6_src,
                         &((struct ip6_hdr *) pptrs->iph_ptr)->ip6_dst,
                         port[0]*256+port[1], 0, IPPROTO_TCP, pptrs->class,
 			NULL, CONNTRACK_GENERIC_LIFETIME);
-#endif
     }
   }
   /* 227/228 reply, passive (PASV/LPASV) FTP */
@@ -98,8 +103,8 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
 	    pptrs->payload_ptr[2] == '7' && pptrs->payload_ptr[3] == ' ') ||
 	   (pptrs->payload_ptr[0] == '2' && pptrs->payload_ptr[1] == '2' &&
             pptrs->payload_ptr[2] == '8' && pptrs->payload_ptr[3] == ' ')) {
-    start = strchr(pptrs->payload_ptr, '(');
-    end = strchr(pptrs->payload_ptr, ')'); 
+    start = strchr((char *)pptrs->payload_ptr, '(');
+    end = strchr((char *)pptrs->payload_ptr, ')'); 
     if (start && end) { 
       /* getting the port number */
       ptr = end;
@@ -119,20 +124,18 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
 			((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
 			port[0]*256+port[1], 0, IPPROTO_TCP, pptrs->class,
 			NULL, CONNTRACK_GENERIC_LIFETIME);
-#if defined ENABLE_IPV6
       else if (pptrs->l3_proto == ETHERTYPE_IPV6) insert_conntrack_ipv6(now,
                         &((struct ip6_hdr *) pptrs->iph_ptr)->ip6_src,
                         &((struct ip6_hdr *) pptrs->iph_ptr)->ip6_dst,
                         port[0]*256+port[1], 0, IPPROTO_TCP, pptrs->class,
 			NULL, CONNTRACK_GENERIC_LIFETIME);
-#endif
     }
   }
   /* EPRT command, Extended data port */
   else if (pptrs->payload_ptr[0] == 'E' && pptrs->payload_ptr[1] == 'P' &&
 	pptrs->payload_ptr[2] == 'R' && pptrs->payload_ptr[3] == 'T') {
-    start = strchr(pptrs->payload_ptr, ' ');
-    end = strchr(pptrs->payload_ptr, '\r');
+    start = strchr((char *)pptrs->payload_ptr, ' ');
+    end = strchr((char *)pptrs->payload_ptr, '\r');
     if (start && end) {
       /* getting the port number */
       while (*end != '|' && end >= start) end--;
@@ -152,20 +155,18 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
                         ((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
                         port[0], 0, IPPROTO_TCP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
-#if defined ENABLE_IPV6
       else if (pptrs->l3_proto == ETHERTYPE_IPV6) insert_conntrack_ipv6(now,
                         &((struct ip6_hdr *) pptrs->iph_ptr)->ip6_src,
                         &((struct ip6_hdr *) pptrs->iph_ptr)->ip6_dst,
                         port[0], 0, IPPROTO_TCP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
-#endif
     }
   }
   /* 229 reply, extended passive (EPASV) FTP */
   else if (pptrs->payload_ptr[0] == '2' && pptrs->payload_ptr[1] == '2' &&
 	pptrs->payload_ptr[2] == '9' && pptrs->payload_ptr[3] == ' ') {
-    start = strchr(pptrs->payload_ptr, '(');
-    end = strchr(pptrs->payload_ptr, ')');
+    start = strchr((char *)pptrs->payload_ptr, '(');
+    end = strchr((char *)pptrs->payload_ptr, ')');
     if (start && end) {
       /* getting the port number */
       while (*end != '|' && end >= start) end--;
@@ -185,13 +186,11 @@ void conntrack_ftp_helper(time_t now, struct packet_ptrs *pptrs)
                         ((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
                         port[0], 0, IPPROTO_TCP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
-#if defined ENABLE_IPV6
       else if (pptrs->l3_proto == ETHERTYPE_IPV6) insert_conntrack_ipv6(now,
                         &((struct ip6_hdr *) pptrs->iph_ptr)->ip6_src,
                         &((struct ip6_hdr *) pptrs->iph_ptr)->ip6_dst,
                         port[0], 0, IPPROTO_TCP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
-#endif
     }
   }
 }
@@ -206,15 +205,15 @@ void conntrack_rtsp_helper(time_t now, struct packet_ptrs *pptrs)
   port[1] = 0;
 
   if (!pptrs->payload_ptr) return;
-  len = strlen(pptrs->payload_ptr);
+  len = strlen((char *)pptrs->payload_ptr);
 
   /* truncated payload */
   if (len < 6) return;
 
   /* We need to look into RTSP SETUP messages */ 
-  if ( !strncmp(pptrs->payload_ptr, "SETUP ", 6) ) {
-    start = strchr(pptrs->payload_ptr, '\n');
-    end = pptrs->payload_ptr+len;
+  if ( !strncmp((char *)pptrs->payload_ptr, "SETUP ", 6) ) {
+    start = strchr((char *)pptrs->payload_ptr, '\n');
+    end = (char *)(pptrs->payload_ptr + len);
 
     while (start && start < end) { 
       start++;
@@ -258,12 +257,10 @@ void conntrack_rtsp_helper(time_t now, struct packet_ptrs *pptrs)
 			((struct pm_iphdr *) pptrs->iph_ptr)->ip_src.s_addr,
 			((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
 			x, 0, IPPROTO_UDP, pptrs->class, NULL, CONNTRACK_GENERIC_LIFETIME);
-#if defined ENABLE_IPV6
 	      else if (pptrs->l3_proto == ETHERTYPE_IPV6) insert_conntrack_ipv6(now,
 			&((struct ip6_hdr *) pptrs->iph_ptr)->ip6_src,
 			&((struct ip6_hdr *) pptrs->iph_ptr)->ip6_dst,
 			x, 0, IPPROTO_UDP, pptrs->class, NULL, CONNTRACK_GENERIC_LIFETIME);
-#endif
 	    }
 	  } 
 	  else ptr = strchr(ptr, ';');
@@ -281,16 +278,16 @@ void conntrack_sip_helper(time_t now, struct packet_ptrs *pptrs)
   int len;
 
   if (!pptrs->payload_ptr) return;
-  len = strlen(pptrs->payload_ptr);
+  len = strlen((char *)pptrs->payload_ptr);
 
   /* truncated payload */
   if (len < 11) return;
 
   /* We need to look into SIP INVITE messages */
-  if ( !strncmp(pptrs->payload_ptr, "INVITE ", 7) || 
-       !strncmp(pptrs->payload_ptr, "SIP/2.0 200", 11) ) {
+  if ( !strncmp((char *)pptrs->payload_ptr, "INVITE ", 7) || 
+       !strncmp((char *)pptrs->payload_ptr, "SIP/2.0 200", 11) ) {
     /* We are searching for the m= line */
-    for ( start = pptrs->payload_ptr, end = pptrs->payload_ptr+len;
+    for ( start = (char *)pptrs->payload_ptr, end = (char *)(pptrs->payload_ptr + len);
 	  start && start < end; start = strchr(start, '\n') ) { 
       start++;
       if ( !strncmp(start, "m=", 2) ) {
@@ -317,13 +314,11 @@ void conntrack_sip_helper(time_t now, struct packet_ptrs *pptrs)
 			((struct pm_iphdr *) pptrs->iph_ptr)->ip_dst.s_addr,
 			port, 0, IPPROTO_UDP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
-#if defined ENABLE_IPV6
     else if (pptrs->l3_proto == ETHERTYPE_IPV6) insert_conntrack_ipv6(now,
 			&((struct ip6_hdr *) pptrs->iph_ptr)->ip6_src,
 			&((struct ip6_hdr *) pptrs->iph_ptr)->ip6_dst,
 			port, 0, IPPROTO_UDP, pptrs->class, NULL,
 			CONNTRACK_GENERIC_LIFETIME);
-#endif
   }
 }
 
@@ -385,9 +380,7 @@ void insert_conntrack_ipv4(time_t now, u_int32_t ip_src, u_int32_t ip_dst,
 void search_conntrack(struct ip_flow_common *fp, struct packet_ptrs *pptrs, unsigned int idx)
 {
   if (pptrs->l3_proto == ETHERTYPE_IP) search_conntrack_ipv4(fp, pptrs, idx); 
-#if defined ENABLE_IPV6
   else if (pptrs->l3_proto == ETHERTYPE_IPV6) search_conntrack_ipv6(fp, pptrs, idx); 
-#endif
 }
 
 void search_conntrack_ipv4(struct ip_flow_common *fp, struct packet_ptrs *pptrs, unsigned int idx)
@@ -438,7 +431,6 @@ void search_conntrack_ipv4(struct ip_flow_common *fp, struct packet_ptrs *pptrs,
   }
 }
 
-#if defined ENABLE_IPV6
 void insert_conntrack_ipv6(time_t now, struct in6_addr *ip_src, struct in6_addr *ip_dst,
                            u_int16_t port_src, u_int16_t port_dst, u_int8_t proto,
                            pm_class_t class, conntrack_helper helper, time_t exp)
@@ -520,4 +512,3 @@ void search_conntrack_ipv6(struct ip_flow_common *fp, struct packet_ptrs *pptrs,
     ct_elem = ct_elem->next;
   }
 }
-#endif

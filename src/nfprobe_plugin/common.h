@@ -25,8 +25,6 @@
 #ifndef _SFD_COMMON_H
 #define _SFD_COMMON_H
 
-#define _BSD_SOURCE /* Needed for BSD-style struct ip,tcp,udp on Linux */
-
 #include "pmacct.h"
 
 #include <sys/types.h>
@@ -40,10 +38,8 @@
 #include <netinet/in.h>
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
-#if defined ENABLE_IPV6
 #include "../../include/ip6.h"
 #include "../../include/ah.h"
-#endif
 #include <netinet/udp.h>
 #include <arpa/inet.h>
 
@@ -65,9 +61,6 @@
 #include <net/bpf.h>
 #elif defined(HAVE_PCAP_BPF_H)
 #include <pcap-bpf.h>
-#endif
-#if defined(HAVE_INTTYPES_H)
-#include <inttypes.h>
 #endif
 
 /* The name of the program */

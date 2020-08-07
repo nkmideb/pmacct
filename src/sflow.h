@@ -1,5 +1,8 @@
 /* Copyright (C) InMon Corporation 2002-2003 ALL RIGHTS RESERVED */
 
+#ifndef SFLOW_H
+#define SFLOW_H
+
 /* $Header$ */
 
 /////////////////////////////////////////////////////////////////////////////////
@@ -13,9 +16,7 @@ enum SFLAddress_type {
 
 typedef union _SFLAddress_value {
   struct in_addr ip_v4;
-#if defined ENABLE_IPV6
   struct in6_addr ip_v6;
-#endif
 } SFLAddress_value;
 
 typedef struct _SFLAddress {
@@ -86,13 +87,8 @@ typedef struct _SFLSampled_ipv6 {
   u_int32_t length;       /* The length of the IP packet
 			     excluding lower layer encapsulations */
   u_int32_t protocol;     /* IP Protocol type (for example, TCP = 6, UDP = 17) */
-#if defined ENABLE_IPV6
   struct in6_addr src_ip; /* Source IP Address */
   struct in6_addr dst_ip; /* Destination IP Address */
-#else
-  u_int8_t src_ip[16];
-  u_int8_t dst_ip[16];
-#endif
   u_int32_t src_port;     /* TCP/UDP source port number or equivalent */
   u_int32_t dst_port;     /* TCP/UDP destination port number or equivalent */
   u_int32_t tcp_flags;    /* TCP flags */
@@ -581,3 +577,4 @@ typedef struct _SFLSample_datagram_hdr {
 
 #define SFL_DATA_PAD 400
 
+#endif //SFLOW_H
