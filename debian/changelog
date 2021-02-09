@@ -1,3 +1,11 @@
+pmacct (1.7.6-1~1.gbp63a91e) UNRELEASED; urgency=medium
+
+  ** SNAPSHOT build @63a91ef926c5b53ff516cab84d31f6943cbbef63 **
+
+  * [ebf2e47] New upstream version 1.7.6
+
+ -- Bernd Zeimetz <bzed@debian.org>  Tue, 09 Feb 2021 20:03:20 +0100
+
 pmacct (1.7.5-1) unstable; urgency=medium
 
   * [027d4f2] New gitlab file
