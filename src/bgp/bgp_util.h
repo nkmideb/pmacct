@@ -50,15 +50,15 @@ extern struct bgp_misc_structs *bgp_select_misc_db(int);
 extern void bgp_link_misc_structs(struct bgp_misc_structs *);
 extern void bgp_blackhole_link_misc_structs(struct bgp_misc_structs *);
 
-extern struct bgp_info_extra *bgp_info_extra_new(struct bgp_info *);
-extern void bgp_info_extra_free(struct bgp_peer *, struct bgp_info_extra **);
-extern struct bgp_info_extra *bgp_info_extra_get(struct bgp_info *);
-extern struct bgp_info_extra *bgp_info_extra_process(struct bgp_peer *, struct bgp_info *, safi_t, path_id_t *, rd_t *, u_char *);
+extern struct bgp_attr_extra *bgp_attr_extra_new(struct bgp_info *);
+extern void bgp_attr_extra_free(struct bgp_peer *, struct bgp_attr_extra **);
+extern struct bgp_attr_extra *bgp_attr_extra_get(struct bgp_info *);
+extern struct bgp_attr_extra *bgp_attr_extra_process(struct bgp_peer *, struct bgp_info *, afi_t, safi_t, struct bgp_attr_extra *);
 
 extern struct bgp_info *bgp_info_new(struct bgp_peer *);
 extern void bgp_info_add(struct bgp_peer *, struct bgp_node *, struct bgp_info *, u_int32_t);
 extern void bgp_info_delete(struct bgp_peer *, struct bgp_node *, struct bgp_info *, u_int32_t);
-extern void bgp_info_free(struct bgp_peer *, struct bgp_info *);
+extern void bgp_info_free(struct bgp_peer *, struct bgp_info *, void (*bgp_extra_data_free)(struct bgp_msg_extra_data *));
 extern void bgp_attr_init(int, struct bgp_rt_structs *);
 extern struct bgp_attr *bgp_attr_intern(struct bgp_peer *, struct bgp_attr *);
 extern void bgp_attr_unintern (struct bgp_peer *, struct bgp_attr *);

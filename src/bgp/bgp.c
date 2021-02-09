@@ -82,9 +82,11 @@ void bgp_daemon_wrapper()
   send_to_pool(bgp_pool, skinny_bgp_daemon, NULL);
 }
 
-void skinny_bgp_daemon()
+int skinny_bgp_daemon()
 {
   skinny_bgp_daemon_online();
+
+  return SUCCESS;
 }
 
 void skinny_bgp_daemon_online()
@@ -97,6 +99,7 @@ void skinny_bgp_daemon_online()
   struct plugin_requests req;
   struct host_addr addr;
   struct bgp_peer *peer;
+  struct bgp_peer_buf *peer_buf;
   char bgp_reply_pkt[BGP_BUFFER_SIZE], *bgp_reply_pkt_ptr;
   char bgp_peer_str[INET6_ADDRSTRLEN], bgp_xconnect_peer_str[BGP_XCONNECT_STRLEN];
   struct sockaddr_storage server, client;
@@ -181,6 +184,7 @@ void skinny_bgp_daemon_online()
 
   if (config.bgp_xconnect_map) {
     int bgp_xcs_allocated = FALSE;
+    int bgp_xcs_size = config.maps_entries ? config.maps_entries : MAX_PRETAG_MAP_ENTRIES;
 
     if (config.acct_type != ACCT_PMBGP) {
       Log(LOG_ERR, "ERROR ( %s/%s ): bgp_daemon_xconnect_map feature not supported for this daemon. Exiting ...\n", config.name, config.type);
@@ -191,14 +195,15 @@ void skinny_bgp_daemon_online()
     memset(&req, 0, sizeof(req));
 
     /* Setting up the pool */
-    bgp_xcs_map.pool = malloc((config.bgp_daemon_max_peers + 1) * sizeof(struct bgp_xconnect));
+    bgp_xcs_map.pool = malloc(bgp_xcs_size * sizeof(struct bgp_xconnect));
     if (!bgp_xcs_map.pool) {
       Log(LOG_ERR, "ERROR ( %s/%s ): unable to allocate BGP xconnect pool. Exiting ...\n", config.name, config.type);
       exit_gracefully(1);
     }
-    else memset(bgp_xcs_map.pool, 0, (config.bgp_daemon_max_peers + 1) * sizeof(struct bgp_xconnect));
+    else memset(bgp_xcs_map.pool, 0, bgp_xcs_size * sizeof(struct bgp_xconnect));
 
     req.key_value_table = (void *) &bgp_xcs_map;
+    req.map_entries = bgp_xcs_size;
     load_id_file(MAP_BGP_XCS, config.bgp_xconnect_map, NULL, &req, &bgp_xcs_allocated);
   }
   else {
@@ -313,6 +318,9 @@ void skinny_bgp_daemon_online()
       exit_gracefully(1);
     }
   }
+
+  setsockopt(config.bgp_sock, SOL_SOCKET, SO_KEEPALIVE, (void *)&yes, sizeof(yes));
+
   if (config.bgp_daemon_ipprec) {
     int opt = config.bgp_daemon_ipprec << 5;
 
@@ -767,8 +775,11 @@ void skinny_bgp_daemon_online()
 
       if (!peer) {
 	/* We briefly accept the new connection to be able to drop it */
-        Log(LOG_ERR, "ERROR ( %s/%s ): Insufficient number of BGP peers has been configured by 'bgp_daemon_max_peers' (%d).\n",
+	if (!log_notification_isset(&log_notifications.bgp_peers_limit, now)) {
+	  log_notification_set(&log_notifications.bgp_peers_limit, now, FALSE);
+          Log(LOG_WARNING, "WARN ( %s/%s ): Insufficient number of BGP peers has been configured by 'bgp_daemon_max_peers' (%d).\n",
 			config.name, bgp_misc_db->log_str, config.bgp_daemon_max_peers);
+	}
 
 	close(fd);
 	goto read_data;
@@ -875,24 +886,25 @@ void skinny_bgp_daemon_online()
        FvD: To avoid starvation of the "later established" peers, we
        offset the start of the search in a round-robin style.
     */
-    for (peer = NULL, peers_idx = 0; peers_idx < max_peers_idx; peers_idx++) {
+    for (peer = NULL, peer_buf = NULL, peers_idx = 0; peers_idx < max_peers_idx; peers_idx++) {
       int loc_idx = (peers_idx + peers_idx_rr) % max_peers_idx;
       recv_fd = 0; send_fd = 0;
 
       if (peers[loc_idx].fd && FD_ISSET(peers[loc_idx].fd, &read_descs)) {
         peer = &peers[loc_idx];
+	peer_buf = &peer->buf;
 	recv_fd = peer->fd;
 	if (config.bgp_xconnect_map) send_fd = peer->xconnect_fd;
         peers_idx_rr = (peers_idx_rr + 1) % max_peers_idx;
 	break;
       }
       
-      // XXX: verify round-robin fairness holding up
       if (config.bgp_xconnect_map) {
         loc_idx = (peers_idx + peers_xconnect_idx_rr) % max_peers_idx;
 
 	if (peers[loc_idx].xconnect_fd && FD_ISSET(peers[loc_idx].xconnect_fd, &read_descs)) {
 	  peer = &peers[loc_idx];
+	  peer_buf = &peer->xbuf;
 	  recv_fd = peer->xconnect_fd;
 	  send_fd = peer->fd;
 	  peers_xconnect_idx_rr = (peers_xconnect_idx_rr + 1) % max_peers_idx;
@@ -903,14 +915,14 @@ void skinny_bgp_daemon_online()
 
     if (!peer) goto select_again;
 
-    if (!peer->buf.exp_len) {
-      ret = recv(recv_fd, &peer->buf.base[peer->buf.cur_len], (BGP_HEADER_SIZE - peer->buf.cur_len), 0);
+    if (!peer_buf->exp_len) {
+      ret = recv(recv_fd, &peer_buf->base[peer_buf->cur_len], (BGP_HEADER_SIZE - peer_buf->cur_len), 0);
 
       if (ret > 0) {
-	peer->buf.cur_len += ret;
+	peer_buf->cur_len += ret;
 
-	if (peer->buf.cur_len == BGP_HEADER_SIZE) {
-	  struct bgp_header *bhdr = (struct bgp_header *) peer->buf.base;
+	if (peer_buf->cur_len == BGP_HEADER_SIZE) {
+	  struct bgp_header *bhdr = (struct bgp_header *) peer_buf->base;
 
 	  if (bgp_marker_check(bhdr, BGP_MARKER_SIZE) == ERR) {
 	    bgp_peer_print(peer, bgp_peer_str, INET6_ADDRSTRLEN);
@@ -918,18 +930,18 @@ void skinny_bgp_daemon_online()
 		config.name, bgp_misc_db->log_str, bgp_peer_str);
 
 	    peer->msglen = 0;
-	    peer->buf.cur_len = 0;
-	    peer->buf.exp_len = 0;
+	    peer_buf->cur_len = 0;
+	    peer_buf->exp_len = 0;
 	    ret = ERR;
 	  }
 	  else {
-	    peer->buf.exp_len = ntohs(bhdr->bgpo_len);
+	    peer_buf->exp_len = ntohs(bhdr->bgpo_len);
 
 	    /* commit */
-	    if (peer->buf.cur_len == peer->buf.exp_len) {
-	      peer->msglen = peer->buf.exp_len;
-	      peer->buf.cur_len = 0;
-	      peer->buf.exp_len = 0;
+	    if (peer_buf->cur_len == peer_buf->exp_len) {
+	      peer->msglen = peer_buf->exp_len;
+	      peer_buf->cur_len = 0;
+	      peer_buf->exp_len = 0;
 	    }
 	  }
 	}
@@ -939,17 +951,17 @@ void skinny_bgp_daemon_online()
       }
     }
 
-    if (peer->buf.exp_len) {
-      ret = recv(recv_fd, &peer->buf.base[peer->buf.cur_len], (peer->buf.exp_len - peer->buf.cur_len), 0);
+    if (peer_buf->exp_len) {
+      ret = recv(recv_fd, &peer_buf->base[peer_buf->cur_len], (peer_buf->exp_len - peer_buf->cur_len), 0);
 
       if (ret > 0) {
-	peer->buf.cur_len += ret;
+	peer_buf->cur_len += ret;
 
 	/* commit */
-        if (peer->buf.cur_len == peer->buf.exp_len) {
-	  peer->msglen = peer->buf.exp_len;
-	  peer->buf.cur_len = 0;
-	  peer->buf.exp_len = 0;
+        if (peer_buf->cur_len == peer_buf->exp_len) {
+	  peer->msglen = peer_buf->exp_len;
+	  peer_buf->cur_len = 0;
+	  peer_buf->exp_len = 0;
 	}
 	else {
 	  goto select_again;
@@ -1006,7 +1018,7 @@ void skinny_bgp_daemon_online()
 	}
       }
       else {
-	ret = send(send_fd, peer->buf.base, peer->msglen, 0);
+	ret = send(send_fd, peer_buf->base, peer->msglen, 0);
 	if (ret <= 0) {
 	  bgp_peer_xconnect_print(peer, bgp_xconnect_peer_str, BGP_XCONNECT_STRLEN);
 

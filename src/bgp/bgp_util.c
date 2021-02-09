@@ -204,11 +204,11 @@ int bgp_label2str(char *str, u_char *label)
   return TRUE;
 }
 
-/* Allocate bgp_info_extra */
-struct bgp_info_extra *bgp_info_extra_new(struct bgp_info *ri)
+/* Allocate bgp_attr_extra */
+struct bgp_attr_extra *bgp_attr_extra_new(struct bgp_info *ri)
 {
   struct bgp_misc_structs *bms;
-  struct bgp_info_extra *new;
+  struct bgp_attr_extra *new;
 
   if (!ri || !ri->peer) return NULL;
 
@@ -216,17 +216,17 @@ struct bgp_info_extra *bgp_info_extra_new(struct bgp_info *ri)
 
   if (!bms) return NULL;
 
-  new = malloc(sizeof(struct bgp_info_extra));
+  new = malloc(sizeof(struct bgp_attr_extra));
   if (!new) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (bgp_info_extra_new). Exiting ..\n", config.name, bms->log_str);
+    Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (bgp_attr_extra_new). Exiting ..\n", config.name, bms->log_str);
     exit_gracefully(1);
   }
-  else memset(new, 0, sizeof (struct bgp_info_extra));
+  else memset(new, 0, sizeof (struct bgp_attr_extra));
 
   return new;
 }
 
-void bgp_info_extra_free(struct bgp_peer *peer, struct bgp_info_extra **extra)
+void bgp_attr_extra_free(struct bgp_peer *peer, struct bgp_attr_extra **attr_extra)
 {
   struct bgp_misc_structs *bms;
 
@@ -234,42 +234,72 @@ void bgp_info_extra_free(struct bgp_peer *peer, struct bgp_info_extra **extra)
 
   if (!bms) return;
 
-  if (extra && *extra) {
-    if ((*extra)->bmed.id && bms->bgp_extra_data_free) (*bms->bgp_extra_data_free)(&(*extra)->bmed);
-
-    free(*extra);
-    *extra = NULL;
+  if (attr_extra && (*attr_extra)) {
+    free(*attr_extra);
+    *attr_extra = NULL;
   }
 }
 
 /* Get bgp_info extra information for the given bgp_info */
-struct bgp_info_extra *bgp_info_extra_get(struct bgp_info *ri)
+struct bgp_attr_extra *bgp_attr_extra_get(struct bgp_info *ri)
 {
-  if (!ri->extra)
-    ri->extra = bgp_info_extra_new(ri);
+  if (!ri->attr_extra) {
+    ri->attr_extra = bgp_attr_extra_new(ri);
+  }
 
-  return ri->extra;
+  return ri->attr_extra;
 }
 
-struct bgp_info_extra *bgp_info_extra_process(struct bgp_peer *peer, struct bgp_info *ri, safi_t safi,
-		  			      path_id_t *path_id, rd_t *rd, u_char *label)
+struct bgp_attr_extra *bgp_attr_extra_process(struct bgp_peer *peer, struct bgp_info *ri, afi_t afi, safi_t safi, struct bgp_attr_extra *attr_extra)
 {
-  struct bgp_info_extra *rie = NULL;
+  struct bgp_attr_extra *rie = NULL;
 
   /* Install/update MPLS stuff if required */
   if (safi == SAFI_MPLS_LABEL || safi == SAFI_MPLS_VPN) {
-    if (!rie) rie = bgp_info_extra_get(ri);
+    if (!rie) {
+      rie = bgp_attr_extra_get(ri);
+    }
 
     if (rie) {
-      if (safi == SAFI_MPLS_VPN) memcpy(&rie->rd, rd, sizeof(rd_t));
-      memcpy(&rie->label, label, 3);
+      if (safi == SAFI_MPLS_VPN) {
+	memcpy(&rie->rd, &attr_extra->rd, sizeof(rd_t));
+      }
+
+      memcpy(&rie->label, &attr_extra->label, 3);
     }
   }
 
   /* Install/update BGP ADD-PATHs stuff if required */
-  if (peer->cap_add_paths && path_id && *path_id) {
-    if (!rie) rie = bgp_info_extra_get(ri);
-    if (rie) memcpy(&rie->path_id, path_id, sizeof(path_id_t));
+  if (peer->cap_add_paths[afi][safi]) {
+    if (!rie) {
+      rie = bgp_attr_extra_get(ri);
+    }
+
+    if (rie) {
+      rie->path_id = attr_extra->path_id;
+    }
+  }
+
+  /* AIGP attribute */
+  if (attr_extra->aigp) {
+    if (!rie) {
+      rie = bgp_attr_extra_get(ri);
+    }
+
+    if (rie) {
+      rie->aigp = attr_extra->aigp;
+    }
+  }
+
+  /* Prefix-SID attribute */
+  if (attr_extra->psid_li) {
+    if (!rie) {
+      rie = bgp_attr_extra_get(ri);
+    }
+
+    if (rie) {
+      rie->psid_li = attr_extra->psid_li;
+    }
   }
 
   return rie;
@@ -315,25 +345,32 @@ void bgp_info_add(struct bgp_peer *peer, struct bgp_node *rn, struct bgp_info *r
 
 void bgp_info_delete(struct bgp_peer *peer, struct bgp_node *rn, struct bgp_info *ri, u_int32_t modulo)
 {
-  if (ri->next)
-    ri->next->prev = ri->prev;
-  if (ri->prev)
-    ri->prev->next = ri->next;
-  else
-    rn->info[modulo] = ri->next;
+  struct bgp_misc_structs *bms;
 
-  bgp_info_free(peer, ri);
+  bms = bgp_select_misc_db(peer->type);
+
+  if (ri->next) {
+    ri->next->prev = ri->prev;
+  }
+  if (ri->prev) {
+    ri->prev->next = ri->next;
+  }
+  else {
+    rn->info[modulo] = ri->next;
+  }
+
+  bgp_info_free(peer, ri, bms->bgp_extra_data_free);
 
   bgp_unlock_node(peer, rn);
 }
 
 /* Free bgp route information. */
-void bgp_info_free(struct bgp_peer *peer, struct bgp_info *ri)
+void bgp_info_free(struct bgp_peer *peer, struct bgp_info *ri, void (*bgp_extra_data_free)(struct bgp_msg_extra_data *))
 {
-  if (ri->attr)
-    bgp_attr_unintern(peer, ri->attr);
+  if (ri->attr) bgp_attr_unintern(peer, ri->attr);
 
-  bgp_info_extra_free(peer, &ri->extra);
+  bgp_attr_extra_free(peer, &ri->attr_extra);
+  if (bgp_extra_data_free) (*bgp_extra_data_free)(&ri->bmed);
 
   ri->peer->lock--;
   free(ri);
@@ -611,6 +648,19 @@ int bgp_peer_init(struct bgp_peer *peer, int type)
     ret = FALSE;
   }
 
+  if (config.bgp_xconnect_map) {
+    peer->xbuf.tot_len = BGP_BUFFER_SIZE;
+    peer->xbuf.base = malloc(peer->xbuf.tot_len);
+    if (!peer->xbuf.base) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (bgp_peer_init). Exiting ..\n", config.name, bms->log_str);
+      exit_gracefully(1);
+    }
+    else {
+      memset(peer->xbuf.base, 0, peer->xbuf.tot_len);
+      ret = FALSE;
+    }
+  }
+
   return ret;
 }
 
@@ -663,9 +713,17 @@ void bgp_peer_close(struct bgp_peer *peer, int type, int no_quiet, int send_noti
   memset(&peer->addr_str, 0, sizeof(peer->addr_str));
 
   free(peer->buf.base);
+  if (config.bgp_xconnect_map) {
+    free(peer->xbuf.base);
+  }
 
-  if (bms->neighbors_file)
+  if (bms->neighbors_file) {
     write_neighbors_file(bms->neighbors_file, peer->type);
+  }
+
+  if (bms->peers_limit_log) {
+    log_notification_unset(bms->peers_limit_log);
+  }
 }
 
 int bgp_peer_xconnect_init(struct bgp_peer *peer, int type)
@@ -704,6 +762,7 @@ int bgp_peer_xconnect_init(struct bgp_peer *peer, int type)
 	if (ret == ERR) {
 	  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] bgp_peer_xconnect_init(): connect() failed.\n", config.name, bms->log_str, xconnect_str);
 	  memset(&peer->xc, 0, sizeof(peer->xc));
+	  close(fd);
 	  peer->xconnect_fd = 0;
 	  return ERR;
 	}
@@ -715,7 +774,7 @@ int bgp_peer_xconnect_init(struct bgp_peer *peer, int type)
 
     if (!peer->xconnect_fd) {
       bgp_peer_print(peer, peer_str, INET6_ADDRSTRLEN);
-      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] unable to xconnect BGP peer.\n", config.name, bgp_misc_db->log_str, peer_str);
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] unable to xconnect BGP peer. Missing entry in bgp_daemon_xconnect_map.\n", config.name, bgp_misc_db->log_str, peer_str);
     }
   }
 
@@ -1380,6 +1439,7 @@ void bgp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->peers = peers;
   bms->peers_cache = peers_cache;
   bms->peers_port_cache = peers_port_cache;
+  bms->peers_limit_log = &log_notifications.bgp_peers_limit;
   bms->xconnects = &bgp_xcs_map;
   bms->neighbors_file = config.bgp_daemon_neighbors_file; 
   bms->dump_file = config.bgp_table_dump_file; 

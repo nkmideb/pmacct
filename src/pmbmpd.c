@@ -32,9 +32,6 @@
 #include "classifier.h"
 #include "net_aggr.h"
 
-/* global var */
-struct channels_list_entry channels_list[MAX_N_PLUGINS]; /* communication channels: core <-> plugins */
-
 /* Functions */
 void usage_daemon(char *prog_name)
 {
@@ -95,6 +92,7 @@ int main(int argc,char **argv, char **envp)
 
   log_notifications_init(&log_notifications);
   config.acct_type = ACCT_PMBMP;
+  config.progname = pmbmpd_globstr;
 
   find_id_func = NULL;
   plugins_list = NULL;
@@ -200,6 +198,7 @@ int main(int argc,char **argv, char **envp)
   list = plugins_list;
   while (list) {
     list->cfg.acct_type = ACCT_PMBMP;
+    list->cfg.progname = pmbmpd_globstr;
     set_default_preferences(&list->cfg);
     if (!strcmp(list->type.string, "core")) {
       memcpy(&config, &list->cfg, sizeof(struct configuration));
@@ -212,6 +211,7 @@ int main(int argc,char **argv, char **envp)
   if (config.files_umask) umask(config.files_umask);
 
   initsetproctitle(argc, argv, envp);
+
   if (config.syslog) {
     logf = parse_log_facility(config.syslog);
     if (logf == ERR) {

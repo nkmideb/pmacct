@@ -1,10 +1,45 @@
-SUBDIRS = nfprobe_plugin sfprobe_plugin bgp tee_plugin isis bmp telemetry rpki filters
+SUBDIRS =
+
+if WITH_EXTERNAL_DEPS
+SUBDIRS += external_libs
+endif
+
+SUBDIRS += nfprobe_plugin sfprobe_plugin bgp tee_plugin isis bmp telemetry rpki filters
 sbin_PROGRAMS =
 bin_PROGRAMS =
 EXTRA_PROGRAMS =
 
-AM_LDFLAGS = @GEOIP_LIBS@ @GEOIPV2_LIBS@ @JANSSON_LIBS@ @AVRO_LIBS@
+AM_LDFLAGS = @GEOIP_LIBS@ @GEOIPV2_LIBS@
+if WITH_JANSSON
+AM_LDFLAGS += @JANSSON_LIBS@
+endif
+if WITH_AVRO
+AM_LDFLAGS += @AVRO_LIBS@
+endif
+
 AM_CFLAGS = $(PMACCT_CFLAGS)
+
+#Build string autogen
+BUILT_SOURCES = pmacct-build.h_h
+.PHONY = pmacct-build.h
+
+pmacct-build.h_h:
+	@if [ ! -f ".pmacct-build.h" ] || [ "`cat .pmacct-build.h`" != "`git rev-parse HEAD 2> /dev/null`" ]; then \
+		echo "#ifndef PMACCT_BUILD_STR" > pmacct-build.h; \
+		echo "#define PMACCT_BUILD_STR" >> pmacct-build.h; \
+		if [ "x`git rev-parse --is-inside-work-tree 2> /dev/null`" == "xtrue" ]; then \
+			echo "`git rev-parse HEAD`" > .pmacct-build.h; \
+			BUILD_DATE="`git log -1 --date=short --pretty=format:%ad | tr -d "-"`"; \
+			BUILD_AUX="`git log -1 --date=short --pretty=format:%ad`";\
+			BUILD_COMMITS="`git log --date=short --pretty=format:%ad | sort | uniq -c | grep $$BUILD_AUX | awk '{print $$1}'`"; \
+			BUILD_COMMITS="$$(($$BUILD_COMMITS - 1))"; \
+			BUILD_HASH_SHORT="`git rev-parse --short HEAD`"; \
+			echo "#define PMACCT_BUILD \"$$BUILD_DATE-$$BUILD_COMMITS ($$BUILD_HASH_SHORT)\"" >> pmacct-build.h; \
+		else \
+			echo "#define PMACCT_BUILD \"RELEASE\"" >> pmacct-build.h; \
+		fi;\
+		echo "#endif" >> pmacct-build.h; \
+	fi
 
 noinst_LTLIBRARIES = libdaemons.la libcommon.la
 libcommon_la_SOURCES = strlcpy.c addr.c
@@ -103,7 +138,10 @@ libdaemons_la_SOURCES += redis_common.c
 libdaemons_la_LIBADD  += @REDIS_LIBS@
 libdaemons_la_CFLAGS  += @REDIS_CFLAGS@
 endif
-
+if WITH_GNUTLS
+libdaemons_la_LIBADD  += @GNUTLS_LIBS@
+libdaemons_la_CFLAGS  += @GNUTLS_CFLAGS@
+endif
 
 if USING_TRAFFIC_BINS
 sbin_PROGRAMS += pmacctd nfacctd sfacctd

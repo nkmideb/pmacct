@@ -1,1 +1,4 @@
-#define PMACCT_BUILD	"20200510-00"
+#ifndef PMACCT_BUILD_STR
+#define PMACCT_BUILD_STR
+#define PMACCT_BUILD "RELEASE"
+#endif
