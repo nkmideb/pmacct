@@ -63,7 +63,9 @@
 #define BGP_ATTR_AS4_PATH                       17
 #define BGP_ATTR_AS4_AGGREGATOR                 18
 #define BGP_ATTR_AS_PATHLIMIT                   21
+#define BGP_ATTR_AIGP				26
 #define BGP_ATTR_LARGE_COMMUNITIES		32 /* rfc8092 */
+#define BGP_ATTR_PREFIX_SID			40
 
 #define BGP_NLRI_UNDEFINED			0
 #define BGP_NLRI_UPDATE				1
@@ -103,6 +105,9 @@
 #define BGP_ORIGIN_INCOMPLETE	2
 #define BGP_ORIGIN_MAX		2
 #define BGP_ORIGIN_UNKNOWN	3
+
+#define BGP_PREFIX_SID_LI_TLV		1
+#define BGP_PREFIX_SID_OSRGB_TLV	2
 
 /* structures */
 struct bgp_dump_event {
@@ -183,7 +188,7 @@ struct bgp_peer {
   u_int16_t tcp_port;
   u_int8_t cap_mp;
   char *cap_4as;
-  u_int8_t cap_add_paths;
+  u_int8_t cap_add_paths[AFI_MAX][SAFI_MAX];
   u_int32_t msglen;
   struct bgp_peer_stats stats;
   struct bgp_peer_buf buf;
@@ -196,7 +201,9 @@ struct bgp_peer {
   void *bmp_se;
 
   struct bgp_xconnect xc;
+  struct bgp_peer_buf xbuf;
   int xconnect_fd;
+  int parsed_proxy_header;
 };
 
 struct bgp_msg_data {
@@ -231,6 +238,7 @@ struct bgp_misc_structs {
   int max_peers;
   void *peers_cache;
   void *peers_port_cache;
+  struct log_notification *peers_limit_log;
   void *xconnects;
 
   char *neighbors_file;
@@ -254,11 +262,11 @@ struct bgp_misc_structs {
 #endif
   char *msglog_kafka_avro_schema_registry;
   char *avro_buf;
-  void (*bgp_peer_log_msg_extras)(struct bgp_peer *, int, void *);
+  void (*bgp_peer_log_msg_extras)(struct bgp_peer *, int, int, int, void *);
   void (*bgp_peer_logdump_initclose_extras)(struct bgp_peer *, int, void *);
 
   void (*bgp_peer_logdump_extra_data)(struct bgp_msg_extra_data *, int, void *);
-  int (*bgp_extra_data_process)(struct bgp_msg_extra_data *, struct bgp_info *);
+  int (*bgp_extra_data_process)(struct bgp_msg_extra_data *, struct bgp_info *, int, int);
   int (*bgp_extra_data_cmp)(struct bgp_msg_extra_data *, struct bgp_msg_extra_data *);
   void (*bgp_extra_data_free)(struct bgp_msg_extra_data *);
 
@@ -361,7 +369,7 @@ struct bgp_lg_rep_gp_data {
 
 /* prototypes */
 extern void bgp_daemon_wrapper();
-extern void skinny_bgp_daemon();
+extern int skinny_bgp_daemon();
 extern void skinny_bgp_daemon_online();
 extern void bgp_prepare_thread();
 extern void bgp_prepare_daemon();

@@ -1,12 +1,16 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl configuration file for pmacct 
 
-AC_INIT([pmacct], [1.7.5-git], [paolo@pmacct.net])
+m4_include([VERSION]) #Force reconf on VERSION change
+AC_INIT([pmacct], m4_esyscmd_s(cat VERSION), [paolo@pmacct.net])
 AM_INIT_AUTOMAKE([foreign])
 AC_CONFIG_MACRO_DIR([m4])
 LT_INIT
 AC_PREFIX_DEFAULT([/usr/local])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES(yes)])
+
+PMACCT_VERSION=`cat $srcdir/VERSION`
+AC_SUBST(PMACCT_VERSION)
 
 COMPILE_ARGS="${ac_configure_args}"
 
@@ -106,48 +110,6 @@ AC_MSG_CHECKING(for __progname)
 AC_TRY_LINK([ extern char *__progname; ], 
 [ __progname = "test"; ],
 [AC_MSG_RESULT(yes); AC_DEFINE(PROGNAME, 1)], [AC_MSG_RESULT(no)])
-
-dnl
-dnl Some checks to understand whether we need to instruct the linker for
-dnl exporting collector symbols to dynamically loaded classifiers. 
-dnl
-dnl OS'es with ELF executables using the GNU linker (Linux and recent *BSD,
-dnl in rare cases Solaris) typically need '-Wl,-export-dynamic'; some SYSv4
-dnl systems instead need '-Wl,-Bexport'; AIX 4.x wants -Wl,-bexpall,-brtl'.
-dnl
-      
-AC_MSG_CHECKING(for extra flags needed to export symbols)
-if test "x$ac_cv_prog_gcc" = xyes ; then
-	save_ldflags="${LDFLAGS}"
-	LDFLAGS="-Wl,--export-dynamic ${save_ldflags}"
-	AC_TRY_LINK(,,
-		[ AC_MSG_RESULT(--export-dynamic) ],
-		[ LDFLAGS="-Wl,-Bexport ${save_ldflags}"
-		  AC_TRY_LINK(,,
-			[ AC_MSG_RESULT(-Bexport) ],
-		  	[ AC_MSG_RESULT(none)
-		    	  LDFLAGS="${save_ldflags}" ]
-		  )
-		]
-	)
-else
-	AC_MSG_RESULT(none)
-fi
-
-dnl
-dnl some C compilers (ex. MipsPRO) don't know how to parse the 'inline' keyword
-dnl
-AC_MSG_CHECKING(for static inline)
-AC_TRY_COMPILE([#include <stdio.h>]
-
-static inline func()
-{
-}
-,
-[
-  func();
-],
-[AC_MSG_RESULT(yes)], [AC_MSG_RESULT(no); AC_DEFINE(NOINLINE, 1)])
 
 dnl
 dnl Check for architecture endianess: big | little 
@@ -265,21 +227,6 @@ if test x"$ac_cv_func_inet_ntop" = x"no"; then
 	AC_MSG_ERROR(ERROR: missing inet_ntop())
 fi
 
-AC_MSG_CHECKING([whether to enable IP prefix labels])
-AC_ARG_ENABLE(plabel,
-  [  --enable-plabel                  Enable IP prefix labels (default: no)],
-  [
-	if test x$enableval = x"yes" ; then
-          AC_MSG_RESULT(yes)
-          AC_DEFINE(ENABLE_PLABEL, 1)
-	else
-          AC_MSG_RESULT(no)
-	fi
-  ],
-  [
-	AC_MSG_RESULT(no)
-  ])
-
 AC_ARG_WITH(pcap-includes,
   [  --with-pcap-includes=DIR         Search the specified directory for header files],
   [
@@ -294,9 +241,23 @@ if test x"$PCAPINCLS" != x""; then
   if test -r $PCAPINCLS/pcap.h; then 
     AC_MSG_RESULT(ok)
     AC_DEFINE(HAVE_PCAP_H, 1)
+    PCAPINCLUDESFOUND=1
   else
     AC_MSG_RESULT(no)
     AC_MSG_ERROR(ERROR: missing pcap.h in $PCAPINCLS) 
+  fi
+fi
+
+AC_CHECK_PROG([PCAP_CONFIG], [pcap-config], [pcap-config], [no])
+
+if test x"$PCAPINCLUDESFOUND" = x""; then
+  if test ${PCAP_CONFIG} = "pcap-config"; then
+    AC_MSG_CHECKING([using pcap-config for pcap.h])
+    PCAP_CONFIG_INCLUDES=`${PCAP_CONFIG} --cflags`
+    INCLUDES="${INCLUDES} ${PCAP_CONFIG_INCLUDES}"
+    AC_DEFINE(HAVE_PCAP_PCAP_H, 1)
+    AC_MSG_RESULT([${PCAP_CONFIG_INCLUDES}])
+    PCAPINCLUDESFOUND=1
   fi
 fi
 
@@ -376,6 +337,16 @@ if test x"$PCAPLIBFOUND" = x""; then
   fi
 fi
 
+if test x"$PCAPLIBFOUND" = x""; then
+  if test ${PCAP_CONFIG} = "pcap-config"; then
+    AC_MSG_CHECKING([using pcap-config for libpcap])
+    PCAP_CONFIG_LIBS=`${PCAP_CONFIG} --libs`
+    INCLUDES="${INCLUDES} ${PCAP_CONFIG_LIBS}"
+    AC_MSG_RESULT([${PCAP_CONFIG_LIBS}])
+    PCAPLIBFOUND=1
+  fi
+fi
+
 dnl Checks for libraries.
 
 dnl libpcap is checked only if PF_RING is not found
@@ -386,10 +357,9 @@ if test x"$PFRING_LIB_FOUND" = x""; then
 
   AC_CHECK_LIB([pcap], [pcap_set_protocol], [ AC_DEFINE(PCAP_SET_PROTOCOL, 1) ], [])
 else
-  dnl Unable to test: we should check for these libs
-  #AC_CHECK_LIB([numa], [numa_bind], [], [AC_MSG_ERROR([
-  #  ERROR: missing libnuma devel. Requirement for building PF_RING.
-  #])])
+  AC_CHECK_LIB([numa], [numa_bind], [], [AC_MSG_ERROR([
+    ERROR: missing libnuma. Requirement for building PF_RING.
+  ])])
 
   #AC_CHECK_LIB([rt], [clock_gettime], [], [AC_MSG_ERROR([
   #  ERROR: missing librt devel. Requirement for building PF_RING.
@@ -400,43 +370,6 @@ fi
 
 AC_CHECK_LIB([pcap], [pcap_setdirection], [ AC_DEFINE(PCAP_SET_DIRECTION, 1) ], [])
 
-dnl packet capture type check; taken from libpcap.
-AC_MSG_CHECKING(packet capture type)
-if test -r /dev/bpf0 ; then
-        V_PCAP=bpf
-elif test -r /usr/include/net/pfilt.h ; then
-        V_PCAP=pf
-elif test -r /dev/enet ; then
-        V_PCAP=enet
-elif test -r /dev/nit ; then
-        V_PCAP=snit
-elif test -r /usr/include/sys/net/nit.h ; then
-        V_PCAP=nit
-elif test -r /usr/include/linux/socket.h ; then
-        V_PCAP=linux
-elif test -r /usr/include/net/raw.h ; then
-        V_PCAP=snoop
-elif test -r /usr/include/odmi.h ; then
-        #
-        # On AIX, the BPF devices might not yet be present - they're
-        # created the first time libpcap runs after booting.
-        # We check for odmi.h instead.
-        #
-        V_PCAP=bpf
-elif test -r /usr/include/sys/dlpi.h ; then
-        V_PCAP=dlpi
-elif test -c /dev/bpf0 ; then           # check again in case not readable
-        V_PCAP=bpf
-elif test -c /dev/enet ; then           # check again in case not readable
-        V_PCAP=enet
-elif test -c /dev/nit ; then            # check again in case not readable
-        V_PCAP=snit
-else
-        V_PCAP=null
-fi
-AC_MSG_RESULT($V_PCAP)
-AC_DEFINE_UNQUOTED(PCAP_TYPE_$V_PCAP, 1)
-
 dnl start: mysql handling
 AC_MSG_CHECKING(whether to enable MySQL support)
 AC_ARG_ENABLE(mysql,
@@ -445,16 +378,15 @@ AC_ARG_ENABLE(mysql,
   yes)
     AC_MSG_RESULT(yes)
 
-dnl Unfortunately, no pkg-config support for MySQL
+    dnl no pkg-config support for MySQL
     AC_CHECK_PROG([MYSQL_CONFIG], [mysql_config], [mysql_config], [no])
     if test "x${MYSQL_CONFIG}" = "xno"; then
       AC_MSG_ERROR([ERROR: missing mysql_config program])
     fi
-    AC_CHECK_LIB([mysqlclient], [mysql_init],
-                 [MYSQL_CFLAGS=`$MYSQL_CONFIG --cflags`
-                  MYSQL_LIBS=`$MYSQL_CONFIG --libs`],
-                 [AC_MSG_ERROR([ERROR: missing MySQL client library])],
-                 [`$MYSQL_CONFIG --libs`])
+
+    MYSQL_CFLAGS=`$MYSQL_CONFIG --cflags`
+    MYSQL_LIBS=`$MYSQL_CONFIG --libs`
+
     dnl version check not enforced with a AC_MSG_ERROR for now
     AX_LIB_MYSQL(5.6.3)
 
@@ -474,6 +406,10 @@ dnl Unfortunately, no pkg-config support for MySQL
     CFLAGS="$CFLAGS $MYSQL_CFLAGS"
     AC_CHECK_HEADERS([mysql.h mysql/mysql.h])
     CFLAGS="$_save_CFLAGS"
+
+    AC_CHECK_LIB([numa], [numa_bind], [], [AC_MSG_ERROR([
+      ERROR: missing libnuma. Requirement for building MySQL.
+    ])])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -748,6 +684,38 @@ AC_ARG_ENABLE(redis,
 )
 dnl finish: Redis handling
 
+dnl start: GnuTLS handling
+AC_MSG_CHECKING(whether to enable GnuTLS support)
+AC_ARG_ENABLE(gnutls,
+  [  --enable-gnutls                  Enable GnuTLS support (default: no)],
+  [ case "$enableval" in
+  yes)
+    AC_MSG_RESULT(yes)
+    PKG_CHECK_MODULES([GNUTLS], [gnutls >= 3.6], [
+      SUPPORTS="${SUPPORTS} gnutls"
+      USING_GNUTLS="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $GNUTLS_CFLAGS"
+      AC_DEFINE(WITH_GNUTLS, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $GNUTLS_LIBS"
+      AC_CHECK_LIB([gnutls], [gnutls_global_init])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $GNUTLS_CFLAGS"
+      AC_CHECK_HEADER([gnutls/gnutls.h])
+      CFLAGS="$_save_CFLAGS"
+    ])
+    ;;
+  no)
+    AC_MSG_RESULT(no)
+    ;;
+  esac ],
+  [
+    AC_MSG_RESULT(no)
+  ]
+)
+dnl finish: GnuTLS handling
+
 dnl start: geoip handling
 AC_MSG_CHECKING(whether to enable GeoIP support)
 AC_ARG_ENABLE(geoip,
@@ -983,15 +951,14 @@ LIBS="${LIBS} -lm -lpthread"
 
 dnl Checks for header files.
 AC_HEADER_STDC
-AC_HEADER_SYS_WAIT
-AC_CHECK_HEADERS([getopt.h sys/select.h sys/time.h])
 
 dnl Extra checks for header files
-AC_CHECK_HEADERS([arpa/inet.h assert.h ctype.h dirent.h dlfcn.h errno.h fcntl.h grp.h inttypes.h])
-AC_CHECK_HEADERS([limits.h malloc.h netdb.h net/if.h netinet/in.h netinet/in_systm.h netinet/ip.h])
+AC_CHECK_HEADERS([arpa/inet.h assert.h ctype.h dirent.h dlfcn.h errno.h fcntl.h getopt.h grp.h inttypes.h])
+AC_CHECK_HEADERS([limits.h malloc.h math.h netdb.h net/if.h netinet/in.h netinet/in_systm.h netinet/ip.h])
 AC_CHECK_HEADERS([netinet/udp.h pthread.h pwd.h signal.h string.h sys/ansi.h sys/errno.h sys/file.h])
 AC_CHECK_HEADERS([sys/ioctl.h syslog.h sys/mbuf.h sys/mman.h sys/param.h sys/poll.h sys/resource.h])
-AC_CHECK_HEADERS([sys/socket.h sys/stat.h sys/types.h sys/un.h sys/utsname.h time.h math.h])
+AC_CHECK_HEADERS([sys/select.h sys/socket.h sys/stat.h sys/time.h sys/types.h sys/un.h sys/utsname.h])
+AC_CHECK_HEADERS([sys/wait.h time.h unistd.h])
 
 dnl Checks for typedefs, structures, and compiler characteristics.
 AC_CHECK_TYPE(u_int64_t, [AC_DEFINE(HAVE_U_INT64_T, 1)])
@@ -1106,7 +1073,7 @@ AC_TYPE_SIGNAL
 
 AC_CHECK_FUNCS([setproctitle mallopt tdestroy])
 
-dnl Check for SO_REUSEPORT
+dnl Check for SO_REUSEPORT & friends
 AC_CHECK_DECL([SO_REUSEPORT],
 	AC_DEFINE(HAVE_SO_REUSEPORT, 1, [Check if kernel supports SO_REUSEPORT]),,
 		[
@@ -1114,6 +1081,68 @@ AC_CHECK_DECL([SO_REUSEPORT],
 		  #include <sys/socket.h>
 		]
 )
+
+AC_CHECK_DECL([SO_ATTACH_REUSEPORT_CBPF],
+	AC_DEFINE(HAVE_SO_ATTACH_REUSEPORT_CBPF, 1, [Check if kernel supports SO_ATTACH_REUSEPORT_CBPF]),,
+		[
+		  #include <sys/types.h>
+		  #include <sys/socket.h>
+		]
+)
+
+AC_CHECK_DECL([SO_ATTACH_REUSEPORT_EBPF],
+	AC_DEFINE(HAVE_SO_ATTACH_REUSEPORT_EBPF, 1, [Check if kernel supports SO_ATTACH_REUSEPORT_EBPF]),,
+		[
+		  #include <sys/types.h>
+		  #include <sys/socket.h>
+		]
+)
+
+dnl --------------------------------------
+dnl Git submodule Dependencies buid system
+dnl --------------------------------------
+
+dnl First check whether to build git submodule deps
+WITH_EXTERNAL_DEPS_DEFAULT=yes
+if [ test ! -f "$srcdir/src/external_libs/libcdada/include/cdada.h" ] && [ test -z `git rev-parse HEAD 2> /dev/null` ]; then
+	WITH_EXTERNAL_DEPS_DEFAULT=no
+fi
+
+AC_MSG_CHECKING([whether external dependencies (git submodules) should be compiled])
+AC_ARG_WITH(external-deps,
+		AS_HELP_STRING([--without-external-deps], ["Don't build external dependencies (git submodules). Specially useful for package maintainers [default=with]"]),
+			[WITH_EXTERNAL_DEPS="$withval"],
+			[WITH_EXTERNAL_DEPS="$WITH_EXTERNAL_DEPS_DEFAULT"]
+			)
+if test x"$WITH_EXTERNAL_DEPS" = x"yes"; then
+	dnl Compiled-in dependencies
+	INCLUDES="-I${ac_pwd}/src/external_libs/rootfs/include ${INCLUDES} "
+	LDFLAGS="-L${ac_pwd}/src/external_libs/rootfs/lib ${LDFLAGS}"
+	AC_MSG_RESULT(yes)
+else
+	AC_MSG_RESULT(no)
+fi
+
+AM_CONDITIONAL([WITH_EXTERNAL_DEPS], [test "x$WITH_EXTERNAL_DEPS" = "xyes"])
+AS_CASE(["$AM_DEFAULT_VERBOSITY"],
+  [0], [AC_SUBST([configure_silent_rules_val], [--enable-silent-rules])],
+  [1], [AC_SUBST([configure_silent_rules_val], [--disable-silent-rules])],
+  [AC_SUBST([configure_silent_rules_val], [--enable-silent-rules])])
+
+dnl --------------------------------------
+
+dnl libcdada requires C++ (and needs to add libstdc++ to LDFLAGS
+AC_PROG_CXX
+AC_MSG_CHECKING([for a valid C++ compiler])
+AC_LANG_PUSH([C++])
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([],[])],[AC_MSG_RESULT(yes)],[AC_MSG_ERROR([No C++ compiler found])])
+AC_LANG_POP([C++])
+
+LIBS="-lcdada -lstdc++ ${LIBS}"
+AS_CASE(["$WITH_EXTERNAL_DEPS"],
+  [yes], [],
+  [no], [AC_CHECK_LIB([cdada], [cdada_get_ver], [], [AC_MSG_ERROR([Could not find libcdada])])],
+  [])
 
 dnl set debug level
 AC_MSG_CHECKING([whether to enable debugging compiler options])
@@ -1134,6 +1163,9 @@ AC_ARG_ENABLE(debug,
 		AC_MSG_RESULT(no)
 	]
 )
+
+dnl Necessary for autogenerated build string
+INCLUDES="${INCLUDES} -I$(pwd)/src"
 
 dnl final checks
 dnl trivial solution to portability issue 
@@ -1174,18 +1206,26 @@ AM_CONDITIONAL([WITH_RABBITMQ], [test x"$USING_RABBITMQ" = x"yes"])
 AM_CONDITIONAL([WITH_ZMQ], [test x"$USING_ZMQ" = x"yes"])
 AM_CONDITIONAL([WITH_KAFKA], [test x"$USING_KAFKA" = x"yes"])
 AM_CONDITIONAL([WITH_REDIS], [test x"$USING_REDIS" = x"yes"])
+AM_CONDITIONAL([WITH_GNUTLS], [test x"$USING_GNUTLS" = x"yes"])
 AM_CONDITIONAL([USING_SQL], [test x"$USING_SQL" = x"yes"])
 AM_CONDITIONAL([WITH_JANSSON], [test x"$USING_JANSSON" = x"yes"])
 AM_CONDITIONAL([WITH_AVRO], [test x"$USING_AVRO" = x"yes"])
 AM_CONDITIONAL([WITH_SERDES], [test x"$USING_SERDES" = x"yes"])
 AM_CONDITIONAL([WITH_NDPI], [test x"$USING_NDPI" = x"yes"])
 AM_CONDITIONAL([WITH_NFLOG], [test x"$USING_NFLOG" = x"yes"])
+AM_CONDITIONAL([WITH_DLOPEN], [test x"$USING_DLOPEN" = x"yes"])
 AM_CONDITIONAL([USING_TRAFFIC_BINS], [test x"$USING_TRAFFIC_BINS" = x"yes"])
 AM_CONDITIONAL([USING_BGP_BINS], [test x"$USING_BGP_BINS" = x"yes"])
 AM_CONDITIONAL([USING_BMP_BINS], [test x"$USING_BMP_BINS" = x"yes"])
 AM_CONDITIONAL([USING_ST_BINS], [test x"$USING_ST_BINS" = x"yes"])
+
+AC_CONFIG_FILES([
+	    src/pmacct-version.h
+])
+
 AC_OUTPUT([ Makefile \
-	    src/Makefile src/nfprobe_plugin/Makefile \
+	    src/Makefile src/external_libs/Makefile \
+	    src/nfprobe_plugin/Makefile \
 	    src/sfprobe_plugin/Makefile src/bgp/Makefile \
 	    src/tee_plugin/Makefile src/isis/Makefile \
 	    src/bmp/Makefile src/rpki/Makefile \

@@ -616,7 +616,7 @@ int PT_map_sample_type_handler(char *filename, struct id_entry *e, char *value, 
   }
   else if (acct_type == ACCT_NF) {
     if (!strncmp(value, "flow", strlen("flow")))
-      e->key.sample_type.n = NF9_FTYPE_TRAFFIC;
+      e->key.sample_type.n = PM_FTYPE_TRAFFIC;
     else if (!strncmp(value, "event", strlen("event")))
       e->key.sample_type.n = NF9_FTYPE_EVENT;
     else if (!strncmp(value, "option", strlen("option")))
@@ -726,7 +726,8 @@ int PT_map_src_as_handler(char *filename, struct id_entry *e, char *value, struc
 
   if (have_bgp) return FALSE;
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_as' requires either 'networks_file' or 'nf|sfacctd_as: false' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_as' requires either 'networks_file' or '%s_as: false' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -775,7 +776,8 @@ int PT_map_dst_as_handler(char *filename, struct id_entry *e, char *value, struc
 
   if (have_bgp) return FALSE;
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'dst_as' requires either 'networks_file' or 'nf|sfacctd_as: false' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'dst_as' requires either 'networks_file' or '%s_as: false' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -804,7 +806,8 @@ int PT_map_peer_src_as_handler(char *filename, struct id_entry *e, char *value, 
     return FALSE;
   }
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'peer_src_as' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'peer_src_as' requires '%s_as_new: [ bgp | longest ]' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -833,7 +836,8 @@ int PT_map_peer_dst_as_handler(char *filename, struct id_entry *e, char *value, 
     return FALSE;
   } 
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'peer_dst_as' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'peer_dst_as' requires '%s_as_new: [ bgp | longest ]' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -862,7 +866,8 @@ int PT_map_src_local_pref_handler(char *filename, struct id_entry *e, char *valu
     return FALSE;
   }
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_local_pref' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_local_pref' requires '%s_as_new: [ bgp | longest ]' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -891,7 +896,8 @@ int PT_map_local_pref_handler(char *filename, struct id_entry *e, char *value, s
     return FALSE;
   }
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'local_pref' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'local_pref' requires '%s_as_new: [ bgp | longest ]' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -916,7 +922,8 @@ int PT_map_src_roa_handler(char *filename, struct id_entry *e, char *value, stru
     return FALSE;
   }
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_roa' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_roa' requires '%s_as_new: [ bgp | longest ]' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -941,7 +948,8 @@ int PT_map_dst_roa_handler(char *filename, struct id_entry *e, char *value, stru
     return FALSE;
   }
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'dst_roa' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'dst_roa' requires '%s_as_new: [ bgp | longest ]' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -979,7 +987,8 @@ int PT_map_src_comms_handler(char *filename, struct id_entry *e, char *value, st
     return FALSE;
   }
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_comms' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'src_comms' requires '%s_as_new: [ bgp | longest ]' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -1017,7 +1026,8 @@ int PT_map_comms_handler(char *filename, struct id_entry *e, char *value, struct
     return FALSE;
   }
 
-  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'comms' requires '[nf|sf]acctd_as_new: [ bgp | longest ]' to be specified.\n", config.name, config.type, filename);
+  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'comms' requires '%s_as_new: [ bgp | longest ]' to be specified.\n",
+      config.name, config.type, filename, config.progname);
 
   return TRUE;
 }
@@ -1917,8 +1927,8 @@ int pretag_sample_type_handler(struct packet_ptrs *pptrs, void *unused, void *e)
   struct id_entry *entry = e;
   u_int8_t flow_type = pptrs->flow_type;
 
-  if (flow_type >= NF9_FTYPE_TRAFFIC && flow_type <= NF9_FTYPE_TRAFFIC_MAX) {
-    flow_type = NF9_FTYPE_TRAFFIC;
+  if (flow_type >= PM_FTYPE_TRAFFIC && flow_type <= PM_FTYPE_TRAFFIC_MAX) {
+    flow_type = PM_FTYPE_TRAFFIC;
   }
 
   if (entry->key.sample_type.n == flow_type) return (FALSE | entry->key.sample_type.neg); 
@@ -1980,8 +1990,8 @@ int pretag_mpls_vpn_rd_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 
   if (dst_ret) {
     info = (struct bgp_info *) pptrs->bgp_dst_info;
-    if (info && info->extra) {
-      ret = memcmp(&entry->key.mpls_vpn_rd.rd, &info->extra->rd, sizeof(rd_t)); 
+    if (info && info->attr_extra) {
+      ret = memcmp(&entry->key.mpls_vpn_rd.rd, &info->attr_extra->rd, sizeof(rd_t)); 
     }
   }
 
@@ -3581,7 +3591,7 @@ int PT_map_index_fdata_mpls_vpn_rd_handler(struct id_entry *e, pm_hash_serial_t 
 
     if (dst_ret) {
       info = (struct bgp_info *) pptrs->bgp_dst_info;
-      if (info && info->extra) memcpy(&e->key.mpls_vpn_rd.rd, &info->extra->rd, sizeof(rd_t));
+      if (info && info->attr_extra) memcpy(&e->key.mpls_vpn_rd.rd, &info->attr_extra->rd, sizeof(rd_t));
     }
   }
 

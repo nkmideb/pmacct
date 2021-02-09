@@ -348,10 +348,6 @@ void p_kafka_apply_topic_config(struct p_kafka_host *kafka_host)
 
 void p_kafka_logger(const rd_kafka_t *rk, int level, const char *fac, const char *buf)
 {
-  struct timeval tv;
-
-  gettimeofday(&tv, NULL);
-
   Log(LOG_DEBUG, "DEBUG ( %s/%s ): RDKAFKA-%i-%s: %s: %s\n", config.name, config.type, level, fac, rd_kafka_name(rk), buf);
 }
 
@@ -366,11 +362,11 @@ void p_kafka_msg_delivered(rd_kafka_t *rk, void *payload, size_t len, int error_
     if (config.debug) {
       if (p_kafka_get_content_type(kafka_host) == PM_KAFKA_CNT_TYPE_STR) {
         char *payload_str = (char *) payload;
-	char saved = payload_str[len];
+	char saved = payload_str[len - 1];
 
-	payload_str[len] = '\0';
+	payload_str[len - 1] = '\0';
         Log(LOG_DEBUG, "DEBUG ( %s/%s ): Kafka message delivery successful (%zd bytes): %p\n", config.name, config.type, len, payload);
-	payload_str[len] = saved;
+	payload_str[len - 1] = saved;
       }
       else {
 	size_t base64_data_len = 0;
@@ -586,7 +582,7 @@ int p_kafka_check_outq_len(struct p_kafka_host *kafka_host)
       if (outq_len == old_outq_len) {
 	if (retries < PM_KAFKA_OUTQ_LEN_RETRIES) retries++;
 	else {
-	  Log(LOG_ERR, "ERROR ( %s/%s ): Connection failed to Kafka: p_kafka_check_outq_len()\n", config.name, config.type);
+	  Log(LOG_ERR, "ERROR ( %s/%s ): Connection failed to Kafka: p_kafka_check_outq_len() (%u)\n", config.name, config.type, outq_len);
           p_kafka_close(kafka_host, TRUE);
 	  return outq_len; 
 	}
