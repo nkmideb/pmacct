@@ -1,3 +1,12 @@
+pmacct (1.7.6-2) unstable; urgency=medium
+
+  * QA upload.
+  * [6349554] Update Vcs-* URLs so people know where the sources are
+  * [808e1ac] Remove build dependency on obsolete dh-systemd.
+    Thanks to Adrian Bunk <bunk@debian.org> (Closes: #958597)
+
+ -- Chris Hofstaedtler <zeha@debian.org>  Tue, 16 Feb 2021 22:52:12 +0000
+
 pmacct (1.7.6-1) unstable; urgency=medium
 
   * [ebf2e47] New upstream version 1.7.6
