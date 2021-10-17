@@ -58,4 +58,4 @@ override_dh_installsystemd:
 	dh_installsystemd --name uacctd --no-enable
 
 %:
-	dh $@ --with autoreconf
+	dh $@
