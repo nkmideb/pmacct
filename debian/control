@@ -2,13 +2,13 @@ Source: pmacct
 Section: net
 Priority: optional
 Maintainer: Debian QA Group <packages@qa.debian.org>
-Build-Depends: debhelper (>= 9.20160709),
+Build-Depends: debhelper (>= 13~),
  zlib1g-dev,
  libpcap-dev,
  libpq-dev,
  default-libmysqlclient-dev,
  libsqlite3-dev,
- kfreebsd-kernel-headers[kfreebsd-any],
+ kfreebsd-kernel-headers [kfreebsd-any],
  librabbitmq-dev,
  libjansson-dev,
  librdkafka-dev,

@@ -45,17 +45,17 @@ override_dh_installinit:
 	dh_installinit --name sfacctd --no-start
 	dh_installinit --name uacctd --no-start
 
-override_dh_systemd_start:
-	dh_systemd_start --name pmacctd --no-start
-	dh_systemd_start --name nfacctd --no-start
-	dh_systemd_start --name sfacctd --no-start
-	dh_systemd_start --name uacctd --no-start
+override_dh_installsystemd:
+	dh_installsystemd --name pmacctd --no-start
+	dh_installsystemd --name nfacctd --no-start
+	dh_installsystemd --name sfacctd --no-start
+	dh_installsystemd --name uacctd --no-start
 
-override_dh_systemd_enable:
-	dh_systemd_enable --name pmacctd --no-enable
-	dh_systemd_enable --name nfacctd --no-enable
-	dh_systemd_enable --name sfacctd --no-enable
-	dh_systemd_enable --name uacctd --no-enable
+override_dh_installsystemd:
+	dh_installsystemd --name pmacctd --no-enable
+	dh_installsystemd --name nfacctd --no-enable
+	dh_installsystemd --name sfacctd --no-enable
+	dh_installsystemd --name uacctd --no-enable
 
 %:
-	dh $@ --with systemd,autoreconf
+	dh $@ --with autoreconf
