@@ -1,5 +1,7 @@
 pmacct (1.7.6-3) UNRELEASED; urgency=medium
 
+  * QA upload.
+
   [ Debian Janitor ]
   * Trim trailing whitespace.
   * Drop use of autotools-dev debhelper.
