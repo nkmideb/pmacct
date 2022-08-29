@@ -1,3 +1,14 @@
+pmacct (1.7.6-3) UNRELEASED; urgency=medium
+
+  [ Debian Janitor ]
+  * Trim trailing whitespace.
+  * Drop use of autotools-dev debhelper.
+  * Bump debhelper from deprecated 9 to 13. + Use dh_installsystemd rather than deprecated dh_systemd_enable. + Use dh_installsystemd rather than deprecated dh_systemd_start.
+  * Set debhelper-compat version in Build-Depends.
+  * Drop unnecessary dependency on dh-autoreconf.
+
+ -- Jelmer Vernooĳ <jelmer@debian.org>  Mon, 29 Aug 2022 22:08:38 +0100
+
 pmacct (1.7.6-2) unstable; urgency=medium
 
   * QA upload.
