@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -38,6 +38,7 @@ extern int PT_map_agent_id_handler(char *, struct id_entry *, char *, struct plu
 extern int PT_map_flowset_id_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_fwdstatus_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_sample_type_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
+extern int PT_map_is_bi_flow_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_direction_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_nat_event_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_src_as_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
@@ -58,6 +59,7 @@ extern int PT_map_vlan_id_handler(char *, struct id_entry *, char *, struct plug
 extern int PT_map_cvlan_id_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_src_net_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_dst_net_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
+extern int PT_map_is_multicast_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_set_tos_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_entry_label_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
 extern int PT_map_jeq_handler(char *, struct id_entry *, char *, struct plugin_requests *, int);
@@ -82,6 +84,9 @@ extern int PT_map_index_entries_src_mac_handler(struct id_entry *, pm_hash_seria
 extern int PT_map_index_entries_dst_mac_handler(struct id_entry *, pm_hash_serial_t *, void *); 
 extern int PT_map_index_entries_vlan_id_handler(struct id_entry *, pm_hash_serial_t *, void *); 
 extern int PT_map_index_entries_cvlan_id_handler(struct id_entry *, pm_hash_serial_t *, void *); 
+extern int PT_map_index_entries_src_net_handler(struct id_entry *, pm_hash_serial_t *, void *);
+extern int PT_map_index_entries_dst_net_handler(struct id_entry *, pm_hash_serial_t *, void *);
+extern int PT_map_index_entries_is_multicast_handler(struct id_entry *, pm_hash_serial_t *, void *);
 extern int PT_map_index_entries_fwdstatus_handler(struct id_entry *, pm_hash_serial_t *, void *); 
 extern int PT_map_index_fdata_ip_handler(struct id_entry *, pm_hash_serial_t *, void *); 
 extern int PT_map_index_fdata_input_handler(struct id_entry *, pm_hash_serial_t *, void *); 
@@ -99,6 +104,9 @@ extern int PT_map_index_fdata_src_mac_handler(struct id_entry *, pm_hash_serial_
 extern int PT_map_index_fdata_dst_mac_handler(struct id_entry *, pm_hash_serial_t *, void *); 
 extern int PT_map_index_fdata_vlan_id_handler(struct id_entry *, pm_hash_serial_t *, void *);
 extern int PT_map_index_fdata_cvlan_id_handler(struct id_entry *, pm_hash_serial_t *, void *);
+extern int PT_map_index_fdata_src_net_handler(struct id_entry *, pm_hash_serial_t *, void *);
+extern int PT_map_index_fdata_dst_net_handler(struct id_entry *, pm_hash_serial_t *, void *);
+extern int PT_map_index_fdata_is_multicast_handler(struct id_entry *, pm_hash_serial_t *, void *);
 extern int PT_map_index_fdata_fwdstatus_handler(struct id_entry *, pm_hash_serial_t *, void *);
 
 /* BPAS_*: bgp_peer_as_src map specific handlers */
@@ -147,6 +155,7 @@ extern int pretag_dst_roa_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_src_comms_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_comms_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_sample_type_handler(struct packet_ptrs *, void *, void *);
+extern int pretag_is_bi_flow_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_direction_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_nat_event_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_mpls_vpn_rd_handler(struct packet_ptrs *, void *, void *);
@@ -156,6 +165,7 @@ extern int pretag_dst_mac_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_vlan_id_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_src_net_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_dst_net_handler(struct packet_ptrs *, void *, void *);
+extern int pretag_is_multicast_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_forwarding_status_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_cvlan_id_handler(struct packet_ptrs *, void *, void *);
 extern int pretag_set_tos_handler(struct packet_ptrs *, void *, void *);
@@ -174,6 +184,7 @@ extern int SF_pretag_vlan_id_handler(struct packet_ptrs *, void *, void *);
 extern int SF_pretag_mpls_pw_id_handler(struct packet_ptrs *, void *, void *);
 extern int SF_pretag_src_net_handler(struct packet_ptrs *, void *, void *);
 extern int SF_pretag_dst_net_handler(struct packet_ptrs *, void *, void *);
+extern int SF_pretag_is_multicast_handler(struct packet_ptrs *, void *, void *);
 extern int SF_pretag_sample_type_handler(struct packet_ptrs *, void *, void *);
 extern int SF_pretag_direction_handler(struct packet_ptrs *, void *, void *);
 

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -366,7 +366,7 @@ int main(int argc,char **argv, char **envp)
       exit(0);
       break;
     case 'V':
-      version_daemon(SFACCTD_USAGE_HEADER);
+      version_daemon(config.acct_type, SFACCTD_USAGE_HEADER);
       exit(0);
       break;
     case 'a':
@@ -707,22 +707,20 @@ int main(int argc,char **argv, char **envp)
     }
 
     /* bind socket to port */
-#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
-    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
-    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT.\n", config.name);
-#else
+#if (defined HAVE_SO_REUSEPORT)
+    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEPORT.\n", config.name);
+#endif
+
     rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
-#endif
 
-#if (defined IPV6_BINDV6ONLY)
-    {
-      int no=0;
+    if (config.nfacctd_ipv6_only) {
+      int yes=1;
 
-      rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
-      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for IPV6_BINDV6ONLY.\n", config.name);
+      rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &yes, (socklen_t) sizeof(yes));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for IPV6_V6ONLY.\n", config.name);
     }
-#endif
 
     if (config.nfacctd_pipe_size) {
       socklen_t l = sizeof(config.nfacctd_pipe_size);
@@ -1064,7 +1062,7 @@ int main(int argc,char **argv, char **envp)
   // pptrs.vlanmpls6.pkthdr->caplen = 104; /* eth_header + vlan + upto 10 MPLS labels + ip6_hdr + pm_tlhdr */
   pptrs.vlanmpls6.pkthdr->caplen = 121;
   pptrs.vlanmpls6.pkthdr->len = 128; /* fake len */
-  pptrs.vlanmpls6.l3_proto = ETHERTYPE_IP;
+  pptrs.vlanmpls6.l3_proto = ETHERTYPE_IPV6;
 
   if (config.pcap_savefile) {
     Log(LOG_INFO, "INFO ( %s/core ): reading sFlow data from: %s\n", config.name, config.pcap_savefile);
@@ -1713,12 +1711,12 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
   */
   if (sample->gotIPV4 || sample->gotIPV6 || !sample->eth_type) {
     reset_net_status_v(pptrsv);
-    pptrs->flow_type = SF_evaluate_flow_type(pptrs);
+    pptrs->flow_type.traffic_type = SF_evaluate_flow_type(pptrs);
 
     if (config.classifier_ndpi || config.aggregate_primitives) sf_flow_sample_hdr_decode(sample);
 
     /* we need to understand the IP protocol version in order to build the fake packet */
-    switch (pptrs->flow_type) {
+    switch (pptrs->flow_type.traffic_type) {
     case PM_FTYPE_IPV4:
       if (req->bpf_filter) {
         reset_mac(pptrs);
@@ -1754,7 +1752,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(pptrs, req);
       break;
     case PM_FTYPE_IPV6:
-      pptrsv->v6.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->v6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         reset_mac(&pptrsv->v6);
@@ -1790,7 +1788,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->v6, req);
       break;
     case PM_FTYPE_VLAN_IPV4:
-      pptrsv->vlan4.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->vlan4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         reset_mac_vlan(&pptrsv->vlan4);
@@ -1827,7 +1825,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->vlan4, req);
       break;
     case PM_FTYPE_VLAN_IPV6:
-      pptrsv->vlan6.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->vlan6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         reset_mac_vlan(&pptrsv->vlan6);
@@ -1864,7 +1862,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->vlan6, req);
       break;
     case PM_FTYPE_MPLS_IPV4:
-      pptrsv->mpls4.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->mpls4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         u_char *ptr = pptrsv->mpls4.mpls_ptr;
@@ -1914,7 +1912,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->mpls4, req);
       break;
     case PM_FTYPE_MPLS_IPV6:
-      pptrsv->mpls6.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->mpls6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         u_char *ptr = pptrsv->mpls6.mpls_ptr;
@@ -1963,7 +1961,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->mpls6, req);
       break;
     case PM_FTYPE_VLAN_MPLS_IPV4:
-      pptrsv->vlanmpls4.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->vlanmpls4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         u_char *ptr = pptrsv->vlanmpls4.mpls_ptr;
@@ -2013,7 +2011,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->vlanmpls4, req);
       break;
     case PM_FTYPE_VLAN_MPLS_IPV6:
-      pptrsv->vlanmpls6.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->vlanmpls6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         u_char *ptr = pptrsv->vlanmpls6.mpls_ptr;
@@ -2141,12 +2139,13 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
 u_int8_t SF_evaluate_flow_type(struct packet_ptrs *pptrs)
 {
   SFSample *sample = (SFSample *)pptrs->f_data;
-  u_int8_t ret = PM_FTYPE_TRAFFIC;
+  u_int8_t ret = FALSE;
 
   if (sample->in_vlan || sample->out_vlan) ret += PM_FTYPE_VLAN;
   if (sample->lstk.depth > 0) ret += PM_FTYPE_MPLS;
-  if (sample->gotIPV4); 
-  else if (sample->gotIPV6) ret += PM_FTYPE_TRAFFIC_IPV6;
+
+  if (sample->gotIPV4) ret += PM_FTYPE_IPV4;
+  else if (sample->gotIPV6) ret += PM_FTYPE_IPV6;
 
   return ret;
 }

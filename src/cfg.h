@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -86,6 +86,7 @@ struct configuration {
   char *type;
   int type_id;
   int is_forked;
+  int propagate_signals;
   int pmacctd_nonroot;
   char *proc_name;
   int proc_priority;
@@ -194,6 +195,7 @@ struct configuration {
   char *print_latest_file;
   int nfacctd_port;
   char *nfacctd_ip;
+  int nfacctd_ipv6_only;
   char *nfacctd_kafka_broker_host;
   int nfacctd_kafka_broker_port;
   char *nfacctd_kafka_topic;
@@ -246,6 +248,10 @@ struct configuration {
   int telemetry_port_tcp;
   int telemetry_port_udp;
   char *telemetry_ip;
+  int telemetry_udp_notif_port;
+  char *telemetry_udp_notif_ip;
+  int telemetry_udp_notif_nmsgs;
+  int telemetry_ipv6_only;
   char *telemetry_zmq_address;
   char *telemetry_kafka_broker_host;
   int telemetry_kafka_broker_port;
@@ -287,6 +293,7 @@ struct configuration {
   int telemetry_dump_amqp_persistent_msg;
   u_int32_t telemetry_dump_amqp_frame_max;
   u_int32_t telemetry_dump_amqp_heartbeat_interval;
+  int telemetry_dump_workers;
   char *telemetry_msglog_kafka_broker_host;
   int telemetry_msglog_kafka_broker_port;
   char *telemetry_msglog_kafka_topic;
@@ -332,6 +339,7 @@ struct configuration {
   char *bgp_daemon_msglog_kafka_avro_schema_registry;
   char *bgp_daemon_id;
   char *bgp_daemon_ip;
+  int bgp_daemon_ipv6_only;
   as_t bgp_daemon_as;
   int bgp_daemon_port;
   int bgp_daemon_pipe_size;
@@ -395,6 +403,7 @@ struct configuration {
   int bgp_table_dump_kafka_broker_port;
   char *bgp_table_dump_kafka_config_file;
   char *bgp_table_dump_kafka_avro_schema_registry;
+  int bgp_table_dump_workers;
   int bgp_lg;
   char *bgp_lg_ip;
   int bgp_lg_port;
@@ -406,6 +415,7 @@ struct configuration {
   int bmp_sock;
   int bmp_daemon;
   char *bmp_daemon_ip;
+  int bmp_daemon_ipv6_only;
   int bmp_daemon_port;
   int bmp_daemon_pipe_size;
   int bmp_daemon_max_peers;
@@ -443,6 +453,7 @@ struct configuration {
   int bmp_table_attr_hash_buckets;
   int bmp_table_per_peer_hash;
   int bmp_dump_output;
+  int bmp_dump_workers;
   char *bmp_dump_file;
   char *bmp_dump_latest_file;
   char *bmp_dump_avro_schema_file;
@@ -583,11 +594,13 @@ struct configuration {
   int uacctd_threshold;
   char *tunnel0;
   int use_ip_next_hop;
-  int decode_arista_trailer;
+  int pcap_arista_trailer_offset;
+  int pcap_arista_trailer_flag_value;
   int dump_max_writers;
   int tmp_asa_bi_flow;
   int tmp_bgp_lookup_compare_ports;
   int tmp_bgp_daemon_route_refresh;
+  int tmp_bgp_daemon_origin_type_int;
   size_t thread_stack;
   char *rpki_roas_file;
   char *rpki_rtr_cache;

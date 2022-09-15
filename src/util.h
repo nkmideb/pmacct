@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -70,6 +70,7 @@ extern int check_bosbit(u_char *);
 extern u_int32_t decode_mpls_label(u_char *);
 extern void encode_mpls_label(char *, u_int32_t);
 extern int timeval_cmp(struct timeval *, struct timeval *);
+extern void signal_kittens(int, int);
 extern void exit_all(int);
 extern void exit_plugin(int);
 extern void exit_gracefully(int);
@@ -102,7 +103,7 @@ extern int load_labels(char *, struct pretag_label_filter *, char *);
 extern int evaluate_tags(struct pretag_filter *, pm_id_t);
 extern int evaluate_labels(struct pretag_label_filter *, pt_label_t *);
 extern char *write_sep(char *, int *);
-extern void version_daemon(char *);
+extern void version_daemon(int, char *);
 extern void set_truefalse_nonzero(int *);
 extern char *ip_proto_print(u_int8_t, char *, int);
 extern void parse_hostport(const char *, struct sockaddr *, socklen_t *);
@@ -194,4 +195,6 @@ extern int P_broker_timers_get_retry_interval(struct p_broker_timers *);
 extern time_t P_broker_timers_get_last_fail(struct p_broker_timers *);
 
 extern primptrs_func primptrs_funcs[PRIMPTRS_FUNCS_N];
+
+extern void distribute_work(struct pm_dump_runner *, u_int64_t, int, u_int64_t);
 #endif //UTIL_H

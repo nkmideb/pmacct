@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -57,6 +57,7 @@ struct p_kafka_host {
 
 #ifdef WITH_SERDES
   serdes_schema_t *sd_schema[MAX_AVRO_SCHEMA];
+  struct p_broker_timers sd_schema_timers;
 #endif
 
   struct p_broker_timers btimers;
@@ -113,13 +114,10 @@ extern int write_binary_kafka(void *, void *, size_t);
 /* global vars */
 extern struct p_kafka_host kafkap_kafka_host;
 extern struct p_kafka_host bgp_daemon_msglog_kafka_host;
-extern struct p_kafka_host bgp_table_dump_kafka_host;
 extern struct p_kafka_host bmp_daemon_msglog_kafka_host;
-extern struct p_kafka_host bmp_dump_kafka_host;
 extern struct p_kafka_host sfacctd_counter_kafka_host;
 extern struct p_kafka_host telemetry_kafka_host;
 extern struct p_kafka_host telemetry_daemon_msglog_kafka_host;
-extern struct p_kafka_host telemetry_dump_kafka_host;
 extern struct p_kafka_host nfacctd_kafka_host;
 
 extern int kafkap_ret_err_cb;

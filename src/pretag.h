@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -29,7 +29,6 @@
 #define MAX_PRETAG_MAP_ENTRIES 384 
 
 #define MAX_ID_TABLE_INDEXES 8
-#define ID_TABLE_INDEX_DEPTH 8
 #define ID_TABLE_INDEX_RESULTS (MAX_ID_TABLE_INDEXES * 8)
 
 #define PRETAG_IN_IFACE			0x0000000000000001ULL
@@ -72,6 +71,8 @@
 #define PRETAG_MPLS_PW_ID		0x0000002000000000ULL
 #define PRETAG_SRC_ROA			0x0000004000000000ULL
 #define PRETAG_DST_ROA			0x0000008000000000ULL
+#define PRETAG_IS_BI_FLOW		0x0000010000000000ULL
+#define PRETAG_IS_MULTICAST		0x0000020000000000ULL
 
 #define PRETAG_MAP_RCODE_ID		0x00000100
 #define PRETAG_MAP_RCODE_ID2		0x00000200
@@ -162,7 +163,8 @@ struct id_entry_key {
   pt_uint16_t flowset_id; /* applies to NetFlow v9/IPFIX flowset ID */
   pt_uint32_t agent_id; /* applies to sFlow agentSubId */
   pt_uint32_t sampling_rate; /* applies to sFlow sampling rate */
-  pt_uint32_t sample_type; /* applies to sFlow sample type */
+  pt_uint32_t sample_type; /* applies to NetFlow/IPFIX (inferred) & sFlow sample type */
+  pt_uint8_t is_bi_flow;
   pt_uint8_t direction;
   pt_uint8_t nat_event;
   pt_uint32_t src_as;
@@ -180,6 +182,7 @@ struct id_entry_key {
   pt_uint16_t cvlan_id;
   pt_netaddr_t src_net;
   pt_netaddr_t dst_net;
+  pt_uint8_t is_multicast;
   s_uint16_t lookup_bgp_port;
   char *src_comms[16]; /* XXX: MAX_BGP_COMM_PATTERNS = 16 */
   char *comms[16]; /* XXX: MAX_BGP_COMM_PATTERNS = 16 */
@@ -213,21 +216,13 @@ struct id_entry {
 
 typedef int (*pretag_copier)(struct id_entry *, pm_hash_serial_t *, void *);
 
-struct id_index_entry {
-  u_int16_t depth;
-  pm_hash_key_t hash_key[ID_TABLE_INDEX_DEPTH];
-  struct id_entry_key key[ID_TABLE_INDEX_DEPTH]; /* XXX: to be removed */
-  struct id_entry *result[ID_TABLE_INDEX_DEPTH];
-};
-
 struct id_table_index {
   pt_bitmap_t bitmap; 
   u_int32_t entries;
-  u_int32_t modulo;
   pretag_copier idt_handler[MAX_BITMAP_ENTRIES];
   pretag_copier fdata_handler[MAX_BITMAP_ENTRIES];
   pm_hash_serial_t hash_serializer;
-  struct id_index_entry *idx_t;
+  cdada_map_t *idx_map;
 };
 
 struct id_table {
@@ -253,6 +248,11 @@ struct _map_dictionary_line {
 struct _map_index_dictionary_line {
   pt_bitmap_t key;
   pretag_copier func;
+};
+
+struct _map_index_size_dictionary_line {
+  pt_bitmap_t key;
+  ssize_t size;
 };
 
 struct pretag_filter {
@@ -284,11 +284,11 @@ extern int pretag_index_insert_bitmap(struct id_table *, pt_bitmap_t);
 extern int pretag_index_set_handlers(struct id_table *);
 extern int pretag_index_allocate(struct id_table *);
 extern int pretag_index_fill(struct id_table *, pt_bitmap_t, struct id_entry *);
+extern void pretag_index_print_key(const cdada_map_t *, const void *, void *, void *);
 extern void pretag_index_report(struct id_table *);
 extern void pretag_index_destroy(struct id_table *);
 extern u_int32_t pretag_index_lookup(struct id_table *, struct packet_ptrs *, struct id_entry **, int);
 extern void pretag_index_results_sort(struct id_entry **, int);
-extern void pretag_index_results_compress(struct id_entry **, int);
 extern void pretag_index_results_compress_jeqs(struct id_entry **, int);
 extern int pretag_index_have_one(struct id_table *);
 

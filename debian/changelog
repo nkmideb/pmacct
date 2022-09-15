@@ -1,3 +1,9 @@
+pmacct (1.7.7-1) UNRELEASED; urgency=low
+
+  * New upstream release.
+
+ -- Debian Janitor <janitor@jelmer.uk>  Thu, 15 Sep 2022 00:59:22 -0000
+
 pmacct (1.7.6-3) unstable; urgency=medium
 
   * QA upload.

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -28,13 +28,10 @@
 
 struct p_kafka_host kafkap_kafka_host;
 struct p_kafka_host bgp_daemon_msglog_kafka_host;
-struct p_kafka_host bgp_table_dump_kafka_host;
 struct p_kafka_host bmp_daemon_msglog_kafka_host;
-struct p_kafka_host bmp_dump_kafka_host;
 struct p_kafka_host sfacctd_counter_kafka_host;
 struct p_kafka_host telemetry_kafka_host;
 struct p_kafka_host telemetry_daemon_msglog_kafka_host;
-struct p_kafka_host telemetry_dump_kafka_host;
 struct p_kafka_host nfacctd_kafka_host;
 
 int kafkap_ret_err_cb;
@@ -84,7 +81,7 @@ void p_kafka_unset_topic(struct p_kafka_host *kafka_host)
 
 void p_kafka_set_topic(struct p_kafka_host *kafka_host, char *topic)
 {
-  if (kafka_host) {
+  if (kafka_host && kafka_host->rk) {
     kafka_host->topic_cfg = rd_kafka_topic_conf_new();
     p_kafka_apply_topic_config(kafka_host);
 
@@ -107,7 +104,7 @@ void p_kafka_set_topic(struct p_kafka_host *kafka_host, char *topic)
     /* destroy current allocation before making a new one */
     if (kafka_host->topic) p_kafka_unset_topic(kafka_host);
 
-    if (kafka_host->rk && kafka_host->topic_cfg) {
+    if (kafka_host->topic_cfg) {
       kafka_host->topic = rd_kafka_topic_new(kafka_host->rk, topic, kafka_host->topic_cfg);
       kafka_host->topic_cfg = NULL; /* rd_kafka_topic_new() destroys conf as per rdkafka.h */
     }

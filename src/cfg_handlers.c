@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -164,6 +164,54 @@ int cfg_key_daemonize(char *filename, char *name, char *value_ptr)
   return changes;
 }
 
+int cfg_key_propagate_signals(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = parse_truefalse(value_ptr);
+  if (value < 0) return ERR;
+
+  for (; list; list = list->next, changes++) list->cfg.propagate_signals = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'propagate_signals'. Globalized.\n", filename); 
+
+  return changes;
+}
+
+int cfg_key_pcap_arista_trailer_offset(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = atoi(value_ptr);
+  if (value < 8) {
+    Log(LOG_ERR, "WARN: [%s] 'pcap_arista_trailer_offset' has to be >= 8.\n", filename);
+    return ERR;
+  }
+
+  for (; list; list = list->next, changes++) list->cfg.pcap_arista_trailer_offset = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'pcap_arista_trailer_offset'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_pcap_arista_trailer_flag_value(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = atoi(value_ptr);
+  if (value > 128) {
+    Log(LOG_ERR, "WARN: [%s] 'pcap_arista_trailer_flag_value' has to be < 128.\n", filename);
+    return ERR;
+  }
+
+  for (; list; list = list->next, changes++) list->cfg.pcap_arista_trailer_flag_value = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'pcap_arista_trailer_flag_value'. Globalized.\n", filename);
+
+  return changes;
+}
+
 int cfg_key_use_ip_next_hop(char *filename, char *name, char *value_ptr)
 {
   struct plugins_list_entry *list = plugins_list;
@@ -174,20 +222,6 @@ int cfg_key_use_ip_next_hop(char *filename, char *name, char *value_ptr)
 
   for (; list; list = list->next, changes++) list->cfg.use_ip_next_hop = value;
   if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'use_ip_next_hop'. Globalized.\n", filename);
-
-  return changes;
-}
-
-int cfg_key_decode_arista_trailer(char *filename, char *name, char *value_ptr)
-{
-  struct plugins_list_entry *list = plugins_list;
-  int value, changes = 0;
-
-  value = parse_truefalse(value_ptr);
-  if (value < 0) return ERR;
-
-  for (; list; list = list->next, changes++) list->cfg.decode_arista_trailer = value;
-  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'decode_arista_trailer'. Globalized.\n", filename);
 
   return changes;
 }
@@ -3134,6 +3168,20 @@ int cfg_key_nfacctd_ip(char *filename, char *name, char *value_ptr)
   return changes;
 }
 
+int cfg_key_nfacctd_ipv6_only(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = parse_truefalse(value_ptr);
+  if (value < 0) return ERR;
+
+  for (; list; list = list->next, changes++) list->cfg.nfacctd_ipv6_only = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key '%s_ipv6_only'. Globalized.\n", filename, config.progname);
+
+  return changes;
+}
+
 int cfg_key_nfacctd_kafka_broker_host(char *filename, char *name, char *value_ptr)
 {
   struct plugins_list_entry *list = plugins_list;
@@ -3821,6 +3869,20 @@ int cfg_key_bgp_daemon_ip(char *filename, char *name, char *value_ptr)
   return changes;
 }
 
+int cfg_key_bgp_daemon_ipv6_only(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = parse_truefalse(value_ptr);
+  if (value < 0) return ERR;
+
+  for (; list; list = list->next, changes++) list->cfg.bgp_daemon_ipv6_only = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'bgp_daemon_ipv6_only'. Globalized.\n", filename);
+
+  return changes;
+}
+
 int cfg_key_bgp_daemon_id(char *filename, char *name, char *value_ptr)
 {
   struct plugins_list_entry *list = plugins_list;
@@ -3860,6 +3922,23 @@ int cfg_key_bgp_daemon_port(char *filename, char *name, char *value_ptr)
 
   for (; list; list = list->next, changes++) list->cfg.bgp_daemon_port = value;
   if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'bgp_daemon_port'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_bgp_daemon_table_dump_workers(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = atoi(value_ptr);
+  if (value < 1) {
+    Log(LOG_ERR, "WARN: [%s] 'bgp_table_dump_workers' value has to be >= 1.\n", filename);
+    return ERR;
+  }
+
+  for (; list; list = list->next, changes++) list->cfg.bgp_table_dump_workers = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'bgp_table_dump_workers'. Globalized.\n", filename);
 
   return changes;
 }
@@ -4094,6 +4173,20 @@ int cfg_key_bmp_daemon_ip(char *filename, char *name, char *value_ptr)
 
   for (; list; list = list->next, changes++) list->cfg.bmp_daemon_ip = value_ptr;
   if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'bmp_daemon_ip'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_bmp_daemon_ipv6_only(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = parse_truefalse(value_ptr);
+  if (value < 0) return ERR;
+
+  for (; list; list = list->next, changes++) list->cfg.bmp_daemon_ipv6_only = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'bmp_daemon_ipv6_only'. Globalized.\n", filename);
 
   return changes;
 }
@@ -4568,6 +4661,23 @@ int cfg_key_bmp_daemon_dump_output(char *filename, char *name, char *value_ptr)
 
   for (; list; list = list->next, changes++) list->cfg.bmp_dump_output = value;
   if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'bmp_dump_output'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_bmp_daemon_dump_workers(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = atoi(value_ptr);
+  if (value < 1) {
+    Log(LOG_ERR, "WARN: [%s] 'bmp_dump_workers' value has to be >= 1.\n", filename);
+    return ERR;
+  }
+
+  for (; list; list = list->next, changes++) list->cfg.bmp_dump_workers = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'bmp_dump_workers'. Globalized.\n", filename);
 
   return changes;
 }
@@ -7332,6 +7442,20 @@ int cfg_key_tmp_bgp_daemon_route_refresh(char *filename, char *name, char *value
   return changes;
 }
 
+int cfg_key_tmp_bgp_daemon_origin_type_int(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = parse_truefalse(value_ptr);
+  if (value < 0) return ERR;
+
+  for (; list; list = list->next, changes++) list->cfg.tmp_bgp_daemon_origin_type_int = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'tmp_bgp_daemon_origin_type_int'. Globalized.\n", filename);
+
+  return changes;
+}
+
 int cfg_key_thread_stack(char *filename, char *name, char *value_ptr)
 {
   struct plugins_list_entry *list = plugins_list;
@@ -7404,6 +7528,61 @@ int cfg_key_telemetry_ip(char *filename, char *name, char *value_ptr)
 
   for (; list; list = list->next, changes++) list->cfg.telemetry_ip = value_ptr;
   if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'telemetry_daemon_ip'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_telemetry_udp_notif_port(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = atoi(value_ptr);
+  if ((value <= 0) || (value > 65535)) {
+    Log(LOG_ERR, "WARN: [%s] 'telemetry_daemon_udp_notif_port' has to be in the range 1-65535.\n", filename);
+    return ERR;
+  }
+
+  for (; list; list = list->next, changes++) list->cfg.telemetry_udp_notif_port = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'telemetry_daemon_udp_notif_port'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_telemetry_udp_notif_ip(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int changes = 0;
+
+  for (; list; list = list->next, changes++) list->cfg.telemetry_udp_notif_ip = value_ptr;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'telemetry_daemon_udp_notif_ip'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_telemetry_udp_notif_nmsgs(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = atoi(value_ptr);
+
+  for (; list; list = list->next, changes++) list->cfg.telemetry_udp_notif_nmsgs = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'telemetry_daemon_udp_notif_nmsgs'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_telemetry_ipv6_only(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = parse_truefalse(value_ptr);
+  if (value < 0) return ERR;
+
+  for (; list; list = list->next, changes++) list->cfg.telemetry_ipv6_only = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'telemetry_daemon_ipv6_only'. Globalized.\n", filename);
 
   return changes;
 }
@@ -7959,6 +8138,23 @@ int cfg_key_telemetry_dump_amqp_heartbeat_interval(char *filename, char *name, c
 
   for (; list; list = list->next, changes++) list->cfg.telemetry_dump_amqp_heartbeat_interval = value;
   if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'telemetry_dump_amqp_heartbeat_interval'. Globalized.\n", filename);
+
+  return changes;
+}
+
+int cfg_key_telemetry_dump_workers(char *filename, char *name, char *value_ptr)
+{
+  struct plugins_list_entry *list = plugins_list;
+  int value, changes = 0;
+
+  value = atoi(value_ptr);
+  if (value < 1) {
+    Log(LOG_ERR, "WARN: [%s] 'telemetry_dump_workers' value has to be >= 1.\n", filename);
+    return ERR;
+  }
+
+  for (; list; list = list->next, changes++) list->cfg.telemetry_dump_workers = value;
+  if (name) Log(LOG_WARNING, "WARN: [%s] plugin name not supported for key 'telemetry_dump_workers'. Globalized.\n", filename);
 
   return changes;
 }

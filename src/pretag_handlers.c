@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -39,7 +39,7 @@ int PT_map_id_handler(char *filename, struct id_entry *e, char *value, struct pl
   struct host_addr a;
   char *endptr = NULL, *incptr;
   pm_id_t j = 0, z = 0;
-  int x, inc = 0;
+  int x, inc = 0, len = 0;
 
   e->id = 0;
   e->flags = FALSE;
@@ -88,11 +88,19 @@ int PT_map_id_handler(char *filename, struct id_entry *e, char *value, struct pl
       *incptr = '\0';
     }
 
+    len = strlen(value);
+    for (x = 0; x < len; x++) {
+      if (!isdigit(value[x])) {
+	Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid set_tag/id specified (non-digit chars).\n", config.name, config.type, filename);
+	return TRUE;
+      }
+    }
+
     j = strtoull(value, &endptr, 10);
     if (j > UINT64_MAX) {
-      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid set_tag/id specified.\n", config.name, config.type, filename);
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid set_tag/id specified (too big).\n", config.name, config.type, filename);
       return TRUE;
-    } 
+    }
   }
 
   e->id = j; 
@@ -118,16 +126,24 @@ int PT_map_id2_handler(char *filename, struct id_entry *e, char *value, struct p
 {
   char *endptr = NULL, *incptr;
   pm_id_t j;
-  int x, inc = 0;
+  int x, inc = 0, len = 0;
 
   if ((incptr = strstr(value, "++"))) {
     inc = TRUE;
     *incptr = '\0';
   }
 
+  len = strlen(value);
+  for (x = 0; x < len; x++) {
+    if (!isdigit(value[x])) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid set_tag2/id2 specified (non-digit chars).\n", config.name, config.type, filename);
+      return TRUE;
+    }
+  }
+
   j = strtoull(value, &endptr, 10);
   if (j > UINT64_MAX) {
-    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid set_tag2/id2 specified.\n", config.name, config.type, filename);
+    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid set_tag2/id2 specified (too big).\n", config.name, config.type, filename);
     return TRUE;
   }
   e->id2 = j;
@@ -592,7 +608,7 @@ int PT_map_sample_type_handler(char *filename, struct id_entry *e, char *value, 
       case 0:
         tmp = atoi(token);
         if (tmp > 1048575) { // 2^20-1: 20 bit Enterprise value
-          Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid 'sample_type' value.\n", config.name, config.type, filename);
+          Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid sFlow 'sample_type' value.\n", config.name, config.type, filename);
           return TRUE;
         }
         e->key.sample_type.n = tmp;
@@ -601,13 +617,13 @@ int PT_map_sample_type_handler(char *filename, struct id_entry *e, char *value, 
       case 1:
         tmp = atoi(token);
         if (tmp > 4095) { // 2^12-1: 12 bit Format value
-          Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid 'sample_type' value.\n", config.name, config.type, filename);
+          Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid sFlow 'sample_type' value.\n", config.name, config.type, filename);
           return TRUE;
         }
         e->key.sample_type.n |= tmp;
         break;
       default:
-        Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid 'sample_type' value.\n", config.name, config.type, filename);
+        Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid sFlow 'sample_type' value.\n", config.name, config.type, filename);
         return TRUE;
       }
 
@@ -615,18 +631,36 @@ int PT_map_sample_type_handler(char *filename, struct id_entry *e, char *value, 
     }
   }
   else if (acct_type == ACCT_NF) {
-    if (!strncmp(value, "flow", strlen("flow")))
+    if (!strncmp(value, "flow-ipv4", strlen("flow-ipv4"))) {
+      e->key.sample_type.n = PM_FTYPE_IPV4;
+    }
+    else if (!strncmp(value, "flow-ipv6", strlen("flow-ipv6"))) {
+      e->key.sample_type.n = PM_FTYPE_IPV6;
+    }
+    else if (!strncmp(value, "flow", strlen("flow"))) {
       e->key.sample_type.n = PM_FTYPE_TRAFFIC;
-    else if (!strncmp(value, "event", strlen("event")))
+    }
+    else if (!strncmp(value, "flow-mpls-ipv4", strlen("flow-mpls-ipv4"))) {
+      e->key.sample_type.n = PM_FTYPE_MPLS_IPV4;
+    }
+    else if (!strncmp(value, "flow-mpls-ipv6", strlen("flow-mpls-ipv6"))) {
+      e->key.sample_type.n = PM_FTYPE_MPLS_IPV6;
+    }
+    else if (!strncmp(value, "event", strlen("event"))) {
       e->key.sample_type.n = NF9_FTYPE_EVENT;
-    else if (!strncmp(value, "option", strlen("option")))
+    }
+    else if (!strncmp(value, "option", strlen("option"))) {
       e->key.sample_type.n = NF9_FTYPE_OPTION;
+    }
     else {
-      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid 'sample_type' value.\n", config.name, config.type, filename);
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid NetFlow/IPFIX 'sample_type' value.\n", config.name, config.type, filename);
       return TRUE;
     }
   }
-  else return FALSE; /* silently ignore */
+  else {
+    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Invalid 'sample_type' value.\n", config.name, config.type, filename);
+    return TRUE;
+  }
 
   for (x = 0; e->func[x]; x++) {
     if (e->func_type[x] == PRETAG_SAMPLE_TYPE) {
@@ -638,6 +672,31 @@ int PT_map_sample_type_handler(char *filename, struct id_entry *e, char *value, 
   if (config.acct_type == ACCT_SF) e->func[x] = SF_pretag_sample_type_handler;
   else if (config.acct_type == ACCT_NF) e->func[x] = pretag_sample_type_handler;
   if (e->func[x]) e->func_type[x] = PRETAG_SAMPLE_TYPE;
+
+  return FALSE;
+}
+
+int PT_map_is_bi_flow_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
+{
+  int value_tf, x = 0;
+
+  e->key.is_bi_flow.neg = pt_check_neg(&value, &((struct id_table *) req->key_value_table)->flags);
+
+  value_tf = parse_truefalse(value);
+  if (value_tf < 0) {
+    return ERR;
+  }
+
+  e->key.is_bi_flow.n = value_tf;
+
+  for (x = 0; e->func[x]; x++) {
+    if (e->func_type[x] == PRETAG_IS_BI_FLOW) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Multiple 'is_bi_flow' clauses part of the same statement.\n", config.name, config.type, filename);
+      return TRUE;
+    }
+  }
+
+  if (config.acct_type == ACCT_NF) e->func[x] = pretag_is_bi_flow_handler;
 
   return FALSE;
 }
@@ -1238,6 +1297,33 @@ int PT_map_dst_net_handler(char *filename, struct id_entry *e, char *value, stru
   if (config.acct_type == ACCT_NF) e->func[x] = pretag_dst_net_handler;
   else if (config.acct_type == ACCT_SF) e->func[x] = SF_pretag_dst_net_handler;
   if (e->func[x]) e->func_type[x] = PRETAG_DST_NET;
+
+  return FALSE;
+}
+
+int PT_map_is_multicast_handler(char *filename, struct id_entry *e, char *value, struct plugin_requests *req, int acct_type)
+{
+  int value_tf, x = 0;
+
+  e->key.is_multicast.neg = pt_check_neg(&value, &((struct id_table *) req->key_value_table)->flags);
+
+  value_tf = parse_truefalse(value);
+  if (value_tf < 0) {
+    return ERR;
+  }
+
+  e->key.is_multicast.n = value_tf;
+
+  for (x = 0; e->func[x]; x++) {
+    if (e->func_type[x] == PRETAG_IS_MULTICAST) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Multiple 'is_multicast' clauses part of the same statement.\n", config.name, config.type, filename);
+      return TRUE;
+    }
+  }
+
+  if (config.acct_type == ACCT_NF) e->func[x] = pretag_is_multicast_handler;
+  else if (config.acct_type == ACCT_SF) e->func[x] = SF_pretag_is_multicast_handler;
+  if (e->func[x]) e->func_type[x] = PRETAG_IS_MULTICAST;
 
   return FALSE;
 }
@@ -1925,14 +2011,24 @@ int pretag_comms_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 int pretag_sample_type_handler(struct packet_ptrs *pptrs, void *unused, void *e)
 {
   struct id_entry *entry = e;
-  u_int8_t flow_type = pptrs->flow_type;
+  u_int8_t flow_type = pptrs->flow_type.traffic_type;
 
-  if (flow_type >= PM_FTYPE_TRAFFIC && flow_type <= PM_FTYPE_TRAFFIC_MAX) {
-    flow_type = PM_FTYPE_TRAFFIC;
+  if (entry->key.sample_type.n == PM_FTYPE_TRAFFIC) {
+    if (flow_type >= PM_FTYPE_TRAFFIC && flow_type <= PM_FTYPE_TRAFFIC_MAX) {
+      flow_type = PM_FTYPE_TRAFFIC;
+    }
   }
 
-  if (entry->key.sample_type.n == flow_type) return (FALSE | entry->key.sample_type.neg); 
+  if (entry->key.sample_type.n == flow_type) return (FALSE | entry->key.sample_type.neg);
   else return (TRUE ^ entry->key.sample_type.neg);
+}
+
+int pretag_is_bi_flow_handler(struct packet_ptrs *pptrs, void *unused, void *e)
+{
+  struct id_entry *entry = e;
+
+  if (entry->key.is_bi_flow.n == pptrs->flow_type.is_bi) return (FALSE | entry->key.is_bi_flow.neg);
+  else return (TRUE ^ entry->key.is_bi_flow.neg);
 }
 
 int pretag_direction_handler(struct packet_ptrs *pptrs, void *unused, void *e)
@@ -2173,6 +2269,34 @@ int pretag_dst_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
     return (FALSE | entry->key.dst_net.neg);
   else
     return (TRUE ^ entry->key.dst_net.neg);
+}
+
+int pretag_is_multicast_handler(struct packet_ptrs *pptrs, void *unused, void *e)
+{
+  struct id_entry *entry = e;
+  struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+  u_int8_t multicast = FALSE;
+
+  if (!pptrs->f_data) return TRUE;
+
+  switch (hdr->version) {
+  case 10:
+  case 9:
+    if (tpl->tpl[NF9_IN_DST_MAC].len) {
+      multicast = IS_MAC_MULTICAST(pptrs->f_data+tpl->tpl[NF9_IN_DST_MAC].off);
+    }
+    break;
+  default:
+    break; /* this field does not exist */
+  }
+
+  if ((entry->key.is_multicast.n && multicast) || (!entry->key.is_multicast.n && !multicast)) {
+    return (FALSE | entry->key.is_multicast.neg);
+  }
+  else {
+    return (TRUE ^ entry->key.is_multicast.neg);
+  }
 }
 
 int pretag_forwarding_status_handler(struct packet_ptrs *pptrs, void *unused, void *e)
@@ -2515,6 +2639,22 @@ int SF_pretag_dst_net_handler(struct packet_ptrs *pptrs, void *unused, void *e)
     return (FALSE | entry->key.dst_net.neg);
   else
     return (TRUE ^ entry->key.dst_net.neg);
+}
+
+int SF_pretag_is_multicast_handler(struct packet_ptrs *pptrs, void *unused, void *e)
+{
+  struct id_entry *entry = e;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+  u_int8_t multicast;
+
+  multicast = IS_MAC_MULTICAST(sample->eth_dst);
+
+  if ((entry->key.is_multicast.n && multicast) || (!entry->key.is_multicast.n && !multicast)) {
+    return (FALSE | entry->key.is_multicast.neg);
+  }
+  else {
+    return (TRUE ^ entry->key.is_multicast.neg);
+  }
 }
 
 int PM_pretag_src_as_handler(struct packet_ptrs *pptrs, void *unused, void *e)
@@ -3164,6 +3304,50 @@ int PT_map_index_entries_cvlan_id_handler(struct id_entry *e, pm_hash_serial_t *
   return FALSE;
 }
 
+int PT_map_index_entries_src_net_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
+{
+  struct id_entry *src_e = (struct id_entry *) src;
+
+  if (!e || !hash_serializer || !src_e) return TRUE;
+
+  if ((src_e->key.src_net.a.family == AF_INET && src_e->key.src_net.m.len == 32) ||
+      (src_e->key.src_net.a.family == AF_INET6 && src_e->key.src_net.m.len == 128)) {
+    memcpy(&e->key.src_net, &src_e->key.src_net, sizeof(pt_netaddr_t));
+    hash_serial_append(hash_serializer, (char *)&src_e->key.src_net.a, sizeof(struct host_addr), TRUE);
+  }
+  else return TRUE;
+
+  return FALSE;
+}
+
+int PT_map_index_entries_dst_net_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
+{
+  struct id_entry *src_e = (struct id_entry *) src;
+
+  if (!e || !hash_serializer || !src_e) return TRUE;
+
+  if ((src_e->key.dst_net.a.family == AF_INET && src_e->key.dst_net.m.len == 32) ||
+      (src_e->key.dst_net.a.family == AF_INET6 && src_e->key.dst_net.m.len == 128)) {
+    memcpy(&e->key.dst_net, &src_e->key.dst_net, sizeof(pt_netaddr_t));
+    hash_serial_append(hash_serializer, (char *)&src_e->key.dst_net.a, sizeof(struct host_addr), TRUE);
+  }
+  else return TRUE;
+
+  return FALSE;
+}
+
+int PT_map_index_entries_is_multicast_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
+{
+  struct id_entry *src_e = (struct id_entry *) src;
+
+  if (!e || !hash_serializer || !src_e) return TRUE;
+
+  memcpy(&e->key.is_multicast, &src_e->key.is_multicast, sizeof(u_int8_t));
+  hash_serial_append(hash_serializer, (char *)&src_e->key.is_multicast.n, sizeof(u_int8_t), TRUE);
+
+  return FALSE;
+}
+
 int PT_map_index_entries_fwdstatus_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
 {
   struct id_entry *src_e = (struct id_entry *) src;
@@ -3786,6 +3970,138 @@ int PT_map_index_fdata_cvlan_id_handler(struct id_entry *e, pm_hash_serial_t *ha
   else return TRUE;
 
   hash_serial_append(hash_serializer, (char *)&e->key.cvlan_id.n, sizeof(u_int16_t), FALSE);
+
+  return FALSE;
+}
+
+int PT_map_index_fdata_src_net_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
+{
+  struct packet_ptrs *pptrs = (struct packet_ptrs *) src;
+  struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+  SFLAddress *sf_addr = &sample->ipsrc;
+
+  if (config.acct_type == ACCT_NF) {
+    switch(hdr->version) {
+    case 10:
+    case 9:
+      if (tpl->tpl[NF9_IPV4_SRC_ADDR].len) {
+	memcpy(&e->key.src_net.a.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_SRC_ADDR].off, MIN(tpl->tpl[NF9_IPV4_SRC_ADDR].len, 4));
+	e->key.src_net.a.family = AF_INET;
+      }
+      else if (tpl->tpl[NF9_IPV4_SRC_PREFIX].len) {
+	memcpy(&e->key.src_net.a.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_SRC_PREFIX].off, MIN(tpl->tpl[NF9_IPV4_SRC_PREFIX].len, 4));
+	e->key.src_net.a.family = AF_INET;
+      }
+      if (tpl->tpl[NF9_IPV6_SRC_ADDR].len) {
+	memcpy(&e->key.src_net.a.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_SRC_ADDR].off, MIN(tpl->tpl[NF9_IPV6_SRC_ADDR].len, 16));
+	e->key.src_net.a.family = AF_INET6;
+      }
+      else if (tpl->tpl[NF9_IPV6_SRC_PREFIX].len) {
+	memcpy(&e->key.src_net.a.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_SRC_PREFIX].off, MIN(tpl->tpl[NF9_IPV6_SRC_PREFIX].len, 16));
+	e->key.src_net.a.family = AF_INET6;
+      }
+      break;
+    case 5:
+      e->key.src_net.a.address.ipv4.s_addr = ((struct struct_export_v5 *) pptrs->f_data)->srcaddr.s_addr;
+      e->key.src_net.a.family = AF_INET;
+      break;
+    }
+  }
+  else if (config.acct_type == ACCT_SF) {
+    if (sample->gotIPV4) {
+      e->key.src_net.a.address.ipv4.s_addr = sample->dcd_srcIP.s_addr;
+      e->key.src_net.a.family = AF_INET;
+    }
+    else if (sample->gotIPV6) {
+      memcpy(&e->key.src_net.a.address.ipv6, &sf_addr->address.ip_v6, IP6AddrSz);
+      e->key.src_net.a.family = AF_INET6;
+    }
+  }
+  else return TRUE;
+
+  hash_serial_append(hash_serializer, (char *)&e->key.src_net.a, sizeof(struct host_addr), FALSE);
+
+  return FALSE;
+}
+
+int PT_map_index_fdata_dst_net_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
+{
+  struct packet_ptrs *pptrs = (struct packet_ptrs *) src;
+  struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+  SFLAddress *sf_addr = &sample->ipdst;
+
+  if (config.acct_type == ACCT_NF) {
+    switch(hdr->version) {
+    case 10:
+    case 9:
+      if (tpl->tpl[NF9_IPV4_DST_ADDR].len) {
+	memcpy(&e->key.dst_net.a.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_DST_ADDR].off, MIN(tpl->tpl[NF9_IPV4_DST_ADDR].len, 4));
+	e->key.dst_net.a.family = AF_INET;
+      }
+      else if (tpl->tpl[NF9_IPV4_DST_PREFIX].len) {
+	memcpy(&e->key.dst_net.a.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_DST_PREFIX].off, MIN(tpl->tpl[NF9_IPV4_DST_PREFIX].len, 4));
+	e->key.dst_net.a.family = AF_INET;
+      }
+      if (tpl->tpl[NF9_IPV6_DST_ADDR].len) {
+	memcpy(&e->key.dst_net.a.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_DST_ADDR].off, MIN(tpl->tpl[NF9_IPV6_DST_ADDR].len, 16));
+	e->key.dst_net.a.family = AF_INET6;
+      }
+      else if (tpl->tpl[NF9_IPV6_DST_PREFIX].len) {
+	memcpy(&e->key.dst_net.a.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_DST_PREFIX].off, MIN(tpl->tpl[NF9_IPV6_DST_PREFIX].len, 16));
+	e->key.dst_net.a.family = AF_INET6;
+      }
+      break;
+    case 5:
+      e->key.dst_net.a.address.ipv4.s_addr = ((struct struct_export_v5 *) pptrs->f_data)->dstaddr.s_addr;
+      e->key.dst_net.a.family = AF_INET;
+      break;
+    }
+  }
+  else if (config.acct_type == ACCT_SF) {
+    if (sample->gotIPV4) {
+      e->key.dst_net.a.address.ipv4.s_addr = sample->dcd_dstIP.s_addr;
+      e->key.dst_net.a.family = AF_INET;
+    }
+    else if (sample->gotIPV6) {
+      memcpy(&e->key.dst_net.a.address.ipv6, &sf_addr->address.ip_v6, IP6AddrSz);
+      e->key.dst_net.a.family = AF_INET6;
+    }
+  }
+  else return TRUE;
+
+  hash_serial_append(hash_serializer, (char *)&e->key.dst_net.a, sizeof(struct host_addr), FALSE);
+
+  return FALSE;
+}
+
+int PT_map_index_fdata_is_multicast_handler(struct id_entry *e, pm_hash_serial_t *hash_serializer, void *src)
+{
+  struct packet_ptrs *pptrs = (struct packet_ptrs *) src;
+  struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+  SFSample *sample = (SFSample *) pptrs->f_data;
+
+  if (config.acct_type == ACCT_NF) {
+    switch (hdr->version) {
+    case 10:
+    case 9:
+      if (tpl->tpl[NF9_IN_DST_MAC].len) {
+	e->key.is_multicast.n = IS_MAC_MULTICAST(pptrs->f_data+tpl->tpl[NF9_IN_DST_MAC].off);
+      }
+      break;
+    default:
+      break; /* this field does not exist */
+    }
+  }
+  else if (config.acct_type == ACCT_SF) {
+    e->key.is_multicast.n = IS_MAC_MULTICAST(sample->eth_dst);
+  }
+
+  hash_serial_append(hash_serializer, (char *)&e->key.is_multicast, sizeof(u_int8_t), FALSE);
 
   return FALSE;
 }

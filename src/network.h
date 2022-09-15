@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -246,11 +246,23 @@ typedef u_int16_t as16_t;
 typedef u_int16_t afi_t;
 typedef u_int8_t safi_t;
 
+/* RD: standard */
 #define RD_LEN		8
 #define RD_TYPE_AS      0
 #define RD_TYPE_IP      1
 #define RD_TYPE_AS4     2
-#define RD_TYPE_VRFID	65535
+
+/* RD: squat squat */
+#define RD_TYPE_VRFID	0x1000
+#define RD_TYPE_MASK	0x1FFF
+
+#define RD_ORIGIN_UNKNOWN	0x0000
+#define RD_ORIGIN_FLOW		0x2000
+#define RD_ORIGIN_BGP		0x4000
+#define RD_ORIGIN_BMP		0x8000
+#define RD_ORIGIN_MASK		0xE000
+
+#define RD_ORIGIN_FUNC_TYPE_MAX 2
 
 struct rd_as
 {
@@ -280,11 +292,16 @@ typedef u_int32_t path_id_t;
 
 /* class status */
 struct class_st {
-   u_int8_t tentatives;	
-   struct timeval stamp;	/* accumulator timestamp */
-   u_int32_t ba;		/* bytes accumulator */
-   u_int16_t pa;		/* packet accumulator */
-   u_int8_t fa;			/* flow accumulator */
+  u_int8_t tentatives;
+  struct timeval stamp;	/* accumulator timestamp */
+  u_int32_t ba;		/* bytes accumulator */
+  u_int16_t pa;		/* packet accumulator */
+  u_int8_t fa;		/* flow accumulator */
+};
+
+struct flow_chars {
+  u_int8_t traffic_type;
+  u_int8_t is_bi;
 };
 
 struct packet_ptrs {
@@ -306,7 +323,7 @@ struct packet_ptrs {
   u_int16_t l3_proto; /* layer-3 protocol: IPv4, IPv6 */
   int (*l3_handler)(register struct packet_ptrs *); /* layer-3 protocol handler */
   u_int16_t l4_proto; /* layer-4 protocol */
-  u_int8_t flow_type; /* Flow, NAT event, etc. */
+  struct flow_chars flow_type; /* Flow, NAT event, etc. */
   pm_id_t tag; /* pre tag id */
   u_int8_t have_tag; /* have tag? */
   pm_id_t tag2; /* pre tag id2 */

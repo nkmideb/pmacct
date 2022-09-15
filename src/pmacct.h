@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -117,7 +117,9 @@
 #define INET6_ADDRSTRLEN 46
 #endif
 
-#if (defined SOLARIS) && (defined CPU_sparc)
+#if defined IM_BIG_ENDIAN
+#define ntohs(x) (x)
+#define ntohl(x) (x)
 #define htons(x) (x)
 #define htonl(x) (x)
 #endif
@@ -143,12 +145,6 @@
 
 #ifndef LOCK_EX
 #define LOCK_EX 2
-#endif
-
-#ifdef NOINLINE
-#define Inline
-#else
-#define Inline static inline
 #endif
 
 /* Let work the unaligned copy macros the hard way: byte-per byte copy via
@@ -229,6 +225,12 @@ typedef struct {
 
 #if (defined WITH_AVRO)
 #include <avro.h>
+#endif
+
+#if (defined WITH_AVRO)
+#if (!defined WITH_JANSSON)
+#error "--enable-avro requires --enable-jansson"
+#endif
 #endif
 
 #if (defined WITH_SERDES)
@@ -314,6 +316,15 @@ struct pm_pcap_callback_data {
   struct pm_pcap_callback_signals sig;
 };
 
+struct pm_dump_runner {
+  u_int16_t id;
+  u_int64_t seq;
+  u_int64_t first;
+  u_int64_t last;
+  int noop;
+  void *extra; /* extra data to pass to the runner thread */
+};
+
 struct _protocols_struct {
   char name[PROTO_LEN];
   int number;
@@ -368,9 +379,9 @@ void handle_falling_child();
 void ignore_falling_child();
 void PM_sigint_handler(int);
 void PM_sigalrm_noop_handler(int);
-void reload();
-void push_stats();
-void reload_maps();
+void reload(int);
+void push_stats(int);
+void reload_maps(int);
 extern void pm_pcap_device_initialize(struct pm_pcap_devices *);
 extern void pm_pcap_device_copy_all(struct pm_pcap_devices *, struct pm_pcap_devices *);
 extern void pm_pcap_device_copy_entry(struct pm_pcap_devices *, struct pm_pcap_devices *, int);
