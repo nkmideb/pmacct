@@ -9,10 +9,10 @@ Subject: Problems with the sockaddr_dl structure
  to clear this up when it is sorted out in Hurd.
 Bug-Debian: http://bugs.debian.org/675836
 Last-Update: 2012-06-21
-Index: pkg-pmacct/src/isis/sockunion.c
+Index: pmacct/src/isis/sockunion.c
 ===================================================================
---- pkg-pmacct.orig/src/isis/sockunion.c
-+++ pkg-pmacct/src/isis/sockunion.c
+--- pmacct.orig/src/isis/sockunion.c
++++ pmacct/src/isis/sockunion.c
 @@ -25,6 +25,18 @@
  #include "prefix.h"
  #include "sockunion.h"
