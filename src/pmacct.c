@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -47,6 +47,7 @@ void client_counters_merge(void *, int, int, int, int, int);
 int pmc_sanitize_buf(char *);
 void pmc_trim_all_spaces(char *);
 char *pmc_extract_token(char **, int);
+u_int16_t pmc_bgp_rd_type_get(u_int16_t);
 int pmc_bgp_rd2str(char *, rd_t *);
 int pmc_bgp_str2rd(rd_t *, char *);
 char *pmc_compose_json(u_int64_t, u_int64_t, u_int8_t, struct pkt_primitives *,
@@ -3170,6 +3171,11 @@ void client_counters_merge(void *table, int start, int middle, int end, int size
   free(v2);
 }
 
+u_int16_t pmc_bgp_rd_type_get(u_int16_t type)
+{
+  return (type & RD_TYPE_MASK);
+}
+
 int pmc_bgp_rd2str(char *str, rd_t *rd)
 {
   struct rd_ip  *rdi;
@@ -3177,22 +3183,23 @@ int pmc_bgp_rd2str(char *str, rd_t *rd)
   struct rd_as4 *rda4;
   struct host_addr a;
   char ip_address[INET6_ADDRSTRLEN];
+  u_int16_t type = pmc_bgp_rd_type_get(rd->type);
 
-  switch (rd->type) {
+  switch (type) {
   case RD_TYPE_AS:
     rda = (struct rd_as *) rd;
-    sprintf(str, "%u:%u:%u", rda->type, rda->as, rda->val);
+    sprintf(str, "%u:%u:%u", type, rda->as, rda->val);
     break;
   case RD_TYPE_IP:
     rdi = (struct rd_ip *) rd;
     a.family = AF_INET;
     a.address.ipv4.s_addr = rdi->ip.s_addr;
     addr_to_str(ip_address, &a);
-    sprintf(str, "%u:%s:%u", rdi->type, ip_address, rdi->val);
+    sprintf(str, "%u:%s:%u", type, ip_address, rdi->val);
     break;
   case RD_TYPE_AS4:
     rda4 = (struct rd_as4 *) rd;
-    sprintf(str, "%u:%u:%u", rda4->type, rda4->as, rda4->val);
+    sprintf(str, "%u:%u:%u", type, rda4->as, rda4->val);
     break;
   case RD_TYPE_VRFID:
     rda = (struct rd_as *) rd;

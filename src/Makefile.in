@@ -136,12 +136,14 @@ EXTRA_PROGRAMS =
 @WITH_REDIS_TRUE@am__append_41 = @REDIS_CFLAGS@
 @WITH_GNUTLS_TRUE@am__append_42 = @GNUTLS_LIBS@
 @WITH_GNUTLS_TRUE@am__append_43 = @GNUTLS_CFLAGS@
-@USING_TRAFFIC_BINS_TRUE@am__append_44 = pmacctd nfacctd sfacctd
-@USING_TRAFFIC_BINS_TRUE@am__append_45 = pmacct
-@USING_TRAFFIC_BINS_TRUE@@WITH_NFLOG_TRUE@am__append_46 = uacctd
-@USING_ST_BINS_TRUE@am__append_47 = pmtelemetryd
-@USING_BGP_BINS_TRUE@am__append_48 = pmbgpd
-@USING_BMP_BINS_TRUE@am__append_49 = pmbmpd
+@WITH_UNYTE_UDP_NOTIF_TRUE@am__append_44 = @UNYTE_UDP_NOTIF_LIBS@
+@WITH_UNYTE_UDP_NOTIF_TRUE@am__append_45 = @UNYTE_UDP_NOTIF_CFLAGS@
+@USING_TRAFFIC_BINS_TRUE@am__append_46 = pmacctd nfacctd sfacctd
+@USING_TRAFFIC_BINS_TRUE@am__append_47 = pmacct
+@USING_TRAFFIC_BINS_TRUE@@WITH_NFLOG_TRUE@am__append_48 = uacctd
+@USING_ST_BINS_TRUE@am__append_49 = pmtelemetryd
+@USING_BGP_BINS_TRUE@am__append_50 = pmbgpd
+@USING_BMP_BINS_TRUE@am__append_51 = pmbmpd
 subdir = src
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/m4/ac_linearize_path.m4 \
@@ -189,7 +191,7 @@ libdaemons_la_DEPENDENCIES = nfprobe_plugin/libnfprobe_plugin.la \
 	$(am__DEPENDENCIES_2) $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1) \
-	$(am__DEPENDENCIES_1)
+	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
 am__libdaemons_la_SOURCES_DIST = signals.c util.c plugin_hooks.c \
 	server.c acct.c memory.c cfg.c imt_plugin.c log.c \
 	pkt_handlers.c cfg_handlers.c net_aggr.c print_plugin.c \
@@ -567,6 +569,8 @@ SHELL = @SHELL@
 SQLITE3_CFLAGS = @SQLITE3_CFLAGS@
 SQLITE3_LIBS = @SQLITE3_LIBS@
 STRIP = @STRIP@
+UNYTE_UDP_NOTIF_CFLAGS = @UNYTE_UDP_NOTIF_CFLAGS@
+UNYTE_UDP_NOTIF_LIBS = @UNYTE_UDP_NOTIF_LIBS@
 VERSION = @VERSION@
 ZMQ_CFLAGS = @ZMQ_CFLAGS@
 ZMQ_LIBS = @ZMQ_LIBS@
@@ -660,12 +664,13 @@ libdaemons_la_LIBADD = nfprobe_plugin/libnfprobe_plugin.la \
 	$(am__append_17) $(am__append_20) $(am__append_22) \
 	$(am__append_25) $(am__append_28) $(am__append_31) \
 	$(am__append_34) $(am__append_38) $(am__append_40) \
-	$(am__append_42)
+	$(am__append_42) $(am__append_44)
 libdaemons_la_CFLAGS = $(AM_CFLAGS) $(am__append_6) $(am__append_9) \
 	$(am__append_12) $(am__append_15) $(am__append_18) \
 	$(am__append_21) $(am__append_23) $(am__append_26) \
 	$(am__append_29) $(am__append_32) $(am__append_35) \
-	$(am__append_37) $(am__append_41) $(am__append_43)
+	$(am__append_37) $(am__append_41) $(am__append_43) \
+	$(am__append_45)
 @USING_TRAFFIC_BINS_TRUE@pmacctd_SOURCES = pmacctd.c
 @USING_TRAFFIC_BINS_TRUE@pmacctd_LDADD = libdaemons.la
 @USING_TRAFFIC_BINS_TRUE@nfacctd_SOURCES = nfacctd.c nfv9_template.c

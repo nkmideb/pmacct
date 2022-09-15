@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -39,6 +39,7 @@ static const struct _dictionary_line dictionary[] = {
   {"redis_host", cfg_key_redis_host},
   {"redis_db", cfg_key_redis_db},
   {"snaplen", cfg_key_snaplen},
+  {"propagate_signals", cfg_key_propagate_signals},
   {"aggregate_filter", cfg_key_aggregate_filter},
   {"dtls_path", cfg_key_dtls_path},
   {"promisc", cfg_key_promisc},
@@ -53,6 +54,8 @@ static const struct _dictionary_line dictionary[] = {
   {"pcap_direction", cfg_key_pcap_direction},
   {"pcap_ifindex", cfg_key_pcap_ifindex},
   {"pcap_interfaces_map", cfg_key_pcap_interfaces_map},
+  {"pcap_arista_trailer_offset", cfg_key_pcap_arista_trailer_offset},
+  {"pcap_arista_trailer_flag_value", cfg_key_pcap_arista_trailer_flag_value},
   {"core_proc_name", cfg_key_proc_name},
   {"proc_priority", cfg_key_proc_priority},
   {"pmacctd_as", cfg_key_nfacctd_as_new},
@@ -60,7 +63,6 @@ static const struct _dictionary_line dictionary[] = {
   {"pmacctd_net", cfg_key_nfacctd_net},
   {"uacctd_net", cfg_key_nfacctd_net},
   {"use_ip_next_hop", cfg_key_use_ip_next_hop},
-  {"decode_arista_trailer", cfg_key_decode_arista_trailer},
   {"thread_stack", cfg_key_thread_stack},
   {"plugins", NULL},
   {"plugin_pipe_size", cfg_key_plugin_pipe_size},
@@ -70,8 +72,6 @@ static const struct _dictionary_line dictionary[] = {
   {"plugin_pipe_zmq_profile", cfg_key_plugin_pipe_zmq_profile},
   {"plugin_pipe_zmq_hwm", cfg_key_plugin_pipe_zmq_hwm},
   {"plugin_exit_any", cfg_key_plugin_exit_any},
-  {"interface", cfg_key_pcap_interface}, 		/* Legacy key */
-  {"interface_wait", cfg_key_pcap_interface_wait},	/* Legacy key */
   {"files_umask", cfg_key_files_umask},
   {"files_uid", cfg_key_files_uid},
   {"files_gid", cfg_key_files_gid},
@@ -108,8 +108,7 @@ static const struct _dictionary_line dictionary[] = {
   {"sql_history", cfg_key_sql_history},
   {"sql_history_offset", cfg_key_sql_history_offset},
   {"sql_history_roundoff", cfg_key_sql_history_roundoff},
-  {"sql_history_since_epoch", cfg_key_timestamps_since_epoch}, /* Legacy key */
-  {"sql_backup_host", cfg_key_sql_recovery_backup_host}, /* Legacy feature; to be obsoleted */
+  {"sql_backup_host", cfg_key_sql_recovery_backup_host}, /* Legacy feature */
   {"sql_recovery_backup_host", cfg_key_sql_recovery_backup_host},
   {"sql_delimiter", cfg_key_sql_delimiter},
   {"sql_max_writers", cfg_key_dump_max_writers},
@@ -191,8 +190,8 @@ static const struct _dictionary_line dictionary[] = {
   {"amqp_vhost", cfg_key_amqp_vhost},
   {"amqp_markers", cfg_key_print_markers},
   {"amqp_output", cfg_key_message_broker_output},
-  {"amqp_avro_schema_routing_key", cfg_key_amqp_avro_schema_routing_key}, /* XXX: Legacy key */
-  {"amqp_avro_schema_refresh_time", cfg_key_amqp_avro_schema_refresh_time}, /* XXX: Legacy key */
+  {"amqp_avro_schema_routing_key", cfg_key_amqp_avro_schema_routing_key}, /* Legacy feature */
+  {"amqp_avro_schema_refresh_time", cfg_key_amqp_avro_schema_refresh_time}, /* Legacy feature */
   {"amqp_trigger_exec", cfg_key_sql_trigger_exec},
   {"kafka_refresh_time", cfg_key_sql_refresh_time},
   {"kafka_history", cfg_key_sql_history},
@@ -220,6 +219,7 @@ static const struct _dictionary_line dictionary[] = {
   {"nfacctd_proc_name", cfg_key_proc_name},
   {"nfacctd_port", cfg_key_nfacctd_port},
   {"nfacctd_ip", cfg_key_nfacctd_ip},
+  {"nfacctd_ipv6_only", cfg_key_nfacctd_ipv6_only},
   {"nfacctd_allow_file", cfg_key_nfacctd_allow_file},
   {"nfacctd_time_secs", cfg_key_nfacctd_time_secs},
   {"nfacctd_time_new", cfg_key_nfacctd_time_new},
@@ -275,6 +275,10 @@ static const struct _dictionary_line dictionary[] = {
   {"telemetry_daemon_port_tcp", cfg_key_telemetry_port_tcp},
   {"telemetry_daemon_port_udp", cfg_key_telemetry_port_udp},
   {"telemetry_daemon_ip", cfg_key_telemetry_ip},
+  {"telemetry_daemon_udp_notif_port", cfg_key_telemetry_udp_notif_port},
+  {"telemetry_daemon_udp_notif_ip", cfg_key_telemetry_udp_notif_ip},
+  {"telemetry_daemon_udp_notif_nmsgs", cfg_key_telemetry_udp_notif_nmsgs},
+  {"telemetry_daemon_ipv6_only", cfg_key_telemetry_ipv6_only},
   {"telemetry_daemon_zmq_address", cfg_key_telemetry_zmq_address},
   {"telemetry_daemon_kafka_broker_host", cfg_key_telemetry_kafka_broker_host},
   {"telemetry_daemon_kafka_broker_port", cfg_key_telemetry_kafka_broker_port},
@@ -330,13 +334,12 @@ static const struct _dictionary_line dictionary[] = {
   {"telemetry_dump_kafka_partition", cfg_key_telemetry_dump_kafka_partition},
   {"telemetry_dump_kafka_partition_key", cfg_key_telemetry_dump_kafka_partition_key},
   {"telemetry_dump_kafka_config_file", cfg_key_telemetry_dump_kafka_config_file},
-  {"refresh_maps", cfg_key_maps_refresh}, /* Legacy key */
+  {"telemetry_dump_workers", cfg_key_telemetry_dump_workers},
   {"maps_refresh", cfg_key_maps_refresh},
   {"maps_index", cfg_key_maps_index},
   {"maps_entries", cfg_key_maps_entries},
   {"maps_row_len", cfg_key_maps_row_len},
   {"pre_tag_map", cfg_key_pre_tag_map},	
-  {"pre_tag_map_entries", cfg_key_maps_entries}, /* Legacy key */
   {"pre_tag_filter", cfg_key_pre_tag_filter},
   {"pre_tag2_filter", cfg_key_pre_tag2_filter},
   {"pre_tag_label_filter", cfg_key_pre_tag_label_filter},
@@ -434,6 +437,7 @@ static const struct _dictionary_line dictionary[] = {
   {"tee_kafka_config_file", cfg_key_tee_kafka_config_file},
   {"bgp_daemon", cfg_key_bgp_daemon},
   {"bgp_daemon_ip", cfg_key_bgp_daemon_ip},
+  {"bgp_daemon_ipv6_only", cfg_key_bgp_daemon_ipv6_only},
   {"bgp_daemon_id", cfg_key_bgp_daemon_id},
   {"bgp_daemon_as", cfg_key_bgp_daemon_as},
   {"bgp_daemon_port", cfg_key_bgp_daemon_port},
@@ -521,6 +525,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bgp_table_dump_kafka_partition_key", cfg_key_bgp_daemon_table_dump_kafka_partition_key},
   {"bgp_table_dump_kafka_config_file", cfg_key_bgp_daemon_table_dump_kafka_config_file},
   {"bgp_table_dump_kafka_avro_schema_registry", cfg_key_bgp_daemon_table_dump_kafka_avro_schema_registry},
+  {"bgp_table_dump_workers", cfg_key_bgp_daemon_table_dump_workers},
   {"bgp_daemon_lg", cfg_key_bgp_lg},
   {"bgp_daemon_lg_ip", cfg_key_bgp_lg_ip},
   {"bgp_daemon_lg_port", cfg_key_bgp_lg_port},
@@ -530,6 +535,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bgp_daemon_xconnect_map", cfg_key_bgp_xconnect_map},
   {"bmp_daemon", cfg_key_bmp_daemon},
   {"bmp_daemon_ip", cfg_key_bmp_daemon_ip},
+  {"bmp_daemon_ipv6_only", cfg_key_bmp_daemon_ipv6_only},
   {"bmp_daemon_port", cfg_key_bmp_daemon_port},
   {"bmp_daemon_pipe_size", cfg_key_bmp_daemon_pipe_size},
   {"bmp_daemon_max_peers", cfg_key_bmp_daemon_max_peers},
@@ -569,6 +575,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bmp_dump_output", cfg_key_bmp_daemon_dump_output},
   {"bmp_dump_file", cfg_key_bmp_daemon_dump_file},
   {"bmp_dump_latest_file", cfg_key_bmp_daemon_dump_latest_file},
+  {"bmp_dump_workers", cfg_key_bmp_daemon_dump_workers},
   {"bmp_dump_avro_schema_file", cfg_key_bmp_daemon_dump_avro_schema_file},
   {"bmp_dump_refresh_time", cfg_key_bmp_daemon_dump_refresh_time},
   {"bmp_dump_amqp_host", cfg_key_bmp_daemon_dump_amqp_host},
@@ -620,6 +627,7 @@ static const struct _dictionary_line dictionary[] = {
   {"tmp_asa_bi_flow", cfg_key_tmp_asa_bi_flow},
   {"tmp_bgp_lookup_compare_ports", cfg_key_tmp_bgp_lookup_compare_ports},
   {"tmp_bgp_daemon_route_refresh", cfg_key_tmp_bgp_daemon_route_refresh},
+  {"tmp_bgp_daemon_origin_type_int", cfg_key_tmp_bgp_daemon_origin_type_int},
   {"", NULL}
 };
 
@@ -639,8 +647,8 @@ static struct plugin_type_entry plugin_types_list[] = {
   {PLUGIN_ID_SQLITE3,	"sqlite3",	sqlite3_plugin},
 #endif
 #ifdef WITH_MONGODB
-  {PLUGIN_ID_UNKNOWN,	"mongodb",		mongodb_legacy_warning},
-  {PLUGIN_ID_MONGODB,  	"mongodb_legacy",	mongodb_plugin},
+  {PLUGIN_ID_UNKNOWN,	"mongodb",		mongodb_legacy_warning}, /* Legacy plugin */
+  {PLUGIN_ID_MONGODB,  	"mongodb_legacy",	mongodb_plugin}, /* Legacy plugin */
 #endif
 #ifdef WITH_RABBITMQ
   {PLUGIN_ID_AMQP,	"amqp",		amqp_plugin},

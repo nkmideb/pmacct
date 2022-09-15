@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -34,6 +34,7 @@ extern int cfg_key_syslog(char *, char *, char *);
 extern int cfg_key_logfile(char *, char *, char *);
 extern int cfg_key_pidfile(char *, char *, char *);
 extern int cfg_key_daemonize(char *, char *, char *);
+extern int cfg_key_propagate_signals(char *, char *, char *);
 extern int cfg_key_proc_name(char *, char *, char *);
 extern int cfg_key_proc_priority(char *, char *, char *);
 extern int cfg_key_cluster_name(char *, char *, char *);
@@ -54,8 +55,9 @@ extern int cfg_key_pcap_savefile_replay(char *, char *, char *);
 extern int cfg_key_pcap_direction(char *, char *, char *);
 extern int cfg_key_pcap_ifindex(char *, char *, char *);
 extern int cfg_key_pcap_interfaces_map(char *, char *, char *);
+extern int cfg_key_pcap_arista_trailer_offset(char *, char *, char *);
+extern int cfg_key_pcap_arista_trailer_flag_value(char *, char *, char *);
 extern int cfg_key_use_ip_next_hop(char *, char *, char *);
-extern int cfg_key_decode_arista_trailer(char *, char *, char *);
 extern int cfg_key_thread_stack(char *, char *, char *);
 extern int cfg_key_pcap_interface(char *, char *, char *);
 extern int cfg_key_pcap_interface_wait(char *, char *, char *);
@@ -149,6 +151,7 @@ extern int cfg_key_print_output_custom_cfg_file(char *, char *, char *);
 extern int cfg_key_print_latest_file(char *, char *, char *);
 extern int cfg_key_nfacctd_port(char *, char *, char *);
 extern int cfg_key_nfacctd_ip(char *, char *, char *);
+extern int cfg_key_nfacctd_ipv6_only(char *, char *, char *);
 extern int cfg_key_nfacctd_allow_file(char *, char *, char *);
 extern int cfg_key_nfacctd_time_secs(char *, char *, char *);
 extern int cfg_key_nfacctd_time_new(char *, char *, char *);
@@ -204,6 +207,10 @@ extern int cfg_key_telemetry_daemon(char *, char *, char *);
 extern int cfg_key_telemetry_port_tcp(char *, char *, char *);
 extern int cfg_key_telemetry_port_udp(char *, char *, char *);
 extern int cfg_key_telemetry_ip(char *, char *, char *);
+extern int cfg_key_telemetry_udp_notif_port(char *, char *, char *);
+extern int cfg_key_telemetry_udp_notif_ip(char *, char *, char *);
+extern int cfg_key_telemetry_udp_notif_nmsgs(char *, char *, char *);
+extern int cfg_key_telemetry_ipv6_only(char *, char *, char *);
 extern int cfg_key_telemetry_zmq_address(char *, char *, char *);
 extern int cfg_key_telemetry_kafka_broker_host(char *, char *, char *);
 extern int cfg_key_telemetry_kafka_broker_port(char *, char *, char *);
@@ -259,6 +266,7 @@ extern int cfg_key_telemetry_dump_kafka_topic_rr(char *, char *, char *);
 extern int cfg_key_telemetry_dump_kafka_partition(char *, char *, char *);
 extern int cfg_key_telemetry_dump_kafka_partition_key(char *, char *, char *);
 extern int cfg_key_telemetry_dump_kafka_config_file(char *, char *, char *);
+extern int cfg_key_telemetry_dump_workers(char *, char *, char *);
 extern int cfg_key_maps_refresh(char *, char *, char *);
 extern int cfg_key_maps_index(char *, char *, char *);
 extern int cfg_key_maps_entries(char *, char *, char *);
@@ -336,6 +344,7 @@ extern int cfg_key_bgp_daemon_msglog_kafka_config_file(char *, char *, char *);
 extern int cfg_key_bgp_daemon_msglog_kafka_avro_schema_registry(char *, char *, char *);
 extern int cfg_key_bgp_daemon_max_peers(char *, char *, char *);
 extern int cfg_key_bgp_daemon_ip(char *, char *, char *);
+extern int cfg_key_bgp_daemon_ipv6_only(char *, char *, char *);
 extern int cfg_key_bgp_daemon_id(char *, char *, char *);
 extern int cfg_key_bgp_daemon_as(char *, char *, char *);
 extern int cfg_key_bgp_daemon_port(char *, char *, char *);
@@ -395,6 +404,7 @@ extern int cfg_key_bgp_daemon_table_dump_kafka_partition(char *, char *, char *)
 extern int cfg_key_bgp_daemon_table_dump_kafka_partition_key(char *, char *, char *);
 extern int cfg_key_bgp_daemon_table_dump_kafka_config_file(char *, char *, char *);
 extern int cfg_key_bgp_daemon_table_dump_kafka_avro_schema_registry(char *, char *, char *);
+extern int cfg_key_bgp_daemon_table_dump_workers(char *, char *, char *);
 extern int cfg_key_bgp_daemon_batch(char *, char *, char *);
 extern int cfg_key_bgp_daemon_batch_interval(char *, char *, char *);
 extern int cfg_key_bgp_daemon_pipe_size(char *, char *, char *);
@@ -407,6 +417,7 @@ extern int cfg_key_bgp_lg_passwd(char *, char *, char *);
 extern int cfg_key_bgp_xconnect_map(char *, char *, char *);
 extern int cfg_key_bmp_daemon(char *, char *, char *);
 extern int cfg_key_bmp_daemon_ip(char *, char *, char *);
+extern int cfg_key_bmp_daemon_ipv6_only(char *, char *, char *);
 extern int cfg_key_bmp_daemon_port(char *, char *, char *);
 extern int cfg_key_bmp_daemon_pipe_size(char *, char *, char *);
 extern int cfg_key_bmp_daemon_max_peers(char *, char *, char *);
@@ -443,6 +454,7 @@ extern int cfg_key_bmp_daemon_table_per_peer_buckets(char *, char *, char *);
 extern int cfg_key_bmp_daemon_table_attr_hash_buckets(char *, char *, char *);
 extern int cfg_key_bmp_daemon_table_per_peer_hash(char *, char *, char *);
 extern int cfg_key_bmp_daemon_dump_output(char *, char *, char *);
+extern int cfg_key_bmp_daemon_dump_workers(char *, char *, char *);
 extern int cfg_key_bmp_daemon_dump_file(char *, char *, char *);
 extern int cfg_key_bmp_daemon_dump_avro_schema_file(char *, char *, char *);
 extern int cfg_key_bmp_daemon_dump_latest_file(char *, char *, char *);
@@ -492,6 +504,7 @@ extern int cfg_key_dump_max_writers(char *, char *, char *);
 extern int cfg_key_tmp_asa_bi_flow(char *, char *, char *);
 extern int cfg_key_tmp_bgp_lookup_compare_ports(char *, char *, char *);
 extern int cfg_key_tmp_bgp_daemon_route_refresh(char *, char *, char *);
+extern int cfg_key_tmp_bgp_daemon_origin_type_int(char *, char *, char *);
 
 extern void parse_time(char *, char *, int *, int *);
 extern void cfg_set_aggregate(char *, u_int64_t [], u_int64_t, char *);

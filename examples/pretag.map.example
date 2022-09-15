@@ -3,19 +3,20 @@
 !
 ! File syntax is key-based. Position of keys inside the same row (rule) is not
 ! relevant; Spaces are not allowed (ie. 'id = 1' is not valid). The first full
-! match wins (like in firewall rules). Negative values mean negations (ie. match
-! data NOT entering interface 2: 'in=-2'); 'set_tag', 'set_tag2', 'set_label',
-! 'filter' and 'ip' keys don't support negative values. 'label', 'jeq' and
-! 'stack' keys can be used to alter the standard rule evaluation flow.
+! match wins (like in firewall rules). MATCH keys support negations via a
+! negative valuee (ie. 'in=-2' for data not entering via interface with ifindex
+! 2); negations are intuitively not supported on SET keys (ie. 'set_tag', etc.);
+! also 'filter' and 'ip' keys do not support negative values. 'label', 'jeq' and
+! 'stack' keys can be used to alter the standard flow of rules evaluation.
 !
 ! nfacctd: valid keys: set_tag, set_tag2, set_label, set_tos, ip, in, out,
 ! engine_type, engine_id, source_id, flowset_id, nexthop, bgp_nexthop, filter,
-! sample_type, direction, nat_event, src_mac, dst_mac, vlan, cvlan, src_net,
-! dst_net, mpls_pw_id.
+! sample_type, is_bi_flow, direction, nat_event, src_mac, dst_mac, vlan, cvlan,
+! src_net, dst_net, is_multicast, mpls_pw_id.
 !
 ! sfacctd: valid keys: set_tag, set_tag2, set_label, set_tos, ip, in, out,
 ! nexthop, bgp_nexthop, filter, agent_id, sample_type, direction, src_mac,
-! dst_mac, vlan, src_net, dst_net, mpls_pw_id.
+! dst_mac, vlan, src_net, dst_net, is_multicast, mpls_pw_id.
 !
 ! pmacctd: valid keys: set_tag, set_tag2, set_label, direction and filter.
 !
@@ -64,7 +65,10 @@
 !                       IP address of the device originating NetFlow packets;
 !                       in sfacctd this is compared against the AgentId field
 !                       of received sFlow samples. Expected argument are an IP
-!			address or prefix (ie. XXX.XXX.XXX.XXX/NN) 
+!			address or prefix (ie. XXX.XXX.XXX.XXX/NN). 0.0.0.0/0
+!			would match all IPv4 addresses; ::/0 would match all
+!			IPv6 addresses; not specifying an 'ip' clause at all
+!			would match both all IPv4 and IPv6 addresses.
 ! 'in'  		MATCH: Input interface. In NFv9/IPFIX this is compared
 !			against IE #10 and, if not existing, against IE #252.  
 ! 'out' 		MATCH: Output interface. In NFv9/IPFIX this is compared
@@ -96,10 +100,18 @@
 ! 'sample_type'         MATCH: in sFlow v2/v4/v5 this is compared against the
 !			sample type field. Expected in <Enterprise>:<Format>
 !			notation. In NetFlow/IPIX three keywords are supported:
-!			"flow" to denote templates suitable to transport flow
-!			traffic data, "event" to denote templates suitable to
-!			flag events and "option" to denote NetFlow/IPFIX option
-!			records data.
+!			"flow" to match any flow traffic data, "flow-ipv4" and
+!			"flow-ipv6" to match respectively only IPv4 and IPv6 flow
+!			traffic data, "flow-mpls-ipv4" and "flow-mpls-ipv6" to
+!			match respectively only MPLS-labelled IPv4 and IPv6 flow
+!			traffic data, "event" to match templates suitable to flag
+!			events and "option" to denote NetFlow/IPFIX option records
+!			data.
+! 'is_bi_flow'		MATCH: in NetFlow/IPFIX this checks the presence of both
+!			initiatorOctets and responderOctets in a flow to infer
+!			that it is a bi-directional flow. If set to 'true' this
+!			does match bi-flows, if set to 'false' it does match non
+!			bi-flows.
 ! 'direction'		MATCH: expected values are 0 (ingress direction) or 1
 !			(egress direction). In NFv9/IPFIX this is compared
 !			against the direction (61) field; in sFlow v2/v4/v5 this
@@ -168,6 +180,12 @@
 ! 'dst_net'             MATCH: Destination IP address field in NetFlow v5 and
 !			sFlow. In NFv9/IPFIX this is compared against IE #28 or
 !			IE #45.
+! 'is_multicast'	MATCH: in NFv9/IPFIX this is compared against IE #57,
+!                       in sFlow against destination MAC address field part of
+!                       the Extended Switch object. If set to 'true' this does
+!			match MAC multicast addresses, if set to 'false' it won't
+!			match them. To match or exclude IPv4/IPv6 multicast
+!			addresses please use 'dst_net'.
 ! 'fwdstatus'		MATCH: In NFv9/IPFIX this is compared against IE #89; see
 !			https://www.iana.org/assignments/ipfix/ipfix.xhtml for
 !			the specific semantics of the field and some examples.

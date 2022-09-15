@@ -6,6 +6,35 @@ the changes done or break old assumptions no longer valid; while the effort
 is to keep these cases at a low, please read this file in preparation to
 upgrading your installation.
 
+TO:	>= 1.7.7
+FROM:	<= 1.7.6
+TOPIC:	pmtelemetryd, JSON telemetry input and JSON daemon output
+DESC:	Until version 1.7.6, JSON telemetry input data would be embedded as
+	a 'telemetry_data' string part of the JSON daemon output along with
+	some other meta-data. While this was useful, it was slightly not
+	convenient as extracting actual content from 'telemetry_data' does
+	require some (simple) scriptware in the middle; starting version
+	1.7.7, 'telemetry_data' is a JSON object (hence making the whole
+	JSON daemon output nested) making it easier for consumers to parse
+	the content.
+
+TO:	>= 1.7.7
+FROM:	<= 1.7.6
+TOPIC:  Obsoleted features
+DESC:   Following is the list of features, knobs and plugins that are being
+        discontinued with release 1.7.7:
+	* sql_history_since_epoch was removed from docs for a while; it is
+	  replaced by timestamps_since_epoch so that all timestamps-related
+	  config keys have the 'timestamps' suffix;
+	* refresh_maps and pre_tag_map_entries were removed from docs for a
+	  while; they are replaced respectively by maps_refresh and
+	  maps_entries so that all maps-related config keys have the 'maps'
+	  suffix.
+	* interface_wait and interface were removed from docs for a while;
+	  they are replaced respectively by pcap_interface_wait and
+	  pcap_interface so that all pmacctd / libpcap-related config keys
+	  have the 'pcap' suffix.
+
 TO:	>= 1.7.6
 FROM:	<= 1.7.5
 TOPIC:	Obsoleted features
@@ -48,6 +77,17 @@ DESC:	Majority of these primitives were written in a 'src_' field, ie.
 	modified: src_comms, src_ecomms, src_lcomms, src_med, src_as_path
 	and src_local_pref; changed in: comms_src, ecomms_src, lcomms_src,
 	med_src, as_path_src and local_pref_src respectively. 
+
+TO:	>= 1.7.3
+FROM:	<= 1.7.2
+TOPIC:	BGP attribute "origin" encoding change
+DESC:	The "origin" attribute was encded as an integer, until 1.7.2. To
+	make output more human-friendly, the encoding has been changed to
+	string in 1.7.3, where three single-letter values are defined:
+	IGP (i), EGP (e) and Incomplete (u). Only release 1.7 releases
+	starting with 1.7.7 do feature a tmp_bgp_daemon_origin_type_int
+	true/false configuration knob to revert to the old encoding in
+	order to allow for smoother pre-1.7.3 upgrades.
 
 TO:	>= 1.7.2
 FROM:	<= 1.7.1

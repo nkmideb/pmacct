@@ -1,5 +1,5 @@
 pmacct [IP traffic accounting : BGP : BMP : RPKI : IGP : Streaming Telemetry]
-pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 
 
 TABLE OF CONTENTS:
@@ -13,7 +13,7 @@ VII.	Running the pmacct IMT client (pmacct)
 VIII.	Running the RabbitMQ/AMQP plugin
 IX.	Running the Kafka plugin
 X.	Internal buffering and queueing
-XI.	Quickstart guide to packet classification
+XI.	Quickstart guide to packet/flow classification
 XII.	Quickstart guide to setup a NetFlow/IPFIX agent/probe 
 XIII.	Quickstart guide to setup a sFlow agent/probe 
 XIV.	Quickstart guide to setup the BGP daemon
@@ -76,8 +76,10 @@ pmacct distribution:
 memory		data is stored in a memory table and can be fetched via the
 		pmacct command-line client tool, 'pmacct'. This plugin also
 		implements a push model and allows easily to inject data into
-		3rd party tools. The plugin is recommended for prototyping and
-		smaller-scale environments and is compiled in by default.
+		3rd party tools. The plugin is recommended for prototyping
+		and proof-of-concept (without mass traffic generation) and
+		smaller-scale / home production environments and is compiled
+		in by default.
 mysql		a working MySQL/MariaDB installation can be used for data
 		storage. This plugin can be compiled using the --enable-mysql
 		switch. 
@@ -1228,12 +1230,12 @@ Q21 of FAQS describes how to estimate the amount of flows/samples per second of 
 deployment.
 
 
-XI. Quickstart guide to packet classification
+XI. Quickstart guide to packet/flow classification
 Packet classification is a feature available for pmacctd (libpcap-based daemon),
-uacctd (NFLOG-based daemon), NetFlow v9/IPFIX IE 315 (dataLinkFrameSection) and
-the sFlow v5 raw header sample. The current approach is to leverage the popular
-free, open-source nDPI library. To enable the feature please follow these
-steps:
+uacctd (NFLOG-based daemon), nfacctd (NetFlow daemon) via NetFlow v9/IPFIX IE #315
+(dataLinkFrameSection) and sfacctd (sFlow daemon) via sFlow v5 raw header sample
+and the current approach is to leverage the popular free, open-source nDPI library.
+To enable the feature please follow these steps:
 
 1) Download pmacct from its webpage (http://www.pmacct.net/) or from its GitHub
    repository (https://github.com/pmacct/pmacct).
@@ -1242,7 +1244,7 @@ steps:
    nDPI API tends to change frequently in a non-backward compatible fashion.
    This means that not every version of pmacct will work with any version of
    nDPI. pmacct 1.7.5 works against nDPI 3.0-stable, pmacct 1.7.6 works against
-   nDPI 3.2-stable.  
+   nDPI 3.2-stable. pmacct 1.7.7 works against nDPI 3.4-stable.
 
 3) Configure for compiling, compile and install the downloaded nDPI library, ie.
    inside the nDPI directory:
@@ -1300,6 +1302,15 @@ steps:
 6) Execute pmacct as:
 
    shell> pmacctd -f /path/to/pmacctd.conf
+
+Flow classification is a feature available for nfacctd (NetFlow daemon) and relies
+on NetFlow v9/IPFIX IEs #94, #95 and #96. Where IE #95 (applicationId) is part of
+flow data and can be looked up against Options data where IE #96 (applicationName) 
+and IE #94 (applicationDescription) are supplied - specifically applicationName is
+the one used for the 'class' primitive value. To enable the feature, if the NetFlow/
+IPFIX exporter does follow Cisco NBAR2 / RFC6759 implementation (and pmacct nfprobe
+plugin does!), simply add the 'class' primitive to the existing 'aggregate'
+aggregation method.
 
 
 XII. Quickstart guide to setup a NetFlow/IPFIX agent/probe
@@ -1404,9 +1415,10 @@ b) build NetFlow probe configuration, using pmacctd:
    is not returned when configuring the neighborship directly in the bgpd config
    file.
 
-   2) encode flow classification information in NetFlow v9 like Cisco does with its
-   NBAR/NetFlow v9 integration. This can be done by introducing the 'class' primitive
-   to the afore mentioned 'aggregate' and add the extra configuration directive:
+   2) encode flow classification information in NetFlow v9 / IPFIX like Cisco does
+   with its NBAR2 implementation / RFC6759. This can be done by introducing the
+   'class' primitive to the afore mentioned 'aggregate' and add the extra config
+   directive:
 
    aggregate: class, src_host, dst_host, src_port, dst_port, proto, tos
    snaplen: 700
@@ -2930,7 +2942,7 @@ options>". A memory leak is confirmed if the amount of "definitely lost" bytes
 keeps increasing over time.
 
 d) In the two cases of nfacctd/sfacctd or nfprobe/sfprobe not showing signs of
-input/output data: 1) check with tcpdump, ie. "tcpdump -i <interface> -n port
+input/output data: 1) check with tcpdump, ie. "tcpdump -i <interface> -n
 <sfacctd/nfacctd listening port>" (for uacctd use -i nflog:<nflog group>), that
 packets are emitted/received. Optionally Wireshark (or its cli tool tshark) can
 be used, in conjunction with decoders ('cflow' for NetFlow/IPFIX and 'sflow' for
@@ -2981,28 +2993,28 @@ about buffering provided slightly later in this document.
 
 f) Replay packets can be needed, for example, to troubleshoot the behaviour
 of one of the pmacct daemons. A capture in libpcap format, suitable for
-replay, can be produced with tcpdump, ie. for NetFlow/IPFIX/sFlow via the
-"tcpdump -i <interface> -n -s 0 -w <output file> port <sfacctd/nfacctd
-listening port>" (for uacctd use -i nflog:<nflog group>) command-line; for
-traces over extended periods of time, ie. to troubleshoot specific bogus
-packets triggering crashes, the -G tcpdump option can be specified to rotate
--w output_file each specified seconds interval and, as tcpdump man page, does
-mention "savefiles will have the name specified by -w which should include a
-time format as defined by strftime(3). If no time format is specified, each
-new file will overwrite the previous.". Output file(s) can be replayed by
-using the pcap_savefile (-I) and, optionally, the pcap_savefile_wait (-W)
-directives, ie.: "nfacctd -I <pcap savefile> <..>". For more advanced use-
-cases, ie. loop indefinitely through the pcap file and run it with a speed
-multiplicator in order to stress test the daemon, the tcpreplay tool can be
-used for the purpose. In this case, before replaying NetFlow/IPFIX/sFlow,
-L2/L3 of captured packets must be adjusted to reflect the lab environment;
-this can be done with the tcprewrite tool of the tcpreplay package, ie.:
-"tcprewrite --enet-smac=<src MAC address> --enet-dmac= <dst MAC address> -S
-<src IP address rewrite> -D <dst IP address rewrite> --fixcsum --infile=<input
-file, ie. output from tcpdump> --outfile=<output file>". Then the output file
-from tcprewrite can be supplied to tcpreplay for the actual replay to the
-pmacct daemon, ie.: "tcpreplay -x <speed multiplicator> -i <output interface>
-<input file>". 
+replay, can be produced with tcpdump. For example to produce a trace for
+NetFlow/IPFIX/sFlow this is the command-line: "tcpdump -i <interface> -n -s 0
+-w <output file> port <sfacctd/nfacctd listening port>"; for ULOG/NFLOG on
+Linux the interface should be in the format "-i nflog:<nflog group>" instead.
+For traces over extended periods of time, ie. to troubleshoot specific bogus
+packets triggering crashes or capture NetFlow v9/IPFIX templates, optionally
+the -G tcpdump option can be specified to rotate the -w output_file each
+specified seconds interval (read more on tcpdump man page). Once the trace
+has been created, trace file(s) can be replayed by pmacct daemons using the
+pcap_savefile (-I) and, optionally, the pcap_savefile_wait (-W) directives,
+ie.: "nfacctd -I <pcap savefile> <..>".
+For more advanced use-cases, ie. loop indefinitely through the pcap file and
+run it with a speed multiplicator in order to stress test the daemon, the
+tcpreplay tool can be used. In this case, before replaying NetFlow/IPFIX/sFlow,
+L2/L3 of captured packets may need to be adjusted in order to reflect the lab/
+replay environment; this can be done with the tcprewrite tool of the tcpreplay
+package, ie.: "tcprewrite --enet-smac=<src MAC address> --enet-dmac= <dst MAC
+address> -S <src IP address rewrite> -D <dst IP address rewrite> --fixcsum
+--infile=<input file, ie. output from tcpdump> --outfile=<output file>". Then
+the output file from tcprewrite can be supplied to tcpreplay for the actual
+replay to the pmacct daemon, ie.: "tcpreplay -x <speed multiplicator>
+-i <output interface> <input file>".
 
 g) Buffering is often an element to tune. While buffering internal to pmacct
 (configured with plugin_buffer_size / plugin_pipe_size or plugin_pipe_zmq)

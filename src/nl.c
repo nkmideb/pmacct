@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -68,7 +68,7 @@ void pm_pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *bu
     pptrs.blp_table = cb_data->blp_table;
     pptrs.bmed_table = cb_data->bmed_table;
     pptrs.bta_table = cb_data->bta_table;
-    pptrs.flow_type = PM_FTYPE_TRAFFIC;
+    pptrs.flow_type.traffic_type = PM_FTYPE_TRAFFIC;
 
     assert(cb_data);
 
@@ -83,7 +83,7 @@ void pm_pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *bu
       memcpy(&tpptrs->pkthdr, &pptrs.pkthdr, sizeof(struct pcap_pkthdr));
 
       tpptrs->packet_ptr = (u_char *) buf;
-      tpptrs->flow_type = PM_FTYPE_TRAFFIC;
+      tpptrs->flow_type.traffic_type = PM_FTYPE_TRAFFIC;
     }
 
     /* direction */
@@ -132,12 +132,12 @@ void pm_pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *bu
     }
     else pptrs.ifindex_out = 0;
 
-    if (config.decode_arista_trailer) {
-      memcpy(&ifacePresent, buf + pkthdr->len - 8, 4);
-        if (ifacePresent == 1) {
-          memcpy(&iface32, buf + pkthdr->len - 4, 4);
-          pptrs.ifindex_out = iface32;
-        }
+    if (config.pcap_arista_trailer_offset) {
+      memcpy(&ifacePresent, buf + pkthdr->len - config.pcap_arista_trailer_offset, 4);
+      if (ifacePresent == config.pcap_arista_trailer_flag_value) {
+        memcpy(&iface32, buf + pkthdr->len - (config.pcap_arista_trailer_offset - 4), 4);
+        pptrs.ifindex_out = iface32;
+      }
     }
 
     (*device->data->handler)(pkthdr, &pptrs);
@@ -354,6 +354,11 @@ int ip_handler(register struct packet_ptrs *pptrs)
   }
 
   quit:
+
+  if (ret) {
+    pptrs->flow_type.traffic_type = PM_FTYPE_IPV4;
+  }
+ 
   return ret;
 }
 
@@ -370,7 +375,7 @@ int ip6_handler(register struct packet_ptrs *pptrs)
 
   /* length checks */
   if (off+IP6HdrSz > caplen) return FALSE; /* IP packet truncated */
-  if (plen == 0 && ((struct ip6_hdr *)pptrs->iph_ptr)->ip6_nxt != IPPROTO_NONE) {
+  if (plen == 0 && ((struct ip6_hdr *)pptrs->iph_ptr)->ip6_nxt == IPPROTO_HOPOPTS) {
     Log(LOG_INFO, "INFO ( %s/core ): NULL IPv6 payload length. Jumbo packets are currently not supported.\n", config.name);
     return FALSE;
   }
@@ -514,7 +519,12 @@ int ip6_handler(register struct packet_ptrs *pptrs)
   }
 
   quit:
-  return TRUE;
+
+  if (ret) {
+    pptrs->flow_type.traffic_type = PM_FTYPE_IPV6;
+  }
+
+  return ret;
 }
 
 int PM_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_id_t *tag2)
@@ -774,10 +784,10 @@ void set_index_pkt_ptrs(struct packet_ptrs *pptrs)
 void PM_evaluate_flow_type(struct packet_ptrs *pptrs)
 {
   if (pptrs->l3_proto == ETHERTYPE_IP) {
-    pptrs->flow_type = PM_FTYPE_IPV4;
+    pptrs->flow_type.traffic_type = PM_FTYPE_IPV4;
   }
   else if (pptrs->l3_proto == ETHERTYPE_IPV6) {
-    pptrs->flow_type = PM_FTYPE_IPV6;
+    pptrs->flow_type.traffic_type = PM_FTYPE_IPV6;
   }
 }
 

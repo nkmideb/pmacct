@@ -14,8 +14,8 @@ _libcdada:
 	@not_git=0; \
 	if [ -z "`git rev-parse HEAD 2> /dev/null`" ]; then \
 		if [ -f "$(abs_srcdir)/libcdada/include/cdada.h" ]; then \
-			PMACCT_EXT_LIBS_DONT_SYNC=1; \
 			not_git=1; \
+			PMACCT_EXT_LIBS_DONT_SYNC=1; \
 			cd $(abs_builddir); \
 		else \
 			echo "[dep: libcdada] Skipping, not a git repository and code not in tree!"; \
