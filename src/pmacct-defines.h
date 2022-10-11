@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -527,23 +527,22 @@ typedef u_int64_t pm_counter_t;
 #define NF_NET_FALLBACK	0x80000000 /* Fallback flag */
 
 /* flow type */
-#define PM_FTYPE_TRAFFIC		1  /* temporary: re-coding needed */
-#define PM_FTYPE_TRAFFIC_IPV6		1
-#define PM_FTYPE_IPV4			1
-#define PM_FTYPE_IPV6			2
+#define PM_FTYPE_TRAFFIC		1
+#define PM_FTYPE_IPV4			2
+#define PM_FTYPE_IPV6			3
 #define PM_FTYPE_VLAN			5
-#define PM_FTYPE_VLAN_IPV4		6  /* PM_FTYPE_VLAN + PM_FTYPE_IPV4 */
-#define PM_FTYPE_VLAN_IPV6		7  /* PM_FTYPE_VLAN + PM_FTYPE_IPV6 */
+#define PM_FTYPE_VLAN_IPV4		7  /* PM_FTYPE_VLAN + PM_FTYPE_IPV4 */
+#define PM_FTYPE_VLAN_IPV6		8  /* PM_FTYPE_VLAN + PM_FTYPE_IPV6 */
 #define PM_FTYPE_MPLS			10
-#define PM_FTYPE_MPLS_IPV4		11 /* PM_FTYPE_MPLS + PM_FTYPE_IPV4 */
-#define PM_FTYPE_MPLS_IPV6		12 /* PM_FTYPE_MPLS + PM_FTYPE_IPV6 */
-#define PM_FTYPE_VLAN_MPLS		15
-#define PM_FTYPE_VLAN_MPLS_IPV4		16 /* PM_FTYPE_VLAN_MPLS + PM_FTYPE_IPV4 */
-#define PM_FTYPE_VLAN_MPLS_IPV6		17 /* PM_FTYPE_VLAN_MPLS + PM_FTYPE_IPV6 */
+#define PM_FTYPE_MPLS_IPV4		12 /* PM_FTYPE_MPLS + PM_FTYPE_IPV4 */
+#define PM_FTYPE_MPLS_IPV6		13 /* PM_FTYPE_MPLS + PM_FTYPE_IPV6 */
+#define PM_FTYPE_VLAN_MPLS		15 /* PM_FTYPE_MPLS + PM_FTYPE_VLAN */
+#define PM_FTYPE_VLAN_MPLS_IPV4		17 /* PM_FTYPE_VLAN_MPLS + PM_FTYPE_IPV4 */
+#define PM_FTYPE_VLAN_MPLS_IPV6		18 /* PM_FTYPE_VLAN_MPLS + PM_FTYPE_IPV6 */
 #define PM_FTYPE_TRAFFIC_MAX		99  /* temporary: re-coding needed */
 
 /* flow type: NetFlow/IPFIX extended code-points */
-#define NF9_FTYPE_DLFS			3
+#define NF9_FTYPE_DLFS			4
 #define NF9_FTYPE_EVENT			100 /* temporary: re-coding needed */
 #define NF9_FTYPE_NAT_EVENT             100
 #define NF9_FTYPE_OPTION		200
@@ -557,3 +556,10 @@ typedef u_int64_t pm_counter_t;
 #define CUSTOM_PRIMITIVE_L4_PTR		5
 #define CUSTOM_PRIMITIVE_PAYLOAD_PTR	6
 #define CUSTOM_PRIMITIVE_MAX_PPTRS_IDX	7
+
+/* libpcap supports pkg-config only since recently,
+   so fixing this little >= 1.1.0 definition here for
+   OS's coming with vintage versions installed */
+#ifndef PCAP_NETMASK_UNKNOWN
+#define PCAP_NETMASK_UNKNOWN		0xffffffff
+#endif

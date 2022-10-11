@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -92,9 +92,6 @@ int skinny_bgp_daemon()
 void skinny_bgp_daemon_online()
 {
   int ret, rc, peers_idx, allowed, yes=1;
-#if (defined IPV6_BINDV6ONLY)
-  int no=0;
-#endif
   int peers_idx_rr = 0, peers_xconnect_idx_rr = 0, max_peers_idx = 0;
   struct plugin_requests req;
   struct host_addr addr;
@@ -328,18 +325,20 @@ void skinny_bgp_daemon_online()
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IP_TOS (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
   }
 
-#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
-  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *)&yes, (socklen_t) sizeof(yes));
-  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
-#else
-  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, (socklen_t) sizeof(yes));
-  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+#if (defined HAVE_SO_REUSEPORT)
+  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEPORT, (char *)&yes, (socklen_t) sizeof(yes));
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEPORT (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
 #endif
 
-#if (defined IPV6_BINDV6ONLY)
-  rc = setsockopt(config.bgp_sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
-  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IPV6_BINDV6ONLY (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
-#endif
+  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, (socklen_t) sizeof(yes));
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+
+  if (config.bgp_daemon_ipv6_only) {
+    int yes=1;
+
+    rc = setsockopt(config.bgp_sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &yes, (socklen_t) sizeof(yes));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IPV6_V6ONLY (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+  }
 
   if (config.bgp_daemon_pipe_size) {
     socklen_t l = sizeof(config.bgp_daemon_pipe_size);
@@ -459,17 +458,7 @@ void skinny_bgp_daemon_online()
 	  exit_gracefully(1);
 	}
 
-	bgp_daemon_msglog_kafka_host.sd_schema[0] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
-										        bgp_misc_db->msglog_avro_schema[0], "bgp", "msglog",
-										        config.bgp_daemon_msglog_kafka_avro_schema_registry);
-
-	bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGINIT] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
-										        bgp_misc_db->msglog_avro_schema[BGP_LOG_TYPE_LOGINIT], "bgp", "loginit",
-										        config.bgp_daemon_msglog_kafka_avro_schema_registry);
-
-	bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGCLOSE] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
-										        bgp_misc_db->msglog_avro_schema[BGP_LOG_TYPE_LOGCLOSE], "bgp", "logclose",
-										        config.bgp_daemon_msglog_kafka_avro_schema_registry);
+	bgp_daemon_msglog_prepare_sd_schemas();
 #endif
       }
     }
@@ -477,8 +466,14 @@ void skinny_bgp_daemon_online()
   }
 
   if (bgp_misc_db->dump_backend_methods) {
+    if (!config.bgp_table_dump_workers) {
+      config.bgp_table_dump_workers = 1;
+    }
+
 #ifdef WITH_JANSSON
-    if (!config.bgp_table_dump_output) config.bgp_table_dump_output = PRINT_OUTPUT_JSON;
+    if (!config.bgp_table_dump_output) {
+      config.bgp_table_dump_output = PRINT_OUTPUT_JSON;
+    }
 #else
     Log(LOG_WARNING, "WARN ( %s/%s ): bgp_table_dump_output set to json but will produce no output (missing --enable-jansson).\n", config.name, bgp_misc_db->log_str);
 #endif
@@ -532,9 +527,6 @@ void skinny_bgp_daemon_online()
       bgp_misc_db->dump_backend_methods = FALSE;
       Log(LOG_WARNING, "WARN ( %s/%s ): Invalid 'bgp_table_dump_refresh_time'.\n", config.name, bgp_misc_db->log_str);
     }
-
-    if (config.bgp_table_dump_amqp_routing_key) bgp_table_dump_init_amqp_host();
-    if (config.bgp_table_dump_kafka_topic) bgp_table_dump_init_kafka_host();
   }
 
 #ifdef WITH_AVRO
@@ -680,7 +672,7 @@ void skinny_bgp_daemon_online()
 	  if (bgp_peer_log_seq_has_ro_bit(&bgp_misc_db->log_seq))
 	    bgp_peer_log_seq_init(&bgp_misc_db->log_seq);
 
-	  bgp_handle_dump_event();
+	  bgp_handle_dump_event(max_peers_idx);
 
 	  dump_refresh_deadline += config.bgp_table_dump_refresh_time;
 	}
@@ -703,6 +695,12 @@ void skinny_bgp_daemon_online()
 
         if (last_fail && ((last_fail + P_broker_timers_get_retry_interval(&bgp_daemon_msglog_kafka_host.btimers)) <= bgp_misc_db->log_tstamp.tv_sec))
           bgp_daemon_msglog_init_kafka_host();
+
+	if (config.bgp_daemon_msglog_kafka_avro_schema_registry) {
+#ifdef WITH_SERDES
+	  bgp_daemon_msglog_prepare_sd_schemas();
+#endif
+	}
       }
 #endif
     }
@@ -1078,4 +1076,42 @@ void bgp_prepare_daemon()
 
   bgp_misc_db->log_str = malloc(strlen("core") + 1);
   strcpy(bgp_misc_db->log_str, "core");
+}
+
+void bgp_daemon_msglog_prepare_sd_schemas()
+{
+#ifdef WITH_SERDES
+  time_t last_fail = P_broker_timers_get_last_fail(&bgp_daemon_msglog_kafka_host.sd_schema_timers);
+
+  if ((last_fail + P_broker_timers_get_retry_interval(&bgp_daemon_msglog_kafka_host.sd_schema_timers)) <= bgp_misc_db->log_tstamp.tv_sec) {
+    if (!bgp_daemon_msglog_kafka_host.sd_schema[0]) {
+      bgp_daemon_msglog_kafka_host.sd_schema[0] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
+												     bgp_misc_db->msglog_avro_schema[0],
+												     "bgp", "msglog",
+												     config.bgp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bgp_daemon_msglog_kafka_host.sd_schema[0]) goto exit_lane;
+    }
+
+    if (!bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGINIT]) {
+      bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGINIT] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
+												     bgp_misc_db->msglog_avro_schema[BGP_LOG_TYPE_LOGINIT],
+												     "bgp", "loginit",
+												     config.bgp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGINIT]) goto exit_lane;
+    }
+
+    if (!bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGCLOSE]) {
+      bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGCLOSE] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
+												     bgp_misc_db->msglog_avro_schema[BGP_LOG_TYPE_LOGCLOSE],
+												     "bgp", "logclose",
+												     config.bgp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGCLOSE]) goto exit_lane;
+    }
+  }
+
+  return;
+
+  exit_lane:
+  P_broker_timers_set_last_fail(&bgp_daemon_msglog_kafka_host.sd_schema_timers, time(NULL));
+#endif
 }

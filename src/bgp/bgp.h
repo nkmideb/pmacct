@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -20,6 +20,7 @@
 */
 
 /* includes */
+#include <pthread.h>
 #include <sys/poll.h>
 #include "bgp_prefix.h"
 #include "bgp_packet.h"
@@ -67,6 +68,11 @@
 #define BGP_ATTR_LARGE_COMMUNITIES		32 /* rfc8092 */
 #define BGP_ATTR_PREFIX_SID			40
 
+/* BGP4 internal bitmap type codes.  */
+#define BGP_BMAP_ATTR_MULTI_EXIT_DISC		0x01
+#define BGP_BMAP_ATTR_LOCAL_PREF		0x02
+#define BGP_BMAP_ATTR_AIGP			0x04
+
 #define BGP_NLRI_UNDEFINED			0
 #define BGP_NLRI_UPDATE				1
 #define BGP_NLRI_WITHDRAW			2
@@ -113,7 +119,7 @@
 struct bgp_dump_event {
   struct timeval tstamp;
   char tstamp_str[SRVBUFLEN];
-  int period;
+  u_int32_t period;
 };
 
 struct bgp_rt_structs {
@@ -223,6 +229,7 @@ struct bgp_misc_structs {
   char *peer_port_str; /* "bmp_router_port", "peer_src_ip_port", etc. */
   char *log_str; /* BGP, BMP, thread, daemon, etc. */
   int is_thread;
+  int is_readonly; /* disables locking! set to true only in a dump child process */
   int has_lglass;
   int has_blackhole;
   int skip_rib;
@@ -247,6 +254,7 @@ struct bgp_misc_structs {
   int dump_amqp_routing_key_rr;
   char *dump_kafka_topic;
   int dump_kafka_topic_rr;
+  char *dump_kafka_partition_key;
 #if defined WITH_AVRO
   avro_schema_t dump_avro_schema[MAX_AVRO_SCHEMA];
 #endif
@@ -257,6 +265,7 @@ struct bgp_misc_structs {
   int msglog_amqp_routing_key_rr;
   char *msglog_kafka_topic;
   int msglog_kafka_topic_rr;
+  char *msglog_kafka_partition_key;
 #if defined WITH_AVRO
   avro_schema_t msglog_avro_schema[MAX_AVRO_SCHEMA];
 #endif
@@ -321,6 +330,7 @@ struct bgp_attr {
   u_int32_t med;
   u_int32_t local_pref;
   u_int8_t origin;
+  u_int8_t bitmap;
 };
 
 struct bgp_comm_range {
@@ -373,6 +383,7 @@ extern int skinny_bgp_daemon();
 extern void skinny_bgp_daemon_online();
 extern void bgp_prepare_thread();
 extern void bgp_prepare_daemon();
+extern void bgp_daemon_msglog_prepare_sd_schemas();
 
 /* global variables */
 extern struct bgp_peer *peers;

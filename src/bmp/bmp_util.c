@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -49,31 +49,19 @@ char *bmp_get_and_check_length(char **bmp_packet_ptr, u_int32_t *pkt_size, u_int
   return current_ptr;
 }
 
-void bmp_jump_offset(char **bmp_packet_ptr, u_int32_t *len, u_int32_t offset)
+int bmp_jump_offset(char **bmp_packet_ptr, u_int32_t *len, u_int32_t offset)
 {
+  int ret = ERR;
+
   if (bmp_packet_ptr && (*bmp_packet_ptr) && len) {
     if (offset <= (*len)) {
       (*bmp_packet_ptr) += offset;
       (*len) -= offset;
+      ret = offset;
     }
   }
-}
 
-u_int32_t bmp_packet_adj_offset(char *bmp_packet, u_int32_t buf_len, u_int32_t recv_len, u_int32_t remaining_len, char *addr_str)
-{
-  char tmp_packet[BGP_BUFFER_SIZE];
-  
-  if (!bmp_packet || recv_len > buf_len || remaining_len >= buf_len || remaining_len > recv_len) {
-    if (addr_str)
-      Log(LOG_INFO, "INFO ( %s/core/BMP ): [%s] packet discarded: failed bmp_packet_adj_offset()\n", config.name, addr_str);
-
-    return FALSE;
-  }
-
-  memcpy(tmp_packet, &bmp_packet[recv_len - remaining_len], remaining_len);
-  memcpy(bmp_packet, tmp_packet, remaining_len);
-
-  return remaining_len;
+  return ret;
 }
 
 void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int etype, int log_type, int output, void *void_obj)
@@ -101,6 +89,11 @@ void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int etype, int log_type,
 
     json_object_set_new_nocheck(obj, "bmp_router_port", json_integer((json_int_t)bmpp->self.tcp_port));
 
+    addr_to_str(ip_address, &peer->addr);
+    json_object_set_new_nocheck(obj, "peer_ip", json_string(ip_address));
+
+    json_object_set_new_nocheck(obj, "peer_tcp_port", json_integer((json_int_t)peer->tcp_port));
+
     if (log_type == BGP_LOG_TYPE_DELETE) {
       json_object_set_new_nocheck(obj, "bmp_msg_type", json_string("internal"));
     }
@@ -109,7 +102,8 @@ void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int etype, int log_type,
     }
 #endif
   }
-  else if (output == PRINT_OUTPUT_AVRO_BIN) {
+  else if ((output == PRINT_OUTPUT_AVRO_BIN) ||
+	   (output == PRINT_OUTPUT_AVRO_JSON)) {
 #ifdef WITH_AVRO
     char ip_address[INET6_ADDRSTRLEN];
     avro_value_t *obj = (avro_value_t *) void_obj, p_avro_field, p_avro_branch;
@@ -131,6 +125,14 @@ void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int etype, int log_type,
     pm_avro_check(avro_value_get_by_name(obj, "bmp_router_port", &p_avro_field, NULL));
     pm_avro_check(avro_value_set_branch(&p_avro_field, TRUE, &p_avro_branch));
     pm_avro_check(avro_value_set_int(&p_avro_branch, bmpp->self.tcp_port));
+
+    addr_to_str(ip_address, &peer->addr);
+    pm_avro_check(avro_value_get_by_name(obj, "peer_ip", &p_avro_field, NULL));
+    pm_avro_check(avro_value_set_string(&p_avro_field, ip_address));
+
+    pm_avro_check(avro_value_get_by_name(obj, "peer_tcp_port", &p_avro_field, NULL));
+    pm_avro_check(avro_value_set_branch(&p_avro_field, TRUE, &p_avro_branch));
+    pm_avro_check(avro_value_set_int(&p_avro_branch, peer->tcp_port));
 
     if (log_type == BGP_LOG_TYPE_DELETE) {
       pm_avro_check(avro_value_get_by_name(obj, "bmp_msg_type", &p_avro_field, NULL));
@@ -163,6 +165,7 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->dump_amqp_routing_key_rr = config.bmp_dump_amqp_routing_key_rr;
   bms->dump_kafka_topic = config.bmp_dump_kafka_topic;
   bms->dump_kafka_topic_rr = config.bmp_dump_kafka_topic_rr;
+  bms->dump_kafka_partition_key = config.bmp_dump_kafka_partition_key;
   bms->dump_kafka_avro_schema_registry = config.bmp_dump_kafka_avro_schema_registry;
   bms->msglog_file = config.bmp_daemon_msglog_file;
   bms->msglog_output = config.bmp_daemon_msglog_output;
@@ -170,6 +173,7 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->msglog_amqp_routing_key_rr = config.bmp_daemon_msglog_amqp_routing_key_rr;
   bms->msglog_kafka_topic = config.bmp_daemon_msglog_kafka_topic;
   bms->msglog_kafka_topic_rr = config.bmp_daemon_msglog_kafka_topic_rr;
+  bms->msglog_kafka_partition_key = config.bmp_daemon_msglog_kafka_partition_key;
   bms->msglog_kafka_avro_schema_registry = config.bmp_daemon_msglog_kafka_avro_schema_registry;
   bms->peer_str = malloc(strlen("bmp_router") + 1);
   strcpy(bms->peer_str, "bmp_router");
@@ -243,8 +247,9 @@ void bmp_peer_close(struct bmp_peer *bmpp, int type)
   pm_tdestroy(&bmpp->bgp_peers_v4, bgp_peer_free);
   pm_tdestroy(&bmpp->bgp_peers_v6, bgp_peer_free);
 
-  if (bms->dump_file || bms->dump_amqp_routing_key || bms->dump_kafka_topic)
+  if (bms->dump_file || bms->dump_amqp_routing_key || bms->dump_kafka_topic) {
     bmp_dump_close_peer(peer);
+  }
 
   bgp_peer_close(peer, type, FALSE, FALSE, FALSE, FALSE, NULL);
 }
@@ -374,10 +379,12 @@ void bgp_extra_data_print_bmp(struct bgp_msg_extra_data *bmed, int output, void 
 
       bgp_rd2str(rd_str, &bmed_bmp->rd);
       json_object_set_new_nocheck(obj, "rd", json_string(rd_str));
+      json_object_set_new_nocheck(obj, "rd_origin", json_string(bgp_rd_origin_print(bmed_bmp->rd.type)));
     }
 #endif
   }
-  else if (output == PRINT_OUTPUT_AVRO_BIN) {
+  else if ((output == PRINT_OUTPUT_AVRO_BIN) ||
+	   (output == PRINT_OUTPUT_AVRO_JSON)) {
 #ifdef WITH_AVRO
     avro_value_t *obj = (avro_value_t *) void_obj, p_avro_field, p_avro_branch;
 
@@ -443,9 +450,16 @@ void bgp_extra_data_print_bmp(struct bgp_msg_extra_data *bmed, int output, void 
       pm_avro_check(avro_value_get_by_name(obj, "rd", &p_avro_field, NULL));
       pm_avro_check(avro_value_set_branch(&p_avro_field, TRUE, &p_avro_branch));
       pm_avro_check(avro_value_set_string(&p_avro_branch, rd_str));
+
+      pm_avro_check(avro_value_get_by_name(obj, "rd_origin", &p_avro_field, NULL));
+      pm_avro_check(avro_value_set_branch(&p_avro_field, TRUE, &p_avro_branch));
+      pm_avro_check(avro_value_set_string(&p_avro_branch, bgp_rd_origin_print(bmed_bmp->rd.type)));
     }
     else {
       pm_avro_check(avro_value_get_by_name(obj, "rd", &p_avro_field, NULL));
+      pm_avro_check(avro_value_set_branch(&p_avro_field, FALSE, &p_avro_branch));
+
+      pm_avro_check(avro_value_get_by_name(obj, "rd_origin", &p_avro_field, NULL));
       pm_avro_check(avro_value_set_branch(&p_avro_field, FALSE, &p_avro_branch));
     }
 #endif

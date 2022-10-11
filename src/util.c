@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -47,6 +47,7 @@
 #include "ip_flow.h"
 #include "classifier.h"
 #include "plugin_hooks.h"
+#include "pkt_handlers.h"
 #include <netdb.h>
 #include <sys/file.h>
 #include <sys/utsname.h>
@@ -487,13 +488,15 @@ void link_latest_output_file(char *link_filename, char *filename_to_link)
 
   if (!link_filename || !filename_to_link) return;
 
+  buf[0] = '\0';
+
   if (config.files_uid) owner = config.files_uid;
   if (config.files_gid) group = config.files_gid;
 
   /* create dir structure to get to file, if needed */
   ret = mkdir_multilevel(link_filename, TRUE, owner, group);
   if (ret) {
-    Log(LOG_ERR, "ERROR ( %s/%s ): [%s] link_latest_output_file(): mkdir_multilevel() failed.\n", config.name, config.type, buf);
+    Log(LOG_ERR, "ERROR ( %s/%s ): [%s] link_latest_output_file(): mkdir_multilevel() failed.\n", config.name, config.type, link_filename);
     return;
   }
 
@@ -505,7 +508,7 @@ void link_latest_output_file(char *link_filename, char *filename_to_link)
 
     memset(&s1, 0, sizeof(struct stat));
     memset(&s2, 0, sizeof(struct stat));
-    readlink(link_filename, buf, SRVBUFLEN);
+    ret = readlink(link_filename, buf, SRVBUFLEN);
 
     /* filename_to_link is newer than buf or buf is un-existing */
     stat(buf, &s1);
@@ -516,10 +519,13 @@ void link_latest_output_file(char *link_filename, char *filename_to_link)
 
   if (rewrite_latest) {
     unlink(link_filename);
-    symlink(filename_to_link, link_filename);
+    ret = symlink(filename_to_link, link_filename);
 
-    if (lchown(link_filename, owner, group) == -1)
-      Log(LOG_WARNING, "WARN ( %s/%s ): link_latest_output_file(): unable to chown() '%s'.\n", config.name, config.type, link_filename);
+    if (!ret) {
+      if (lchown(link_filename, owner, group) == -1) {
+	Log(LOG_WARNING, "WARN ( %s/%s ): [%s] link_latest_output_file(): unable to chown().\n", config.name, config.type, link_filename);
+      }
+    }
   }
 }
 
@@ -1418,24 +1424,43 @@ int timeval_cmp(struct timeval *a, struct timeval *b)
   return INT_MIN; /* silence compiler warning */
 }
 
+void signal_kittens(int sig, int amicore_check)
+{
+  struct plugins_list_entry *list = plugins_list;
+  struct channels_list_entry *chptr = channels_list;
+
+  /* round #1: safety check, am i the core process? */
+  if (amicore_check) {
+    if (!chptr || chptr->core_pid != getpid()) {
+      return;
+    }
+  }
+
+  /* round #2: do it */
+  list = plugins_list;
+
+  while (list) {
+    if (memcmp(list->type.string, "core", sizeof("core"))) {
+      kill(list->pid, sig);
+    }
+
+    list = list->next;
+  }
+}
+
 /*
  * exit_all(): Core Process exit lane. Not meant to be a nice shutdown method: it is
  * an exit() replacement that sends kill signals to the plugins.
  */
 void exit_all(int status)
 {
-  struct plugins_list_entry *list = plugins_list;
-
 #if defined (SOLARIS)
   signal(SIGCHLD, SIG_IGN);
 #else
   signal(SIGCHLD, ignore_falling_child);
 #endif
 
-  while (list) {
-    if (memcmp(list->type.string, "core", sizeof("core"))) kill(list->pid, SIGKILL);
-    list = list->next;
-  }
+  signal_kittens(SIGKILL, TRUE);
 
   wait(NULL);
   if (config.pidfile) remove_pid_file(config.pidfile);
@@ -1851,7 +1876,7 @@ char *write_sep(char *sep, int *count)
   }
 }
 
-void version_daemon(char *header)
+void version_daemon(int acct_type, char *header)
 {
   struct utsname utsbuf;
 
@@ -1900,12 +1925,42 @@ void version_daemon(char *header)
 #ifdef WITH_SERDES
   printf("serdes\n");
 #endif
+#ifdef WITH_UNYTE_UDP_NOTIF
+  printf("unyte-udp-notif\n");
+#endif
 #ifdef WITH_NDPI
   printf("nDPI %s\n", ndpi_revision());
 #endif
 #ifdef WITH_NFLOG
   printf("netfilter_log\n");
 #endif
+
+  if (acct_type == ACCT_NF || acct_type == ACCT_SF || acct_type == ACCT_PM) {
+    printf("\n");
+
+    printf("Plugins:\n");
+    printf("memory\n");
+    printf("print\n");
+    printf("nfprobe\n");
+    printf("sfprobe\n");
+    printf("tee\n");
+#ifdef WITH_MYSQL
+    printf("mysql\n");
+#endif
+#ifdef WITH_PGSQL
+    printf("postgresql\n");
+#endif
+#ifdef WITH_SQLITE3
+    printf("sqlite\n");
+#endif
+#ifdef WITH_RABBITMQ
+    printf("amqp\n");
+#endif
+#ifdef WITH_KAFKA
+    printf("kafka\n");
+#endif
+  }
+
   printf("\n");
 
   if (!uname(&utsbuf)) {
@@ -3255,4 +3310,45 @@ int ft2af(u_int8_t ft)
   }
 
   return ERR;
+}
+
+void distribute_work(struct pm_dump_runner *pdr, u_int64_t seqno, int workers, u_int64_t last_elem) 
+{
+  int id, idx;
+
+  if (!pdr) return;
+
+  memset(pdr, 0, (workers * sizeof(struct pm_dump_runner)));
+
+  for (idx = 0, id = 1; idx < workers; idx++, id++) {
+    struct pm_dump_runner *worker = &pdr[idx];
+
+    worker->id = id;
+    worker->seq = seqno;
+    worker->noop = FALSE;
+
+    if (workers <= last_elem) {
+      int ratio = last_elem / workers;
+
+      if (idx < (workers - 1)) {
+	worker->first = idx * ratio;
+	worker->last = (((idx * ratio) + ratio) - 1);
+      }
+      else {
+	worker->first = idx * ratio;
+	worker->last = (last_elem - 1);
+      }
+    }
+    else {
+      if (idx < last_elem) {
+	worker->first = idx;
+	worker->last = idx;
+      }
+      else {
+	worker->noop = TRUE;
+	worker->first = FALSE;
+	worker->last = FALSE;
+      }
+    }
+  }
 }

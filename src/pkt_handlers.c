@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -1360,7 +1360,7 @@ void counters_handler(struct channels_list_entry *chptr, struct packet_ptrs *ppt
     pptrs->frag_sum_pkts = 0;
   }
 
-  pdata->flow_type = pptrs->flow_type;
+  pdata->flow_type = pptrs->flow_type.traffic_type;
 }
 
 void counters_renormalize_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -1661,7 +1661,10 @@ void mpls_vpn_rd_frommap_handler(struct channels_list_entry *chptr, struct packe
 {
   struct pkt_bgp_primitives *pbgp = (struct pkt_bgp_primitives *) ((*data) + chptr->extras.off_pkt_bgp_primitives);
 
-  if (pbgp && pptrs->bitr) memcpy(&pbgp->mpls_vpn_rd, &pptrs->bitr, sizeof(rd_t));
+  if (pbgp && pptrs->bitr) {
+    memcpy(&pbgp->mpls_vpn_rd, &pptrs->bitr, sizeof(rd_t));
+    bgp_rd_origin_set(&pbgp->mpls_vpn_rd, RD_ORIGIN_FLOW);
+  }
 }
 
 void timestamp_start_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -1896,7 +1899,7 @@ void NF_src_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *
   switch(hdr->version) {
   case 10:
   case 9:
-    if (pptrs->l3_proto == ETHERTYPE_IP || pptrs->flow_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
+    if (pptrs->l3_proto == ETHERTYPE_IP || pptrs->flow_type.traffic_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
       if (tpl->tpl[NF9_IPV4_SRC_ADDR].len) {
         memcpy(&pdata->primitives.src_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_SRC_ADDR].off, MIN(tpl->tpl[NF9_IPV4_SRC_ADDR].len, 4)); 
         pdata->primitives.src_ip.family = AF_INET;
@@ -1908,7 +1911,7 @@ void NF_src_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *
       else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len || tpl->tpl[NF9_LAYER2_PKT_SECTION_DATA].len)
 	src_host_handler(chptr, pptrs, data);
     }
-    if (pptrs->l3_proto == ETHERTYPE_IPV6 || pptrs->flow_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
+    if (pptrs->l3_proto == ETHERTYPE_IPV6 || pptrs->flow_type.traffic_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
       if (tpl->tpl[NF9_IPV6_SRC_ADDR].len) {
 	memcpy(&pdata->primitives.src_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_SRC_ADDR].off, MIN(tpl->tpl[NF9_IPV6_SRC_ADDR].len, 16));
         pdata->primitives.src_ip.family = AF_INET6;
@@ -1939,7 +1942,7 @@ void NF_dst_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *
   switch(hdr->version) {
   case 10:
   case 9:
-    if (pptrs->l3_proto == ETHERTYPE_IP || pptrs->flow_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
+    if (pptrs->l3_proto == ETHERTYPE_IP || pptrs->flow_type.traffic_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
       if (tpl->tpl[NF9_IPV4_DST_ADDR].len) {
         memcpy(&pdata->primitives.dst_ip.address.ipv4, pptrs->f_data+tpl->tpl[NF9_IPV4_DST_ADDR].off, MIN(tpl->tpl[NF9_IPV4_DST_ADDR].len, 4));
         pdata->primitives.dst_ip.family = AF_INET;
@@ -1951,7 +1954,7 @@ void NF_dst_host_handler(struct channels_list_entry *chptr, struct packet_ptrs *
       else if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len || tpl->tpl[NF9_LAYER2_PKT_SECTION_DATA].len)
 	dst_host_handler(chptr, pptrs, data);
     }
-    if (pptrs->l3_proto == ETHERTYPE_IPV6 || pptrs->flow_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
+    if (pptrs->l3_proto == ETHERTYPE_IPV6 || pptrs->flow_type.traffic_type == NF9_FTYPE_NAT_EVENT /* NAT64 case */) {
       if (tpl->tpl[NF9_IPV6_DST_ADDR].len) {
         memcpy(&pdata->primitives.dst_ip.address.ipv6, pptrs->f_data+tpl->tpl[NF9_IPV6_DST_ADDR].off, MIN(tpl->tpl[NF9_IPV6_DST_ADDR].len, 16));
         pdata->primitives.dst_ip.family = AF_INET6;
@@ -2469,6 +2472,12 @@ void NF_counters_handler(struct channels_list_entry *chptr, struct packet_ptrs *
         pdata->pkt_len = ntohl(t32);
       }
     }
+    else if (tpl->tpl[NF9_INITIATOR_OCTETS].len == 8) {
+      if (chptr->plugin->cfg.tmp_asa_bi_flow) {
+        memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_INITIATOR_OCTETS].off, 8);
+        pdata->pkt_len = pm_ntohll(t64);
+      }
+    }
 
     if (tpl->tpl[NF9_IN_PACKETS].len == 4) {
       memcpy(&t32, pptrs->f_data+tpl->tpl[NF9_IN_PACKETS].off, 4);
@@ -2500,6 +2509,12 @@ void NF_counters_handler(struct channels_list_entry *chptr, struct packet_ptrs *
         pdata->pkt_num = ntohl(t32);
       }
     }
+    else if (tpl->tpl[NF9_RESPONDER_OCTETS].len == 8) {
+      if (chptr->plugin->cfg.tmp_asa_bi_flow) {
+        memcpy(&t64, pptrs->f_data+tpl->tpl[NF9_RESPONDER_OCTETS].off, 8);
+        pdata->pkt_num = pm_ntohll(t64);
+      }
+    }
 
     if (!pdata->pkt_len && !pdata->pkt_num) {
       if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len || tpl->tpl[NF9_LAYER2_PKT_SECTION_DATA].len)
@@ -2515,7 +2530,7 @@ void NF_counters_handler(struct channels_list_entry *chptr, struct packet_ptrs *
     break;
   }
 
-  pdata->flow_type = pptrs->flow_type;
+  pdata->flow_type = pptrs->flow_type.traffic_type;
 }
 
 /* times from the netflow engine are in msecs */
@@ -2689,7 +2704,7 @@ void NF_time_msecs_handler(struct channels_list_entry *chptr, struct packet_ptrs
     break;
   }
 
-  pdata->flow_type = pptrs->flow_type;
+  pdata->flow_type = pptrs->flow_type.traffic_type;
 }
 
 /* times from the netflow engine are in secs */
@@ -2735,7 +2750,7 @@ void NF_time_secs_handler(struct channels_list_entry *chptr, struct packet_ptrs 
     break;
   }
 
-  pdata->flow_type = pptrs->flow_type;
+  pdata->flow_type = pptrs->flow_type.traffic_type;
 }
 
 /* ignore netflow engine times and generate new ones */
@@ -2748,7 +2763,7 @@ void NF_time_new_handler(struct channels_list_entry *chptr, struct packet_ptrs *
   pdata->time_end.tv_sec = 0;
   pdata->time_end.tv_usec = 0;
 
-  pdata->flow_type = pptrs->flow_type;
+  pdata->flow_type = pptrs->flow_type.traffic_type;
 }
 
 void pre_tag_handler(struct channels_list_entry *chptr, struct packet_ptrs *pptrs, char **data)
@@ -3596,12 +3611,14 @@ void NF_mpls_vpn_id_handler(struct channels_list_entry *chptr, struct packet_ptr
         ret = cdada_map_find(entry->in_rd_map, &ingress_vrfid, (void **) &rd);
 	if (ret == CDADA_SUCCESS) {
 	  memcpy(&pbgp->mpls_vpn_rd, rd, 8);
+	  bgp_rd_origin_set(&pbgp->mpls_vpn_rd, RD_ORIGIN_FLOW);
 	}
       }
       else {
-        pbgp->mpls_vpn_rd.val = ntohl(ingress_vrfid);
+        pbgp->mpls_vpn_rd.val = ingress_vrfid;
         if (pbgp->mpls_vpn_rd.val) {
 	  pbgp->mpls_vpn_rd.type = RD_TYPE_VRFID;
+	  bgp_rd_origin_set(&pbgp->mpls_vpn_rd, RD_ORIGIN_FLOW);
 	}
       }
     }
@@ -3611,12 +3628,14 @@ void NF_mpls_vpn_id_handler(struct channels_list_entry *chptr, struct packet_ptr
         ret = cdada_map_find(entry->out_rd_map, &egress_vrfid, (void **) &rd);
 	if (ret == CDADA_SUCCESS) {
 	  memcpy(&pbgp->mpls_vpn_rd, rd, 8);
+	  bgp_rd_origin_set(&pbgp->mpls_vpn_rd, RD_ORIGIN_FLOW);
 	}
       }
       else {
-        pbgp->mpls_vpn_rd.val = ntohl(egress_vrfid);
+        pbgp->mpls_vpn_rd.val = egress_vrfid;
         if (pbgp->mpls_vpn_rd.val) {
 	  pbgp->mpls_vpn_rd.type = RD_TYPE_VRFID;
+	  bgp_rd_origin_set(&pbgp->mpls_vpn_rd, RD_ORIGIN_FLOW);
 	}
       }
     }
@@ -3638,6 +3657,7 @@ void NF_mpls_vpn_rd_handler(struct channels_list_entry *chptr, struct packet_ptr
     if (tpl->tpl[NF9_MPLS_VPN_RD].len && !pbgp->mpls_vpn_rd.val) {
       memcpy(&pbgp->mpls_vpn_rd, pptrs->f_data+tpl->tpl[NF9_MPLS_VPN_RD].off, MIN(tpl->tpl[NF9_MPLS_VPN_RD].len, 8));
       bgp_rd_ntoh(&pbgp->mpls_vpn_rd);
+      bgp_rd_origin_set(&pbgp->mpls_vpn_rd, RD_ORIGIN_FLOW);
     }
     break;
   default:
@@ -4814,7 +4834,7 @@ void SF_counters_handler(struct channels_list_entry *chptr, struct packet_ptrs *
   pdata->time_end.tv_sec = 0;
   pdata->time_end.tv_usec = 0;
 
-  pdata->flow_type = pptrs->flow_type;
+  pdata->flow_type = pptrs->flow_type.traffic_type;
 
   /* XXX: fragment handling */
 }

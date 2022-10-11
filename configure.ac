@@ -88,13 +88,6 @@ case "$host_os" in
     ;;
 esac
 
-dnl cpu specific flags
-case "$host_cpu" in
-  sun*)
-  AC_DEFINE(CPU_sparc, 1)
-  ;;
-esac
-
 AC_CHECK_PROG(MAKE, gmake, gmake)
 if test x"$MAKE" = x""; then
   AC_CHECK_PROG(MAKE, make, make)
@@ -118,16 +111,20 @@ dnl XXX: switch to manually define this feature
 ac_cv_endianess="unknown"
 if test x"$ac_cv_endianess" = x"unknown"; then
   AC_MSG_CHECKING(endianess)
-  AC_TRY_RUN([main () {
+  AC_TRY_RUN([
+  #include <stdlib.h>
 
-  union
-  {
-    long l;
-    char c[sizeof (long)];
-  } u;
-  u.l = 1;
-  exit (u.c[sizeof (long) - 1] == 1);
-  }], ac_cv_endianess="little", ac_cv_endianess="big", ac_cv_endianess="little")
+  int main () {
+    union {
+      long l;
+      char c[sizeof (long)];
+    } u;
+
+    u.l = 1;
+
+    exit (u.c[sizeof (long) - 1] == 1);
+  }
+  ], ac_cv_endianess="little", ac_cv_endianess="big", ac_cv_endianess="little")
   AC_MSG_RESULT($ac_cv_endianess)
 fi
 
@@ -936,6 +933,43 @@ AC_ARG_ENABLE(ndpi,
 )
 dnl finish: nDPI handling
 
+dnl start: unyte udp notif handling
+AC_MSG_CHECKING(whether to enable Unyte UDP-Notif support)
+AC_ARG_ENABLE(unyte-udp-notif,
+  [  --enable-unyte-udp-notif         Enable Unyte UDP Notif support (default: no)],
+  [ case "$enableval" in
+  yes)
+    AC_MSG_RESULT(yes)
+
+    AC_SUBST(UNYTE_UDP_NOTIF_CFLAGS)
+    AC_SUBST(UNYTE_UDP_NOTIF_LIBS)
+
+    SUPPORTS="${SUPPORTS} unyte-udp-notif"
+    USING_UNYTE_UDP_NOTIF="yes"
+    PMACCT_CFLAGS="$PMACCT_CFLAGS $UNYTE_UDP_NOTIF_CFLAGS"
+    UNYTE_UDP_NOTIF_LIBS="$UNYTE_UDP_NOTIF_LIBS -lunyte-udp-notif"
+    AC_DEFINE(WITH_UNYTE_UDP_NOTIF, 1)
+    _save_LIBS="$LIBS"
+    LIBS="$LIBS $UNYTE_UDP_NOTIF_LIBS -lpthread"
+    AC_CHECK_LIB([unyte-udp-notif], [unyte_udp_start_collector], [], [AC_MSG_ERROR([
+	ERROR: missing unyte-udp-notif library. Refer to: https://github.com/insa-unyte/udp-notif-c-collector
+    ])])
+    LIBS="$_save_LIBS"
+    _save_CFLAGS="$CFLAGS"
+    CFLAGS="$CFLAGS $UNYTE_UDP_NOTIF_CFLAGS"
+    AC_CHECK_HEADER([unyte-udp-notif/unyte_udp_collector.h], [], [AC_MSG_ERROR(ERROR: missing unyte-udp-notif headers)])
+    CFLAGS="$_save_CFLAGS"
+    ;;
+  no)
+    AC_MSG_RESULT(no)
+    ;;
+  esac ],
+  [
+    AC_MSG_RESULT(no)
+  ]
+)
+dnl finish: unyte udp notif handling
+
 if test x"$USING_DLOPEN" = x"yes"; then
 	AC_DEFINE(HAVE_DLOPEN, 1)
 else
@@ -945,6 +979,10 @@ else
 		  ERROR: missing libdl devel.
 		])])
 	fi
+fi
+
+if test x"$USING_SQL" = x"yes"; then
+	AC_CHECK_LIB([z], [zlibVersion], [], [AC_MSG_ERROR([ERROR: missing zlib. Requirement for building SQL plugins.])])
 fi
 
 LIBS="${LIBS} -lm -lpthread"
@@ -1110,7 +1148,7 @@ fi
 
 AC_MSG_CHECKING([whether external dependencies (git submodules) should be compiled])
 AC_ARG_WITH(external-deps,
-		AS_HELP_STRING([--without-external-deps], ["Don't build external dependencies (git submodules). Specially useful for package maintainers [default=with]"]),
+		AS_HELP_STRING([--without-external-deps], [Do not build external dependencies (git submodules), specially useful for package maintainers [default=with]]),
 			[WITH_EXTERNAL_DEPS="$withval"],
 			[WITH_EXTERNAL_DEPS="$WITH_EXTERNAL_DEPS_DEFAULT"]
 			)
@@ -1212,6 +1250,7 @@ AM_CONDITIONAL([WITH_JANSSON], [test x"$USING_JANSSON" = x"yes"])
 AM_CONDITIONAL([WITH_AVRO], [test x"$USING_AVRO" = x"yes"])
 AM_CONDITIONAL([WITH_SERDES], [test x"$USING_SERDES" = x"yes"])
 AM_CONDITIONAL([WITH_NDPI], [test x"$USING_NDPI" = x"yes"])
+AM_CONDITIONAL([WITH_UNYTE_UDP_NOTIF], [test x"$USING_UNYTE_UDP_NOTIF" = x"yes"])
 AM_CONDITIONAL([WITH_NFLOG], [test x"$USING_NFLOG" = x"yes"])
 AM_CONDITIONAL([WITH_DLOPEN], [test x"$USING_DLOPEN" = x"yes"])
 AM_CONDITIONAL([USING_TRAFFIC_BINS], [test x"$USING_TRAFFIC_BINS" = x"yes"])

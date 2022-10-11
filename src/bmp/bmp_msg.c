@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -333,6 +333,7 @@ void bmp_process_msg_peer_up(char **bmp_packet, u_int32_t *len, struct bmp_peer 
       struct bmp_chars bmed_bmp;
       struct bgp_msg_data bmd;
       int bgp_open_len, ret2 = 0;
+      u_int8_t bgp_msg_type = 0;
       void *ret = NULL;
 
       /* TLV vars */
@@ -361,21 +362,41 @@ void bmp_process_msg_peer_up(char **bmp_packet, u_int32_t *len, struct bmp_peer 
       bmd.extra.data = &bmed_bmp;
       bgp_msg_data_set_data_bmp(&bmed_bmp, &bdata);
 
-      bgp_open_len = bgp_get_packet_len((*bmp_packet));
-      if (bgp_open_len <= 0) {
-	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: failed bgp_get_packet_len()\n",
-	    config.name, bms->log_str, peer->addr_str);
+      /* length checks */
+      if ((*len) >= sizeof(struct bgp_header)) {
+	bgp_open_len = bgp_get_packet_len((*bmp_packet));
+	if (bgp_open_len <= 0 || bgp_open_len > (*len)) {
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: failed bgp_get_packet_len()\n",
+	      config.name, bms->log_str, peer->addr_str);
+	  bmp_tlv_list_destroy(tlvs);
+	  return;
+	}
+      }
+      else {
+        Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer_up] packet discarded: incomplete BGP header\n",
+            config.name, bms->log_str, peer->addr_str);
+	bmp_tlv_list_destroy(tlvs);
+        return;
+      }
+
+      if ((bgp_msg_type = bgp_get_packet_type((*bmp_packet))) == BGP_OPEN) {
+	bgp_open_len = bgp_parse_open_msg(&bmd, (*bmp_packet), FALSE, FALSE);
+	if (bgp_open_len == ERR) {
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: failed bgp_parse_open_msg()\n",
+	      config.name, bms->log_str, peer->addr_str);
+	  bmp_tlv_list_destroy(tlvs);
+	  return;
+        }
+      }
+      else {
+	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: wrong BGP message type: %s (%u)\n",
+	    config.name, bms->log_str, peer->addr_str,
+	    (bgp_msg_type <= BGP_MSG_TYPE_MAX ? bgp_msg_types[bgp_msg_type] : bgp_msg_types[0]),
+	    bgp_msg_type);
 	bmp_tlv_list_destroy(tlvs);
 	return;
       }
 
-      bgp_open_len = bgp_parse_open_msg(&bmd, (*bmp_packet), FALSE, FALSE);
-      if (bgp_open_len == ERR) {
-	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: failed bgp_parse_open_msg()\n",
-	    config.name, bms->log_str, peer->addr_str);
-	bmp_tlv_list_destroy(tlvs);
-	return;
-      }
       bmp_get_and_check_length(bmp_packet, len, bgp_open_len);
       memcpy(&bmpp->self.id, &bgp_peer_loc.id, sizeof(struct host_addr));
       memcpy(&bgp_peer_loc.addr, &blpu.local_ip, sizeof(struct host_addr));
@@ -383,13 +404,39 @@ void bmp_process_msg_peer_up(char **bmp_packet, u_int32_t *len, struct bmp_peer 
       bgp_peer_rem.type = FUNC_TYPE_BMP;
       bmd.peer = &bgp_peer_rem;
 
-      bgp_open_len = bgp_parse_open_msg(&bmd, (*bmp_packet), FALSE, FALSE);
-      if (bgp_open_len == ERR) {
-	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: failed bgp_parse_open_msg() (2)\n",
+      /* length checks */
+      if ((*len) >= sizeof(struct bgp_header)) {
+	bgp_open_len = bgp_get_packet_len((*bmp_packet));
+	if (bgp_open_len <= 0 || bgp_open_len > (*len)) {
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: failed bgp_get_packet_len() (2)\n",
+	      config.name, bms->log_str, peer->addr_str);
+	  bmp_tlv_list_destroy(tlvs);
+	  return;
+        }
+      }
+      else {
+	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer_up] packet discarded: incomplete BGP header (2)\n",
 	    config.name, bms->log_str, peer->addr_str);
 	bmp_tlv_list_destroy(tlvs);
 	return;
       }
+
+      if ((bgp_msg_type = bgp_get_packet_type((*bmp_packet))) == BGP_OPEN) {
+	bgp_open_len = bgp_parse_open_msg(&bmd, (*bmp_packet), FALSE, FALSE);
+	if (bgp_open_len == ERR) {
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: failed bgp_parse_open_msg() (2)\n",
+	      config.name, bms->log_str, peer->addr_str);
+	  bmp_tlv_list_destroy(tlvs);
+	  return;
+	}
+      }
+      else {
+	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer up] packet discarded: wrong BGP message type: %u (2)\n",
+	    config.name, bms->log_str, peer->addr_str, bgp_msg_type);
+	bmp_tlv_list_destroy(tlvs);
+	return;
+      }
+
       bmp_get_and_check_length(bmp_packet, len, bgp_open_len);
       memcpy(&bgp_peer_rem.addr, &bdata.peer_ip, sizeof(struct host_addr));
 
@@ -523,6 +570,30 @@ void bmp_process_msg_peer_down(char **bmp_packet, u_int32_t *len, struct bmp_pee
 
       /* draft-ietf-grow-bmp-tlv */
       if (peer->version == BMP_V4) {
+	/* let's skip intermediate data in order to get to TLVs */
+	if (blpd.reason == BMP_PEER_DOWN_LOC_NOT_MSG || blpd.reason == BMP_PEER_DOWN_REM_NOT_MSG) {
+	  int bgp_notification_len = 0;
+
+	  bgp_notification_len = bgp_get_packet_len((*bmp_packet));
+	  if (bgp_notification_len <= 0 || bgp_notification_len > (*len)) {
+	    Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer down] packet discarded: failed bgp_get_packet_len() reason=%u\n",
+		config.name, bms->log_str, peer->addr_str, blpd.reason);
+	    bmp_tlv_list_destroy(tlvs);
+	    return;
+	  }
+
+	  bmp_jump_offset(bmp_packet, len, bgp_notification_len);
+	}
+	else if (blpd.reason == BMP_PEER_DOWN_LOC_CODE) {
+	  ret2 = bmp_jump_offset(bmp_packet, len, 2);
+	  if (ret2 == ERR) {
+	    Log(LOG_INFO, "INFO ( %s/%s ): [%s] [peer down] packet discarded: failed bmp_jump_offset() reason=%u\n",
+		config.name, bms->log_str, peer->addr_str, blpd.reason);
+	    bmp_tlv_list_destroy(tlvs);
+	    return;
+	  }
+	}
+
         while ((*len)) {
 	  u_int32_t pen = 0;
 
@@ -580,18 +651,9 @@ void bmp_process_msg_peer_down(char **bmp_packet, u_int32_t *len, struct bmp_pee
     }
 
     if (ret) {
-      char peer_str[] = "peer_ip", *saved_peer_str = bms->peer_str;
-      char peer_port_str[] = "peer_tcp_port", *saved_peer_port_str = bms->peer_port_str;
-
       bmpp_bgp_peer = (*(struct bgp_peer **) ret);
     
-      bms->peer_str = peer_str;
-      bms->peer_port_str = peer_port_str;
-
       bgp_peer_info_delete(bmpp_bgp_peer);
-
-      bms->peer_str = saved_peer_str;
-      bms->peer_str = saved_peer_port_str;
 
       if (bdata.family == AF_INET) {
 	pm_tdelete(&bdata.peer_ip, &bmpp->bgp_peers_v4, bgp_peer_host_addr_cmp);
@@ -622,6 +684,7 @@ void bmp_process_msg_route_monitor(char **bmp_packet, u_int32_t *len, struct bmp
   struct bmp_data bdata;
   struct bmp_peer_hdr *bph;
   int bgp_update_len, ret2 = 0;
+  u_int8_t bgp_msg_type = 0;
   void *ret = NULL;
 
   if (!bmpp) return;
@@ -668,8 +731,6 @@ void bmp_process_msg_route_monitor(char **bmp_packet, u_int32_t *len, struct bmp
     }
 
     if (ret) {
-      char peer_str[] = "peer_ip", *saved_peer_str = bms->peer_str;
-      char peer_port_str[] = "peer_tcp_port", *saved_peer_port_str = bms->peer_port_str;
       struct bmp_chars bmed_bmp;
       struct bgp_msg_data bmd;
 
@@ -677,8 +738,6 @@ void bmp_process_msg_route_monitor(char **bmp_packet, u_int32_t *len, struct bmp
       memset(&bmd, 0, sizeof(bmd));
       memset(&bmed_bmp, 0, sizeof(bmed_bmp));
 
-      bms->peer_str = peer_str;
-      bms->peer_port_str = peer_port_str;
       bmd.peer = bmpp_bgp_peer;
       bmd.extra.id = BGP_MSG_EXTRA_DATA_BMP;
       bmd.extra.len = sizeof(bmed_bmp);
@@ -691,10 +750,17 @@ void bmp_process_msg_route_monitor(char **bmp_packet, u_int32_t *len, struct bmp
 
       encode_tstamp_arrival(bms->log_tstamp_str, SRVBUFLEN, &bdata.tstamp_arrival, TRUE);
 
-      /* draft-ietf-grow-bmp-tlv */
-      bgp_update_len = bgp_get_packet_len((*bmp_packet));
-      if (bgp_update_len <= 0) {
-	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [route monitor] packet discarded: bgp_get_packet_len() failed\n",
+      /* length checks & draft-ietf-grow-bmp-tlv preps */
+      if ((*len) >= sizeof(struct bgp_header)) {
+        bgp_update_len = bgp_get_packet_len((*bmp_packet));
+        if (bgp_update_len <= 0 || bgp_update_len > (*len)) {
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] [route monitor] packet discarded: bgp_get_packet_len() failed\n",
+	      config.name, bms->log_str, peer->addr_str);
+	  return;
+	}
+      }
+      else {
+	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [route monitor] packet discarded: incomplete BGP header\n",
 	    config.name, bms->log_str, peer->addr_str);
 	return;
       }
@@ -751,15 +817,21 @@ void bmp_process_msg_route_monitor(char **bmp_packet, u_int32_t *len, struct bmp
         bmed_bmp.tlvs = tlvs;
       }
 
-      bgp_update_len = bgp_parse_update_msg(&bmd, (*bmp_packet)); 
-      if (bgp_update_len <= 0) {
-	Log(LOG_INFO, "INFO ( %s/%s ): [%s] [route monitor] packet discarded: bgp_parse_update_msg() failed\n",
-	    config.name, bms->log_str, peer->addr_str);
-	return;
+      if ((bgp_msg_type = bgp_get_packet_type((*bmp_packet))) == BGP_UPDATE) {
+	bgp_update_len = bgp_parse_update_msg(&bmd, (*bmp_packet));
+	if (bgp_update_len <= 0) {
+	  Log(LOG_INFO, "INFO ( %s/%s ): [%s] [route monitor] packet discarded: bgp_parse_update_msg() failed\n",
+	      config.name, bms->log_str, peer->addr_str);
+	  bmp_tlv_list_destroy(bmed_bmp.tlvs);
+	  return;
+	}
       }
-
-      bms->peer_str = saved_peer_str;
-      bms->peer_port_str = saved_peer_port_str;
+      else {
+	Log(LOG_DEBUG, "DEBUG ( %s/%s ): [%s] [route monitor] packet discarded: unsupported BGP message type: %s (%u)\n",
+	    config.name, bms->log_str, peer->addr_str,
+	    (bgp_msg_type <= BGP_MSG_TYPE_MAX ? bgp_msg_types[bgp_msg_type] : bgp_msg_types[0]),
+	    bgp_msg_type);
+      }
 
       bmp_get_and_check_length(bmp_packet, len, bgp_update_len);
 
@@ -1077,6 +1149,10 @@ void bmp_peer_hdr_get_rd(struct bmp_peer_hdr *bph, rd_t *rd)
     if (bph->type == BMP_PEER_TYPE_L3VPN || bph->type == BMP_PEER_TYPE_LOC_RIB) {
       memcpy(rd, bph->rd, RD_LEN);
       bgp_rd_ntoh(rd);
+
+      if (!is_empty_256b(rd, RD_LEN)) {
+        bgp_rd_origin_set(rd, RD_ORIGIN_BMP);
+      }
     }
   }
 }

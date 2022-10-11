@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -54,6 +54,7 @@ const struct _map_dictionary_line tag_map_dictionary[] = {
   {"cvlan", PT_map_cvlan_id_handler},
   {"src_net", PT_map_src_net_handler},
   {"dst_net", PT_map_dst_net_handler},
+  {"is_multicast", PT_map_is_multicast_handler},
   {"set_tag", PT_map_id_handler},
   {"set_tag2", PT_map_id2_handler},
   {"set_label", PT_map_label_handler},
@@ -63,6 +64,7 @@ const struct _map_dictionary_line tag_map_dictionary[] = {
   {"return", PT_map_return_handler},
   {"stack", PT_map_stack_handler},
   {"fwdstatus", PT_map_fwdstatus_handler},
+  {"is_bi_flow", PT_map_is_bi_flow_handler},
   {"", NULL}
 };
 
@@ -78,11 +80,14 @@ const struct _map_index_dictionary_line tag_map_index_entries_dictionary[] = {
   {PRETAG_MPLS_LABEL_BOTTOM, PT_map_index_entries_mpls_label_bottom_handler},
   {PRETAG_MPLS_VPN_ID, PT_map_index_entries_mpls_vpn_id_handler},
   {PRETAG_MPLS_VPN_RD, PT_map_index_entries_mpls_vpn_rd_handler},
-  {PRETAG_MPLS_PW_ID, PT_map_index_fdata_mpls_pw_id_handler},
+  {PRETAG_MPLS_PW_ID, PT_map_index_entries_mpls_pw_id_handler},
   {PRETAG_SRC_MAC, PT_map_index_entries_src_mac_handler},
   {PRETAG_DST_MAC, PT_map_index_entries_dst_mac_handler},
   {PRETAG_VLAN_ID, PT_map_index_entries_vlan_id_handler},
   {PRETAG_CVLAN_ID, PT_map_index_entries_cvlan_id_handler},
+  {PRETAG_SRC_NET, PT_map_index_entries_src_net_handler},
+  {PRETAG_DST_NET, PT_map_index_entries_dst_net_handler},
+  {PRETAG_IS_MULTICAST, PT_map_index_entries_is_multicast_handler},
   {PRETAG_FWDSTATUS_ID, PT_map_index_entries_fwdstatus_handler},
   {0, NULL}
 };
@@ -99,12 +104,39 @@ const struct _map_index_dictionary_line tag_map_index_fdata_dictionary[] = {
   {PRETAG_MPLS_LABEL_BOTTOM, PT_map_index_fdata_mpls_label_bottom_handler},
   {PRETAG_MPLS_VPN_ID, PT_map_index_fdata_mpls_vpn_id_handler},
   {PRETAG_MPLS_VPN_RD, PT_map_index_fdata_mpls_vpn_rd_handler},
+  {PRETAG_MPLS_PW_ID, PT_map_index_fdata_mpls_pw_id_handler},
   {PRETAG_SRC_MAC, PT_map_index_fdata_src_mac_handler},
   {PRETAG_DST_MAC, PT_map_index_fdata_dst_mac_handler},
   {PRETAG_VLAN_ID, PT_map_index_fdata_vlan_id_handler},
   {PRETAG_CVLAN_ID, PT_map_index_fdata_cvlan_id_handler},
+  {PRETAG_SRC_NET, PT_map_index_fdata_src_net_handler},
+  {PRETAG_DST_NET, PT_map_index_fdata_dst_net_handler},
+  {PRETAG_IS_MULTICAST, PT_map_index_fdata_is_multicast_handler},
   {PRETAG_FWDSTATUS_ID, PT_map_index_fdata_fwdstatus_handler},
   {0, NULL}
+};
+
+const struct _map_index_size_dictionary_line tag_map_index_entries_size_dictionary[] = {
+  {PRETAG_IP, sizeof(struct host_addr)},
+  {PRETAG_IN_IFACE, sizeof(u_int32_t)},
+  {PRETAG_OUT_IFACE, sizeof(u_int32_t)},
+  {PRETAG_BGP_NEXTHOP, sizeof(struct host_addr)},
+  {PRETAG_SRC_AS, sizeof(u_int32_t)},
+  {PRETAG_DST_AS, sizeof(u_int32_t)},
+  {PRETAG_PEER_SRC_AS, sizeof(u_int32_t)},
+  {PRETAG_PEER_DST_AS, sizeof(u_int32_t)},
+  {PRETAG_MPLS_LABEL_BOTTOM, sizeof(u_int32_t)},
+  {PRETAG_MPLS_VPN_ID, sizeof(u_int32_t)},
+  {PRETAG_MPLS_VPN_RD, sizeof(rd_t)},
+  {PRETAG_SRC_MAC, ETH_ADDR_LEN},
+  {PRETAG_DST_MAC, ETH_ADDR_LEN},
+  {PRETAG_VLAN_ID, sizeof(u_int16_t)},
+  {PRETAG_CVLAN_ID, sizeof(u_int16_t)},
+  {PRETAG_SRC_NET, sizeof(struct host_addr)},
+  {PRETAG_DST_NET, sizeof(struct host_addr)},
+  {PRETAG_IS_MULTICAST, sizeof(u_int8_t)},
+  {PRETAG_FWDSTATUS_ID, sizeof(u_int8_t)},
+  {0, 0}
 };
 
 const struct _map_dictionary_line tag_map_tee_dictionary[] = {

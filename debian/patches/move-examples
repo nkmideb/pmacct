@@ -1,7 +1,7 @@
-Index: pkg-pmacct/Makefile.am
+Index: pmacct/Makefile.am
 ===================================================================
---- pkg-pmacct.orig/Makefile.am
-+++ pkg-pmacct/Makefile.am
+--- pmacct.orig/Makefile.am
++++ pmacct/Makefile.am
 @@ -11,7 +11,7 @@ endif
  pmacct_data_dir = $(datarootdir)/pmacct
  pmacct_libs_dir = $(libdir)/pmacct
