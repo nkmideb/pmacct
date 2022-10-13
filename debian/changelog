@@ -1,8 +1,11 @@
-pmacct (1.7.7-1) UNRELEASED; urgency=low
+pmacct (1.7.7-1) UNRELEASED; urgency=medium
 
+  [ Debian Janitor ]
   * New upstream release.
+  * Remove constraints unnecessary since buster
+  * Refresh patches.
 
- -- Debian Janitor <janitor@jelmer.uk>  Thu, 15 Sep 2022 00:59:22 -0000
+ -- Jelmer Vernooĳ <jelmer@debian.org>  Thu, 13 Oct 2022 13:41:44 +0100
 
 pmacct (1.7.6-3) unstable; urgency=medium
 
