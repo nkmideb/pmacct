@@ -1,4 +1,4 @@
-pmacct (1.7.7-1) UNRELEASED; urgency=medium
+pmacct (1.7.7-1) unstable; urgency=medium
 
   * QA upload.
 
@@ -7,7 +7,7 @@ pmacct (1.7.7-1) UNRELEASED; urgency=medium
   * Remove constraints unnecessary since buster
   * Refresh patches.
 
- -- Jelmer Vernooĳ <jelmer@debian.org>  Thu, 13 Oct 2022 13:41:44 +0100
+ -- Jelmer Vernooĳ <jelmer@debian.org>  Thu, 13 Oct 2022 13:41:46 +0100
 
 pmacct (1.7.6-3) unstable; urgency=medium
 
