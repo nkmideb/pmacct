@@ -1,5 +1,7 @@
 pmacct (1.7.7-1) UNRELEASED; urgency=medium
 
+  * QA upload.
+
   [ Debian Janitor ]
   * New upstream release.
   * Remove constraints unnecessary since buster
