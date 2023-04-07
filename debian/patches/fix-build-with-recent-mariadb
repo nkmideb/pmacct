@@ -1,7 +1,7 @@
-Index: pmacct/src/mysql_plugin.h
-===================================================================
---- pmacct.orig/src/mysql_plugin.h
-+++ pmacct/src/mysql_plugin.h
+diff --git a/src/mysql_plugin.h b/src/mysql_plugin.h
+index 2be81b9..25d5748 100644
+--- a/src/mysql_plugin.h
++++ b/src/mysql_plugin.h
 @@ -22,8 +22,10 @@
  /* includes */
  #if defined HAVE_MYSQL_H 
@@ -12,4 +12,4 @@ Index: pmacct/src/mysql_plugin.h
 +#include <mysql/mysql_version.h>
  #endif
  
- #include "sql_common.h"
+ #include "plugin_common.h"
