@@ -11,8 +11,8 @@
 !
 ! nfacctd: valid keys: set_tag, set_tag2, set_label, set_tos, ip, in, out,
 ! engine_type, engine_id, source_id, flowset_id, nexthop, bgp_nexthop, filter,
-! sample_type, is_bi_flow, direction, nat_event, src_mac, dst_mac, vlan, cvlan,
-! src_net, dst_net, is_multicast, mpls_pw_id.
+! sample_type, is_bi_flow, is_nel, is_nsel, direction, fwd_status, src_mac,
+! dst_mac, vlan, cvlan, src_net, dst_net, is_multicast, mpls_pw_id.
 !
 ! sfacctd: valid keys: set_tag, set_tag2, set_label, set_tos, ip, in, out,
 ! nexthop, bgp_nexthop, filter, agent_id, sample_type, direction, src_mac,
@@ -29,10 +29,14 @@
 ! sfacctd when in 'tee' mode: valid keys: set_tag, set_tag2, set_label, ip,
 ! in, out, src_mac, dst_mac, vlan, src_net, dst_net, bgp_nexthop, agent_id.
 !
-! BGP-related keys are independent of the collection method in use, hence apply
-! to all daemons (BGP daemon must be enabled): src_as, dst_as, src_comms, comms,
-! peer_src_as, peer_dst_as, src_local_pref, local_pref, src_roa, dst_roa,
-! mpls_vpn_rd.
+! BGP-related keys supported by pre_tag_map are independent of the collection
+! method in use, hence apply to all traffic daemons (when BGP thread is
+! enabled): src_as, dst_as, src_comms, comms, peer_src_as, peer_dst_as,
+! src_local_pref, local_pref, src_roa, dst_roa, mpls_vpn_rd.
+!
+! Non-traffic daemons, ie. pmbgpd (including bgp_daemon_tag_map), pmbmpd
+! (including bmp_daemon_tag_map), pmtelemetryd, valid keys: set_tag,
+! set_label, ip.
 !
 ! list of currently supported keys follows:
 !
@@ -55,7 +59,9 @@
 ! 'set_label'		SET: string label assigned to a matching packet, flow
 !			or sample; its use is mutually exclusive to tags within
 !			the same rule. The resulting value is written to the
-!			'label' field.
+!			'label' field. If pre_tag_label_encode_as_map is set to
+!			true in the config, the '%' character is used to delimit
+!			key and value, ie. "set_label=key%value".
 ! 'set_tos'             SET: Matching packets are set their 'tos' primitive to
 !			the specified value. Currently valid only in nfacctd. If
 !			collecting ingress NetFlow at both trusted and untrusted
@@ -67,8 +73,11 @@
 !                       of received sFlow samples. Expected argument are an IP
 !			address or prefix (ie. XXX.XXX.XXX.XXX/NN). 0.0.0.0/0
 !			would match all IPv4 addresses; ::/0 would match all
-!			IPv6 addresses; not specifying an 'ip' clause at all
-!			would match both all IPv4 and IPv6 addresses.
+!			IPv6 addresses; not specifying an 'ip' clause would
+!			match both all IPv4 and IPv6 addresses, in which case
+!			two objects per map entry will be allocated (corollary:
+!			maps_entries should be set to at least twice the amount
+!			of entries in the map).
 ! 'in'  		MATCH: Input interface. In NFv9/IPFIX this is compared
 !			against IE #10 and, if not existing, against IE #252.  
 ! 'out' 		MATCH: Output interface. In NFv9/IPFIX this is compared
@@ -112,6 +121,14 @@
 !			that it is a bi-directional flow. If set to 'true' this
 !			does match bi-flows, if set to 'false' it does match non
 !			bi-flows.
+! 'is_nel'		MATCH: in NetFlow/IPFIX this checks the presence of the
+!			natEvent field (230) to infer that this is NEL kind data.
+!			If set to 'true' this does match NSEL, if set to 'false'
+!			it does match non NEL.
+! 'is_nsel'		MATCH: in NetFlow/IPFIX this checks the presence of the
+!			firewallEvent field (233) to infer that this is NSEL kind
+!			of data. If set to 'true' this does match NSEL, if set to
+!			'false' it does match non NSEL.
 ! 'direction'		MATCH: expected values are 0 (ingress direction) or 1
 !			(egress direction). In NFv9/IPFIX this is compared
 !			against the direction (61) field; in sFlow v2/v4/v5 this
@@ -119,8 +136,6 @@
 !			interface and this 'direction' key is set to '0' or 2)
 !			source_id equals to output interface and this 'direction'
 !			key is set to '1'.
-! 'nat_event'		MATCH: in Nfv9/IPFIX this is compared against the
-!			natEvent (230) field. 
 ! 'src_as'		MATCH: source Autonomous System Number. In pmacctd, if
 !			the BGP daemon is not enabled it works only against a
 !			Networks map (see 'networks_file' directive); in nfacctd
@@ -186,7 +201,7 @@
 !			match MAC multicast addresses, if set to 'false' it won't
 !			match them. To match or exclude IPv4/IPv6 multicast
 !			addresses please use 'dst_net'.
-! 'fwdstatus'		MATCH: In NFv9/IPFIX this is compared against IE #89; see
+! 'fwd_status'		MATCH: In NFv9/IPFIX this is compared against IE #89; see
 !			https://www.iana.org/assignments/ipfix/ipfix.xhtml for
 !			the specific semantics of the field and some examples.
 ! 'label'		SET: Mark the rule with label's value. Labels don't need

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -106,8 +106,9 @@ void ignore_falling_child()
   int status;
 
   while ((cpid = waitpid(-1, &status, WNOHANG)) > 0) {
-    if (!WIFEXITED(status)) Log(LOG_WARNING, "WARN ( %s/%s ): Abnormal exit status detected for child PID %u\n", config.name, config.type, cpid);
-    // sql_writers.retired++;
+    if (!WIFEXITED(status)) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): Abnormal exit status detected for child PID %u\n", config.name, config.type, cpid);
+    }
   }
 }
 
@@ -220,6 +221,7 @@ void reload_maps(int signum)
 {
   reload_map = FALSE;
   reload_map_bgp_thread = FALSE;
+  reload_map_bmp_thread = FALSE;
   reload_map_rpki_thread = FALSE;
   reload_map_exec_plugins = FALSE;
   reload_geoipv2_file = FALSE;
@@ -227,6 +229,7 @@ void reload_maps(int signum)
   if (config.maps_refresh) {
     reload_map = TRUE; 
     reload_map_bgp_thread = TRUE;
+    reload_map_bmp_thread = TRUE;
     reload_map_rpki_thread = TRUE;
     reload_map_exec_plugins = TRUE;
     reload_geoipv2_file = TRUE;

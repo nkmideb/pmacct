@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -29,7 +29,6 @@
 #include "plugin_hooks.h"
 #include "pkt_handlers.h"
 #include "ip_flow.h"
-#include "classifier.h"
 #include "net_aggr.h"
 
 /* Functions */
@@ -98,6 +97,11 @@ int main(int argc,char **argv, char **envp)
   plugins_list = NULL;
   errflag = 0;
   rows = 0;
+
+  /* needed for pre_tag_map support */
+  PvhdrSz = sizeof(struct pkt_vlen_hdr_primitives);
+  PmLabelTSz = sizeof(pm_label_t);
+  PtLabelTSz = sizeof(pt_label_t);
 
   /* getting commandline values */
   while (!errflag && ((cp = getopt(argc, argv, ARGS_PMBMPD)) != -1)) {
@@ -289,7 +293,7 @@ int main(int argc,char **argv, char **envp)
   sighandler_action.sa_handler = PM_sigint_handler;
   sigaction(SIGTERM, &sighandler_action, NULL);
 
-  sighandler_action.sa_handler = handle_falling_child;
+  sighandler_action.sa_handler = SIG_IGN;
   sigaction(SIGCHLD, &sighandler_action, NULL);
 
   sighandler_action.sa_handler = PM_sigalrm_noop_handler;

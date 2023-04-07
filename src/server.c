@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -245,7 +245,7 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
     for (j = 0; j < uq->num; j++, bufptr += sizeof(struct query_entry)) {
       memcpy(&request, bufptr, sizeof(struct query_entry));
       Log(LOG_DEBUG, "DEBUG ( %s/%s ): Searching into accounting structure ...\n", config.name, config.type); 
-      if (request.what_to_count == config.what_to_count && request.what_to_count_2 == config.what_to_count_2) { 
+      if (request.what_to_count == config.what_to_count && request.what_to_count_2 == config.what_to_count_2) {
         struct pkt_data pd_dummy;
 	struct primitives_ptrs prim_ptrs;
 
@@ -436,8 +436,7 @@ void process_query_data(int sd, unsigned char *buf, int len, struct extra_primit
     struct stripped_class dummy;
     u_int32_t idx = 0, max = 0;
 
-    /* XXX: we should try using pmct_get_max_entries() */
-    max = q->num = config.classifier_table_num;
+    max = q->num = pmct_find_first_free();
     if (!q->num && class) max = q->num = MAX_CLASSIFIERS;
 
     while (idx < max) {
@@ -511,6 +510,7 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
   if (w & COUNT_SRC_MAC) memcpy(d1->eth_shost, s1->eth_shost, ETH_ADDR_LEN); 
   if (w & COUNT_DST_MAC) memcpy(d1->eth_dhost, s1->eth_dhost, ETH_ADDR_LEN); 
   if (w & COUNT_VLAN) d1->vlan_id = s1->vlan_id; 
+  if (w2 & COUNT_OUT_VLAN) d1->out_vlan_id = s1->out_vlan_id;
   if (w & COUNT_COS) d1->cos = s1->cos; 
   if (w & COUNT_ETHERTYPE) d1->etype = s1->etype; 
 #endif
@@ -551,7 +551,7 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
 #endif
 
 #if defined (WITH_NDPI)
-  if (w2 & COUNT_NDPI_CLASS) memcpy(&d1->ndpi_class, &s1->class, sizeof(d1->ndpi_class)); 
+  if (w2 & COUNT_NDPI_CLASS) memcpy(&d1->ndpi_class, &s1->ndpi_class, sizeof(d1->ndpi_class));
 #endif
 
   if (w2 & COUNT_SAMPLING_RATE) d1->sampling_rate = s1->sampling_rate; 
@@ -589,6 +589,8 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
     if (w2 & COUNT_POST_NAT_SRC_PORT) d3->post_nat_src_port = s3->post_nat_src_port;
     if (w2 & COUNT_POST_NAT_DST_PORT) d3->post_nat_dst_port = s3->post_nat_dst_port;
     if (w2 & COUNT_NAT_EVENT) d3->nat_event = s3->nat_event;
+    if (w2 & COUNT_FW_EVENT) d3->fw_event = s3->fw_event;
+    if (w2 & COUNT_FWD_STATUS) d3->fwd_status = s3->fwd_status;
     if (w2 & COUNT_TIMESTAMP_START) memcpy(&d3->timestamp_start, &s3->timestamp_start, sizeof(struct timeval));
     if (w2 & COUNT_TIMESTAMP_END) memcpy(&d3->timestamp_end, &s3->timestamp_end, sizeof(struct timeval));
     if (w2 & COUNT_TIMESTAMP_ARRIVAL) memcpy(&d3->timestamp_arrival, &s3->timestamp_arrival, sizeof(struct timeval));
@@ -598,7 +600,6 @@ void mask_elem(struct pkt_primitives *d1, struct pkt_bgp_primitives *d2, struct 
   if (extras->off_pkt_mpls_primitives && s4) {
     if (w2 & COUNT_MPLS_LABEL_TOP) d4->mpls_label_top = s4->mpls_label_top;
     if (w2 & COUNT_MPLS_LABEL_BOTTOM) d4->mpls_label_bottom = s4->mpls_label_bottom;
-    if (w2 & COUNT_MPLS_STACK_DEPTH) d4->mpls_stack_depth = s4->mpls_stack_depth;
   }
 
   if (extras->off_pkt_tun_primitives && s6) {
@@ -644,19 +645,6 @@ void Accumulate_Counters(struct pkt_data *abuf, struct acc *elem)
 int test_zero_elem(struct acc *elem)
 {
   if (elem && elem->flow_type && !elem->reset_flag) return FALSE;
-
-/*
-  if (elem) {
-    if (elem->flow_type == NF9_FTYPE_NAT_EVENT) {
-      if (elem->pnat && elem->pnat->nat_event) return FALSE;
-      else return TRUE;
-    }
-    else {
-      if (elem->bytes_counter && !elem->reset_flag) return FALSE;
-      else return TRUE;
-    }
-  }
-*/
 
   return TRUE;
 }

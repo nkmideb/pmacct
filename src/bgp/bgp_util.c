@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,9 +21,7 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "pmacct-data.h"
-#include "addr.h"
 #include "bgp.h"
 #include "thread_pool.h"
 #if defined WITH_RABBITMQ
@@ -311,7 +309,7 @@ struct bgp_attr_extra *bgp_attr_extra_process(struct bgp_peer *peer, struct bgp_
   }
 
   /* Install/update BGP ADD-PATHs stuff if required */
-  if (peer->cap_add_paths[afi][safi]) {
+  if (peer->cap_add_paths.cap[afi][safi]) {
     if (!rie) {
       rie = bgp_attr_extra_get(ri);
     }
@@ -733,7 +731,7 @@ void bgp_peer_close(struct bgp_peer *peer, int type, int no_quiet, int send_noti
     if (!no_quiet) bgp_peer_info_delete(peer);
 
     if (bms->msglog_file || bms->msglog_amqp_routing_key || bms->msglog_kafka_topic)
-      bgp_peer_log_close(peer, bms->msglog_output, peer->type);
+      bgp_peer_log_close(peer, bms->tag, bms->msglog_output, peer->type);
 
     if (bms->peers_cache && bms->peers_port_cache) {
       u_int32_t bucket;
@@ -855,10 +853,10 @@ void bgp_peer_xconnect_print(struct bgp_peer *peer, char *buf, int len)
     sa_src = (struct sockaddr *) &peer->xc.src;
     sa_dst = (struct sockaddr *) &peer->xc.dst;
 
-    if (sa_src->sa_family) sa_to_str(src, sizeof(src), sa_src);
+    if (sa_src->sa_family) sa_to_str(src, sizeof(src), sa_src, TRUE);
     else addr_mask_to_str(src, sizeof(src), &peer->xc.src_addr, &peer->xc.src_mask);
 
-    sa_to_str(dst, sizeof(dst), sa_dst);
+    sa_to_str(dst, sizeof(dst), sa_dst, TRUE);
 
     snprintf(buf, len, "%s x %s", src, dst);
   }
@@ -886,6 +884,13 @@ void bgp_table_info_delete(struct bgp_peer *peer, struct bgp_table *table, afi_t
   struct bgp_misc_structs *bms = bgp_select_misc_db(peer->type);
   struct bgp_node *node;
 
+  /* Being tag_map limited to 'ip' key lookups, this is finely
+     placed here. Should further lookups be possible, this may be
+     very possibly moved inside the loop */
+  if (bms->tag_map && bms->bgp_table_info_delete_tag_find) {
+    bms->bgp_table_info_delete_tag_find(peer);
+  }
+
   node = bgp_table_top(peer, table);
 
   while (node) {
@@ -903,7 +908,7 @@ void bgp_table_info_delete(struct bgp_peer *peer, struct bgp_table *table, afi_t
 	  if (bms->msglog_backend_methods) {
 	    char event_type[] = "log";
 
-	    bgp_peer_log_msg(node, ri, afi, safi, event_type, bms->msglog_output, NULL, BGP_LOG_TYPE_DELETE);
+	    bgp_peer_log_msg(node, ri, afi, safi, bms->tag, event_type, bms->msglog_output, NULL, BGP_LOG_TYPE_DELETE);
 	  }
 
 	  ri_next = ri->next; /* let's save pointer to next before free up */
@@ -1368,7 +1373,7 @@ void bgp_md5_file_process(int sock, struct bgp_md5_table *bgp_md5)
       memcpy(md5sig.tcpm_key, &bgp_md5->table[idx].key, keylen);
     }
 
-    sa_to_str(peer_str, sizeof(peer_str), sa_md5sig);
+    sa_to_str(peer_str, sizeof(peer_str), sa_md5sig, TRUE);
 
     rc = setsockopt(sock, IPPROTO_TCP, TCP_MD5SIG, &md5sig, (socklen_t) sizeof(md5sig));
     if (rc < 0) {
@@ -1523,6 +1528,12 @@ void bgp_link_misc_structs(struct bgp_misc_structs *bms)
   if (!bms->is_thread && !bms->dump_backend_methods && !bms->has_lglass && !bms->has_blackhole) {
     bms->skip_rib = TRUE;
   }
+
+  bms->cap_add_path_ignore = config.bgp_daemon_add_path_ignore;
+
+  bms->tag = &bgp_logdump_tag;
+  bms->tag_map = config.bgp_daemon_tag_map;
+  bms->tag_peer = &bgp_logdump_tag_peer;
 }
 
 void bgp_blackhole_link_misc_structs(struct bgp_misc_structs *m_data)
@@ -1686,4 +1697,12 @@ u_int8_t bgp_get_packet_type(char *pkt)
   }
 
   return btype;
+}
+
+void bgp_table_info_delete_tag_find_bgp(struct bgp_peer *peer)
+{
+  struct bgp_misc_structs *bms = bgp_select_misc_db(peer->type);
+
+  bgp_tag_init_find(peer, (struct sockaddr *) bms->tag_peer, bms->tag);
+  bgp_tag_find((struct id_table *)bms->tag->tag_table, bms->tag, &bms->tag->tag, NULL);
 }

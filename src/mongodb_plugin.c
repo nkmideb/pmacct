@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "plugin_common.h"
@@ -57,6 +56,7 @@ void mongodb_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 {
   struct pkt_data *data;
   struct ports_table pt;
+  struct protos_table prt, tost;
   unsigned char *pipebuf;
   struct pollfd pfd;
   struct insert_data idata;
@@ -114,11 +114,15 @@ void mongodb_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   memset(&nt, 0, sizeof(nt));
   memset(&nc, 0, sizeof(nc));
   memset(&pt, 0, sizeof(pt));
+  memset(&prt, 0, sizeof(prt));
+  memset(&tost, 0, sizeof(tost));
 
   load_networks(config.networks_file, &nt, &nc);
   set_net_funcs(&nt);
 
   if (config.ports_file) load_ports(config.ports_file, &pt);
+  if (config.protos_file) load_protos(config.protos_file, &prt);
+  if (config.tos_file) load_tos(config.tos_file, &tost);
   
   memset(&idata, 0, sizeof(idata));
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
@@ -179,7 +183,7 @@ void mongodb_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 
     poll_ops:
     P_update_time_reference(&idata);
-    if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
+    if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt, &prt, &tost);
 
     recv_budget = 0;
     if (poll_bypass) {
@@ -263,9 +267,17 @@ void mongodb_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 	  (*net_funcs[num])(&nt, &nc, &data->primitives, prim_ptrs.pbgp, &nfd);
 
 	if (config.ports_file) {
-          if (!pt.table[data->primitives.src_port]) data->primitives.src_port = 0;
-          if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = 0;
+          if (!pt.table[data->primitives.src_port]) data->primitives.src_port = PM_L4_PORT_OTHERS;
+          if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = PM_L4_PORT_OTHERS;
         }
+
+	if (config.protos_file) {
+	  if (!prt.table[data->primitives.proto]) data->primitives.proto = PM_IP_PROTO_OTHERS;
+	}
+
+	if (config.tos_file) {
+	  if (!tost.table[data->primitives.tos]) data->primitives.tos = PM_IP_TOS_OTHERS;
+	}
 
         prim_ptrs.data = data;
         (*insert_func)(&prim_ptrs, &idata);
@@ -501,7 +513,19 @@ void MongoDB_cache_purge(struct chained_cache *queue[], int index, int safe_acti
         bson_append_string(bson_elem, "mac_dst", dst_mac);
       }
   
-      if (config.what_to_count & COUNT_VLAN) bson_append_int(bson_elem, "vlan_id", data->vlan_id);
+      if (config.what_to_count & COUNT_VLAN) {
+	if (config.tmp_vlan_legacy) {
+	  bson_append_int(bson_elem, "vlan", data->vlan_id);
+	}
+	else {
+	  bson_append_int(bson_elem, "vlan_in", data->vlan_id);
+	}
+      }
+
+      if (config.what_to_count_2 & COUNT_OUT_VLAN) {
+	  bson_append_int(bson_elem, "vlan_out", data->out_vlan_id);
+      }
+
       if (config.what_to_count & COUNT_COS) bson_append_int(bson_elem, "cos", data->cos);
       if (config.what_to_count & COUNT_ETHERTYPE) {
         sprintf(misc_str, "%x", data->etype); 
@@ -734,7 +758,8 @@ void MongoDB_cache_purge(struct chained_cache *queue[], int index, int safe_acti
   
       if (config.what_to_count & COUNT_IP_TOS) bson_append_int(bson_elem, "tos", data->tos);
       if (config.what_to_count_2 & COUNT_SAMPLING_RATE) bson_append_int(bson_elem, "sampling_rate", data->sampling_rate);
-      if (config.what_to_count_2 & COUNT_SAMPLING_DIRECTION) bson_append_string(bson_elem, "sampling_direction", data->sampling_direction);
+      if (config.what_to_count_2 & COUNT_SAMPLING_DIRECTION) bson_append_string(bson_elem, "sampling_direction",
+										sampling_direction_print(data->sampling_direction));
   
       if (config.what_to_count_2 & COUNT_POST_NAT_SRC_HOST) {
         addr_to_str(src_host, &pnat->post_nat_src_ip);
@@ -747,9 +772,25 @@ void MongoDB_cache_purge(struct chained_cache *queue[], int index, int safe_acti
       if (config.what_to_count_2 & COUNT_POST_NAT_SRC_PORT) bson_append_int(bson_elem, "post_nat_port_src", pnat->post_nat_src_port);
       if (config.what_to_count_2 & COUNT_POST_NAT_DST_PORT) bson_append_int(bson_elem, "post_nat_port_dst", pnat->post_nat_dst_port);
       if (config.what_to_count_2 & COUNT_NAT_EVENT) bson_append_int(bson_elem, "nat_event", pnat->nat_event);
+      if (config.what_to_count_2 & COUNT_FW_EVENT) bson_append_int(bson_elem, "fw_event", pnat->fw_event);
+      if (config.what_to_count_2 & COUNT_FWD_STATUS) bson_append_int(bson_elem, "fwd_status", pnat->fwd_status);
+
       if (config.what_to_count_2 & COUNT_MPLS_LABEL_TOP) bson_append_int(bson_elem, "mpls_label_top", pmpls->mpls_label_top);
       if (config.what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM) bson_append_int(bson_elem, "mpls_label_bottom", pmpls->mpls_label_bottom);
-      if (config.what_to_count_2 & COUNT_MPLS_STACK_DEPTH) bson_append_int(bson_elem, "mpls_stack_depth", pmpls->mpls_stack_depth);
+      if (config.what_to_count_2 & COUNT_MPLS_LABEL_STACK) {
+	char label_stack[MAX_MPLS_LABEL_STACK];
+	char *label_stack_ptr = NULL;
+	int label_stack_len = 0;
+
+	memset(label_stack, 0, MAX_MPLS_LABEL_STACK);
+
+	label_stack_len = vlen_prims_get(pvlen, COUNT_INT_MPLS_LABEL_STACK, &label_stack_ptr);
+	if (label_stack_ptr) {
+	  mpls_label_stack_to_str(label_stack, sizeof(label_stack), (u_int32_t *)label_stack_ptr, label_stack_len);
+	}
+
+	bson_append_int(bson_elem, "mpls_label_stack", label_stack);
+      }
 
       if (config.what_to_count_2 & COUNT_TUNNEL_SRC_MAC) {
         etheraddr_string(ptun->tunnel_eth_shost, src_mac);
@@ -776,6 +817,7 @@ void MongoDB_cache_purge(struct chained_cache *queue[], int index, int safe_acti
       if (config.what_to_count_2 & COUNT_TUNNEL_IP_TOS) bson_append_int(bson_elem, "tunnel_tos", ptun->tunnel_tos);
       if (config.what_to_count_2 & COUNT_TUNNEL_SRC_PORT) bson_append_int(bson_elem, "tunnel_port_src", ptun->tunnel_src_port);
       if (config.what_to_count_2 & COUNT_TUNNEL_DST_PORT) bson_append_int(bson_elem, "tunnel_port_dst", ptun->tunnel_dst_port);
+      if (config.what_to_count_2 & COUNT_TUNNEL_TCPFLAGS) bson_append_int(bson_elem, "tunnel_tcp_flags", data->tunnel_tcp_flags);
       if (config.what_to_count_2 & COUNT_VXLAN) bson_append_int(bson_elem, "vxlan", ptun->tunnel_id);
   
       if (config.what_to_count_2 & COUNT_TIMESTAMP_START) {

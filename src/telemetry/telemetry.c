@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,10 +21,12 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "thread_pool.h"
 #include "bgp/bgp.h"
 #include "telemetry.h"
+#if defined WITH_EBPF
+#include "ebpf/ebpf_rp_balancer.h"
+#endif
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
 #endif
@@ -42,6 +44,8 @@ telemetry_peer *telemetry_peers;
 void *telemetry_peers_cache;
 telemetry_peer_timeout *telemetry_peers_timeout;
 int zmq_input = 0, kafka_input = 0, unyte_udp_notif_input = 0;
+telemetry_tag_t telemetry_logdump_tag;
+struct sockaddr_storage telemetry_logdump_tag_peer;
 
 /* Functions */
 void telemetry_wrapper()
@@ -96,11 +100,18 @@ int telemetry_daemon(void *t_data_void)
 
   /* ZeroMQ and Kafka stuff */
   char *saved_peer_buf = NULL;
-  u_char consumer_buf[LARGEBUFLEN];
+  u_char consumer_buf[PKT_MSG_SIZE];
+
+  /* telemetry_tag_map stuff */
+  struct plugin_requests req;
+  struct id_table telemetry_logdump_tag_table;
+  int telemetry_logdump_tag_map_allocated;
 
 #if defined WITH_UNYTE_UDP_NOTIF
   unyte_udp_collector_t *uun_collector = NULL;
   void *seg_ptr = NULL;
+  char udp_notif_port[6];
+  char udp_notif_null_ip_address[] = "0.0.0.0";
 #endif
 
   if (!t_data) {
@@ -357,6 +368,13 @@ int telemetry_daemon(void *t_data_void)
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEPORT (errno: %d).\n", config.name, t_data->log_str, errno);
 #endif
 
+#if (defined HAVE_SO_BINDTODEVICE)
+    if (config.telemetry_interface)  {
+      rc = setsockopt(config.telemetry_sock, SOL_SOCKET, SO_BINDTODEVICE, config.telemetry_interface, (socklen_t) strlen(config.telemetry_interface));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, t_data->log_str, errno);
+    }
+#endif
+
     rc = setsockopt(config.telemetry_sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, t_data->log_str, errno);
 
@@ -425,23 +443,30 @@ int telemetry_daemon(void *t_data_void)
 #endif
 #if defined WITH_UNYTE_UDP_NOTIF
   else if (unyte_udp_notif_input) {
-    char null_ip_address[] = "0.0.0.0";
     unyte_udp_options_t options = {0};
+    int sockfd;
 
-    if (config.telemetry_udp_notif_ip) {
-      options.address = config.telemetry_udp_notif_ip;
-    }
-    else {
-      options.address = null_ip_address;
+    memset(udp_notif_port, 0, sizeof(udp_notif_port));
+
+    if (!config.telemetry_udp_notif_ip) {
+      config.telemetry_udp_notif_ip = udp_notif_null_ip_address;
     }
 
     if (config.telemetry_udp_notif_port) {
-      options.port = config.telemetry_udp_notif_port;
+      sprintf(udp_notif_port, "%d", config.telemetry_udp_notif_port);
     }
     else {
       Log(LOG_ERR, "ERROR ( %s/core/TELE ): Unyte UDP Notif specified but no telemetry_daemon_udp_notif_port supplied. Terminating.\n", config.name);
       exit_gracefully(1);
     }
+
+    sockfd = create_socket_unyte_udp_notif(t_data, config.telemetry_udp_notif_ip, udp_notif_port);
+#if defined WITH_EBPF && defined HAVE_SO_REUSEPORT
+    if (config.telemetry_udp_notif_rp_ebpf_prog) {
+      attach_ebpf_reuseport_balancer(sockfd, config.telemetry_udp_notif_rp_ebpf_prog, config.cluster_name, "telemetry", config.cluster_id, FALSE);
+    }
+#endif
+    options.socket_fd = sockfd;
 
     if (config.telemetry_udp_notif_nmsgs) {
       options.recvmmsg_vlen = config.telemetry_udp_notif_nmsgs;
@@ -450,10 +475,13 @@ int telemetry_daemon(void *t_data_void)
       options.recvmmsg_vlen = TELEMETRY_DEFAULT_UNYTE_UDP_NOTIF_NMSGS;
     }
 
+    if (config.tmp_telemetry_udp_notif_legacy) {
+      options.legacy = TRUE;
+    }
+
     uun_collector = unyte_udp_start_collector(&options);
 
-    Log(LOG_INFO, "INFO ( %s/%s ): reading telemetry data from Unyte UDP Notif on %s:%d\n",
-	config.name, t_data->log_str, options.address, options.port);
+    Log(LOG_INFO, "INFO ( %s/%s ): reading telemetry data from Unyte UDP Notif on %s:%s\n", config.name, t_data->log_str, config.telemetry_udp_notif_ip, udp_notif_port);
   }
 #endif
 
@@ -491,6 +519,14 @@ int telemetry_daemon(void *t_data_void)
     char dump_roundoff[] = "m";
     time_t tmp_time;
 
+    if (!config.telemetry_dump_time_slots) {
+      config.telemetry_dump_time_slots = 1;
+    }
+
+    if (config.telemetry_dump_refresh_time % config.telemetry_dump_time_slots != 0) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): 'telemetry_dump_time_slots' is not a divisor of 'telemetry_dump_refresh_time', please fix.\n", config.name, t_data->log_str);
+    }
+
     if (config.telemetry_dump_refresh_time) {
       gettimeofday(&telemetry_misc_db->log_tstamp, NULL);
       dump_refresh_deadline = telemetry_misc_db->log_tstamp.tv_sec;
@@ -508,10 +544,29 @@ int telemetry_daemon(void *t_data_void)
     }
   }
 
+  if (!config.writer_id_string) {
+    config.writer_id_string = DYNNAME_DEFAULT_WRITER_ID;
+  }
+
+  dynname_tokens_prepare(config.writer_id_string, &telemetry_misc_db->writer_id_tokens, DYN_STR_WRITER_ID);
+
   select_fd = bkp_select_fd = (config.telemetry_sock + 1);
   recalc_fds = FALSE;
 
   telemetry_link_misc_structs(telemetry_misc_db);
+
+  if (config.telemetry_tag_map) {
+    memset(&telemetry_logdump_tag, 0, sizeof(telemetry_logdump_tag));
+    memset(&telemetry_logdump_tag_table, 0, sizeof(telemetry_logdump_tag_table));
+    memset(&req, 0, sizeof(req));
+    telemetry_logdump_tag_map_allocated = FALSE;
+
+    load_pre_tag_map(ACCT_PMTELE, config.telemetry_tag_map, &telemetry_logdump_tag_table, &req,
+                     &telemetry_logdump_tag_map_allocated, config.maps_entries, config.maps_row_len);
+
+    /* making some bindings */
+    telemetry_logdump_tag.tag_table = (unsigned char *) &telemetry_logdump_tag_table;
+  }
 
   sigemptyset(&signal_set);
   sigaddset(&signal_set, SIGCHLD);
@@ -591,17 +646,8 @@ int telemetry_daemon(void *t_data_void)
 #endif
 #if defined WITH_UNYTE_UDP_NOTIF
     else if (unyte_udp_notif_input) {
-      unyte_seg_met_t *seg = NULL;
-
       seg_ptr = unyte_udp_queue_read(uun_collector->queue);
       select_num = TRUE; /* anything but zero or negative */
-
-      /* the library does pass src_addr / src_port that went through a ntoh*() func;
-	 to align the workflow to the rest of collection methods, let's temporarily
-	 revert this */
-      seg = (unyte_seg_met_t *)seg_ptr;
-      seg->metadata->src_addr = htonl(seg->metadata->src_addr);
-      seg->metadata->src_port = htons(seg->metadata->src_port);
     }
 #endif
 
@@ -653,6 +699,11 @@ int telemetry_daemon(void *t_data_void)
     if (reload_map_telemetry_thread) {
       if (config.telemetry_allow_file) load_allow_file(config.telemetry_allow_file, &allow);
 
+      if (config.telemetry_tag_map) {
+	load_pre_tag_map(ACCT_PMTELE, config.telemetry_tag_map, &telemetry_logdump_tag_table, &req,
+			 &telemetry_logdump_tag_map_allocated, config.maps_entries, config.maps_row_len);
+      }
+
       reload_map_telemetry_thread = FALSE;
     }
 
@@ -670,7 +721,7 @@ int telemetry_daemon(void *t_data_void)
     }
 
     if (reload_log && !telemetry_misc_db->is_thread) {
-      reload_logs();
+      reload_logs(PMTELEMETRYD_USAGE_HEADER);
       reload_log = FALSE;
     }
 
@@ -683,13 +734,15 @@ int telemetry_daemon(void *t_data_void)
       if (telemetry_log_seq_has_ro_bit(&telemetry_misc_db->log_seq))
 	telemetry_log_seq_init(&telemetry_misc_db->log_seq);
 
+      int refreshTimePerSlot = config.telemetry_dump_refresh_time / config.telemetry_dump_time_slots;
+
       if (telemetry_misc_db->dump_backend_methods) {
         while (telemetry_misc_db->log_tstamp.tv_sec > dump_refresh_deadline) {
           telemetry_misc_db->dump.tstamp.tv_sec = dump_refresh_deadline;
           telemetry_misc_db->dump.tstamp.tv_usec = 0;
           compose_timestamp(telemetry_misc_db->dump.tstamp_str, SRVBUFLEN, &telemetry_misc_db->dump.tstamp, FALSE,
 			    config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
-	  telemetry_misc_db->dump.period = config.telemetry_dump_refresh_time;
+	  telemetry_misc_db->dump.period = refreshTimePerSlot;
 
           telemetry_handle_dump_event(t_data, max_peers_idx);
 
@@ -760,8 +813,11 @@ int telemetry_daemon(void *t_data_void)
 
 	  seg = (unyte_seg_met_t *)seg_ptr;
 
-	  if (seg->header->encoding_type == TELEMETRY_UDP_NOTIF_ENC_JSON && config.telemetry_decoder_id == TELEMETRY_DECODER_JSON) {
-	    raw_to_sa((struct sockaddr *)&client, (u_char *)&seg->metadata->src_addr, seg->metadata->src_port, AF_INET);
+	  if (unyte_udp_get_media_type(seg) == UNYTE_MEDIATYPE_YANG_JSON && config.telemetry_decoder_id == TELEMETRY_DECODER_JSON) {
+	    struct sockaddr_storage *unsa = NULL;
+
+	    unsa = unyte_udp_get_src(seg);
+	    memcpy(&client, unsa, sizeof(struct sockaddr_storage));
 
 	    payload_len = strlen(seg->payload);
 	    if (payload_len < sizeof(consumer_buf)) {
@@ -858,8 +914,13 @@ int telemetry_daemon(void *t_data_void)
       }
       addr_to_str(peer->addr_str, &peer->addr);
 
+      if (config.telemetry_tag_map) {
+	telemetry_tag_init_find(peer, (struct sockaddr *) &telemetry_logdump_tag_peer, &telemetry_logdump_tag);
+	telemetry_tag_find((struct id_table *)telemetry_logdump_tag.tag_table, &telemetry_logdump_tag, &telemetry_logdump_tag.tag, NULL);
+      }
+
       if (telemetry_misc_db->msglog_backend_methods)
-        telemetry_peer_log_init(peer, config.telemetry_msglog_output, FUNC_TYPE_TELEMETRY);
+        telemetry_peer_log_init(peer, &telemetry_logdump_tag, config.telemetry_msglog_output, FUNC_TYPE_TELEMETRY);
 
       if (telemetry_misc_db->dump_backend_methods)
         telemetry_dump_init_peer(peer);
@@ -938,6 +999,11 @@ int telemetry_daemon(void *t_data_void)
     else {
       peer->stats.packets++;
       if (recv_flags != ERR) {
+	if (config.telemetry_tag_map) {
+	  telemetry_tag_init_find(peer, (struct sockaddr *) &telemetry_logdump_tag_peer, &telemetry_logdump_tag);
+	  telemetry_tag_find((struct id_table *)telemetry_logdump_tag.tag_table, &telemetry_logdump_tag, &telemetry_logdump_tag.tag, NULL);
+	}
+
         peer->stats.msg_bytes += ret;
         telemetry_process_data(peer, t_data, data_decoder);
       }
@@ -969,4 +1035,14 @@ void telemetry_prepare_daemon(struct telemetry_data *t_data)
   t_data->is_thread = FALSE;
   t_data->log_str = malloc(strlen("core") + 1);
   strcpy(t_data->log_str, "core");
+}
+
+void telemetry_tag_init_find(telemetry_peer *peer, struct sockaddr *sa, telemetry_tag_t *pptrs)
+{
+  bgp_tag_init_find(peer, sa, pptrs);
+}
+
+int telemetry_tag_find(struct id_table *t, telemetry_tag_t *pptrs, pm_id_t *tag, pm_id_t *tag2)
+{
+  return bgp_tag_find(t, pptrs, tag, tag2);
 }

@@ -88,7 +88,7 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
-subdir = src/nfprobe_plugin
+subdir = src/ebpf
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/m4/ac_linearize_path.m4 \
 	$(top_srcdir)/m4/ax_lib_mysql.m4 $(top_srcdir)/m4/libtool.m4 \
@@ -102,21 +102,16 @@ mkinstalldirs = $(install_sh) -d
 CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 LTLIBRARIES = $(noinst_LTLIBRARIES)
-libnfprobe_plugin_la_LIBADD =
-am_libnfprobe_plugin_la_OBJECTS =  \
-	libnfprobe_plugin_la-nfprobe_plugin.lo \
-	libnfprobe_plugin_la-netflow5.lo \
-	libnfprobe_plugin_la-netflow9.lo \
-	libnfprobe_plugin_la-convtime.lo
-libnfprobe_plugin_la_OBJECTS = $(am_libnfprobe_plugin_la_OBJECTS)
+libpmebpf_la_LIBADD =
+am_libpmebpf_la_OBJECTS = libpmebpf_la-ebpf_rp_balancer.lo
+libpmebpf_la_OBJECTS = $(am_libpmebpf_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
 am__v_lt_0 = --silent
 am__v_lt_1 = 
-libnfprobe_plugin_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC \
-	$(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=link $(CCLD) \
-	$(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) $(AM_LDFLAGS) \
-	$(LDFLAGS) -o $@
+libpmebpf_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
+	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(libpmebpf_la_CFLAGS) \
+	$(CFLAGS) $(AM_LDFLAGS) $(LDFLAGS) -o $@
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -132,10 +127,7 @@ am__v_at_1 =
 DEFAULT_INCLUDES = -I.@am__isrc@
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
-am__depfiles_remade = ./$(DEPDIR)/libnfprobe_plugin_la-convtime.Plo \
-	./$(DEPDIR)/libnfprobe_plugin_la-netflow5.Plo \
-	./$(DEPDIR)/libnfprobe_plugin_la-netflow9.Plo \
-	./$(DEPDIR)/libnfprobe_plugin_la-nfprobe_plugin.Plo
+am__depfiles_remade = ./$(DEPDIR)/libpmebpf_la-ebpf_rp_balancer.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -155,8 +147,8 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(libnfprobe_plugin_la_SOURCES)
-DIST_SOURCES = $(libnfprobe_plugin_la_SOURCES)
+SOURCES = $(libpmebpf_la_SOURCES)
+DIST_SOURCES = $(libpmebpf_la_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -351,12 +343,9 @@ top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 AM_CFLAGS = $(PMACCT_CFLAGS)
-noinst_LTLIBRARIES = libnfprobe_plugin.la
-libnfprobe_plugin_la_SOURCES = nfprobe_plugin.c netflow5.c	\
-	netflow9.c convtime.c common.h convtime.h sys-tree.h	\
-	nfprobe_plugin.h treetype.h
-
-libnfprobe_plugin_la_CFLAGS = -DFLOW_SPLAY -DEXPIRY_RB -I$(srcdir)/.. $(AM_CFLAGS)
+noinst_LTLIBRARIES = libpmebpf.la
+libpmebpf_la_SOURCES = ebpf_rp_balancer.c ebpf_rp_balancer.h
+libpmebpf_la_CFLAGS = -I$(srcdir)/.. $(AM_CFLAGS)
 all: all-am
 
 .SUFFIXES:
@@ -370,9 +359,9 @@ $(srcdir)/Makefile.in:  $(srcdir)/Makefile.am  $(am__configure_deps)
 	      exit 1;; \
 	  esac; \
 	done; \
-	echo ' cd $(top_srcdir) && $(AUTOMAKE) --foreign src/nfprobe_plugin/Makefile'; \
+	echo ' cd $(top_srcdir) && $(AUTOMAKE) --foreign src/ebpf/Makefile'; \
 	$(am__cd) $(top_srcdir) && \
-	  $(AUTOMAKE) --foreign src/nfprobe_plugin/Makefile
+	  $(AUTOMAKE) --foreign src/ebpf/Makefile
 Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	@case '$?' in \
 	  *config.status*) \
@@ -402,8 +391,8 @@ clean-noinstLTLIBRARIES:
 	  rm -f $${locs}; \
 	}
 
-libnfprobe_plugin.la: $(libnfprobe_plugin_la_OBJECTS) $(libnfprobe_plugin_la_DEPENDENCIES) $(EXTRA_libnfprobe_plugin_la_DEPENDENCIES) 
-	$(AM_V_CCLD)$(libnfprobe_plugin_la_LINK)  $(libnfprobe_plugin_la_OBJECTS) $(libnfprobe_plugin_la_LIBADD) $(LIBS)
+libpmebpf.la: $(libpmebpf_la_OBJECTS) $(libpmebpf_la_DEPENDENCIES) $(EXTRA_libpmebpf_la_DEPENDENCIES) 
+	$(AM_V_CCLD)$(libpmebpf_la_LINK)  $(libpmebpf_la_OBJECTS) $(libpmebpf_la_LIBADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -411,10 +400,7 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libnfprobe_plugin_la-convtime.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libnfprobe_plugin_la-netflow5.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libnfprobe_plugin_la-netflow9.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libnfprobe_plugin_la-nfprobe_plugin.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libpmebpf_la-ebpf_rp_balancer.Plo@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -443,33 +429,12 @@ am--depfiles: $(am__depfiles_remade)
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LTCOMPILE) -c -o $@ $<
 
-libnfprobe_plugin_la-nfprobe_plugin.lo: nfprobe_plugin.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) -MT libnfprobe_plugin_la-nfprobe_plugin.lo -MD -MP -MF $(DEPDIR)/libnfprobe_plugin_la-nfprobe_plugin.Tpo -c -o libnfprobe_plugin_la-nfprobe_plugin.lo `test -f 'nfprobe_plugin.c' || echo '$(srcdir)/'`nfprobe_plugin.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libnfprobe_plugin_la-nfprobe_plugin.Tpo $(DEPDIR)/libnfprobe_plugin_la-nfprobe_plugin.Plo
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='nfprobe_plugin.c' object='libnfprobe_plugin_la-nfprobe_plugin.lo' libtool=yes @AMDEPBACKSLASH@
+libpmebpf_la-ebpf_rp_balancer.lo: ebpf_rp_balancer.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libpmebpf_la_CFLAGS) $(CFLAGS) -MT libpmebpf_la-ebpf_rp_balancer.lo -MD -MP -MF $(DEPDIR)/libpmebpf_la-ebpf_rp_balancer.Tpo -c -o libpmebpf_la-ebpf_rp_balancer.lo `test -f 'ebpf_rp_balancer.c' || echo '$(srcdir)/'`ebpf_rp_balancer.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libpmebpf_la-ebpf_rp_balancer.Tpo $(DEPDIR)/libpmebpf_la-ebpf_rp_balancer.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='ebpf_rp_balancer.c' object='libpmebpf_la-ebpf_rp_balancer.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) -c -o libnfprobe_plugin_la-nfprobe_plugin.lo `test -f 'nfprobe_plugin.c' || echo '$(srcdir)/'`nfprobe_plugin.c
-
-libnfprobe_plugin_la-netflow5.lo: netflow5.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) -MT libnfprobe_plugin_la-netflow5.lo -MD -MP -MF $(DEPDIR)/libnfprobe_plugin_la-netflow5.Tpo -c -o libnfprobe_plugin_la-netflow5.lo `test -f 'netflow5.c' || echo '$(srcdir)/'`netflow5.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libnfprobe_plugin_la-netflow5.Tpo $(DEPDIR)/libnfprobe_plugin_la-netflow5.Plo
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='netflow5.c' object='libnfprobe_plugin_la-netflow5.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) -c -o libnfprobe_plugin_la-netflow5.lo `test -f 'netflow5.c' || echo '$(srcdir)/'`netflow5.c
-
-libnfprobe_plugin_la-netflow9.lo: netflow9.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) -MT libnfprobe_plugin_la-netflow9.lo -MD -MP -MF $(DEPDIR)/libnfprobe_plugin_la-netflow9.Tpo -c -o libnfprobe_plugin_la-netflow9.lo `test -f 'netflow9.c' || echo '$(srcdir)/'`netflow9.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libnfprobe_plugin_la-netflow9.Tpo $(DEPDIR)/libnfprobe_plugin_la-netflow9.Plo
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='netflow9.c' object='libnfprobe_plugin_la-netflow9.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) -c -o libnfprobe_plugin_la-netflow9.lo `test -f 'netflow9.c' || echo '$(srcdir)/'`netflow9.c
-
-libnfprobe_plugin_la-convtime.lo: convtime.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) -MT libnfprobe_plugin_la-convtime.lo -MD -MP -MF $(DEPDIR)/libnfprobe_plugin_la-convtime.Tpo -c -o libnfprobe_plugin_la-convtime.lo `test -f 'convtime.c' || echo '$(srcdir)/'`convtime.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libnfprobe_plugin_la-convtime.Tpo $(DEPDIR)/libnfprobe_plugin_la-convtime.Plo
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='convtime.c' object='libnfprobe_plugin_la-convtime.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libnfprobe_plugin_la_CFLAGS) $(CFLAGS) -c -o libnfprobe_plugin_la-convtime.lo `test -f 'convtime.c' || echo '$(srcdir)/'`convtime.c
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libpmebpf_la_CFLAGS) $(CFLAGS) -c -o libpmebpf_la-ebpf_rp_balancer.lo `test -f 'ebpf_rp_balancer.c' || echo '$(srcdir)/'`ebpf_rp_balancer.c
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -602,10 +567,7 @@ clean-am: clean-generic clean-libtool clean-noinstLTLIBRARIES \
 	mostlyclean-am
 
 distclean: distclean-am
-		-rm -f ./$(DEPDIR)/libnfprobe_plugin_la-convtime.Plo
-	-rm -f ./$(DEPDIR)/libnfprobe_plugin_la-netflow5.Plo
-	-rm -f ./$(DEPDIR)/libnfprobe_plugin_la-netflow9.Plo
-	-rm -f ./$(DEPDIR)/libnfprobe_plugin_la-nfprobe_plugin.Plo
+		-rm -f ./$(DEPDIR)/libpmebpf_la-ebpf_rp_balancer.Plo
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -651,10 +613,7 @@ install-ps-am:
 installcheck-am:
 
 maintainer-clean: maintainer-clean-am
-		-rm -f ./$(DEPDIR)/libnfprobe_plugin_la-convtime.Plo
-	-rm -f ./$(DEPDIR)/libnfprobe_plugin_la-netflow5.Plo
-	-rm -f ./$(DEPDIR)/libnfprobe_plugin_la-netflow9.Plo
-	-rm -f ./$(DEPDIR)/libnfprobe_plugin_la-nfprobe_plugin.Plo
+		-rm -f ./$(DEPDIR)/libpmebpf_la-ebpf_rp_balancer.Plo
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -25,7 +25,6 @@
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "net_aggr.h"
-#include "addr.h"
 #include "jhash.h"
 
 /* global variables */
@@ -508,8 +507,8 @@ void remove_dupes(char *filename, struct networks_table *nt, int want_v6)
 	continue;
       }
 
-      nt->table[j].net = nt->table[i].net;
-      nt->table[j].mask = nt->table[i].mask;
+      memcpy(&nt->table[j], &nt->table[i], sizeof(struct networks_table_entry));
+
       j++;
     }
 
@@ -522,13 +521,14 @@ void remove_dupes(char *filename, struct networks_table *nt, int want_v6)
 	  !memcmp(nt->table6[i].mask, nt->table6[i + 1].mask, sizeof(nt->table6[i].mask))) {
 	continue;
       }
+
+      memcpy(&nt->table6[j], &nt->table6[i], sizeof(struct networks6_table_entry));
+
+      j++;
     }
 
-    memcpy(nt->table6[j].net, nt->table6[i].net, sizeof(nt->table6[i].net));
-    memcpy(nt->table6[j].mask, nt->table6[i].mask, sizeof(nt->table6[i].mask));
-    j++;
+    nt->num6 = j;
   }
-  nt->num6 = j;
 }
 
 void networks_cache_insert(struct networks_cache *nc, u_int32_t *key, struct networks_table_entry *result)

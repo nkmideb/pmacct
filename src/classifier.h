@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -22,37 +22,23 @@
 #ifndef CLASSIFIER_H
 #define CLASSIFIER_H
 
-#include "regexp.h"
 #include "conntrack.h"
 
 /* defines */
 #define MAX_FN_LEN 256
 #define MAX_SUBDIRS 128
-#define MAX_CLASSIFIERS 256
+#define MAX_CLASSIFIERS 512
 #define MAX_PATTERN_LEN 2048
 #define DEFAULT_TENTATIVES 5 
 
 /* data structures */
-struct pkt_classifier_data {
-  struct timeval stamp;
-  u_char *packet_ptr;
-  u_char *l3_ptr;
-  u_char *l4_ptr;
-  u_char *payload_ptr;
-  u_int16_t l3_proto;
-  u_int16_t l4_proto;
-  u_int16_t plen;
-  u_int8_t tentatives;
-  u_int16_t sampling_rate;
-};
-
 struct pkt_classifier {
   pm_class_t id;
   char protocol[MAX_PROTOCOL_LEN];
-  regexp *pattern;
-  pm_class_t (*func)(struct pkt_classifier_data *, int, void **, void **, void **);
+#if defined (WITH_NDPI)
+  ndpi_protocol_category_t category;
+#endif
   conntrack_helper ct_helper;
-  void *extra;
 };
 
 /* All but __CLASSIFIER_C are dummy entries. They are required to export locally
@@ -60,22 +46,7 @@ struct pkt_classifier {
    and sfacctd */
 
 /* prototypes */
-extern void init_classifiers(char *);
-extern void evaluate_classifiers(struct packet_ptrs *, struct ip_flow_common *, unsigned int);
-extern pm_class_t SF_evaluate_classifiers(char *);
-extern int parse_pattern_file(char *, struct pkt_classifier *);
-extern int parse_shared_object(char *, struct pkt_classifier *);
-extern int dot_pat(char *);
-extern int dot_so(char *);
-extern void init_class_accumulators(struct packet_ptrs *, struct ip_flow_common *, unsigned int);
-extern void handle_class_accumulators(struct packet_ptrs *, struct ip_flow_common *, unsigned int);
-extern void link_conntrack_helper(struct pkt_classifier *);
-
-extern void *search_context_chain(struct ip_flow_common *, unsigned int, char *);
-extern void insert_context_chain(struct ip_flow_common *, unsigned int, char *, void *);
-extern void clear_context_chain(struct ip_flow_common *, unsigned int);
-extern void prepare_classifier_data(struct pkt_classifier_data *, struct ip_flow_common *, unsigned int, struct packet_ptrs *);
-
+extern void init_classifiers();
 extern pm_class_t pmct_register(struct pkt_classifier *);
 extern pm_class_t pmct_ndpi_register(struct pkt_classifier *);
 extern void pmct_unregister(pm_class_t);

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -30,7 +30,6 @@
 #include "ip_flow.h"
 #include "net_aggr.h"
 #include "thread_pool.h"
-#include "classifier.h"
 #include "bgp/bgp.h"
 #include "isis/isis.h"
 #include "bmp/bmp.h"
@@ -494,11 +493,6 @@ int main(int argc,char **argv, char **envp)
       /* applies to all plugins */
       plugin_pipe_check(&list->cfg);
 
-      if (config.classifiers_path && (list->cfg.sampling_rate || config.ext_sampling_rate)) {
-        Log(LOG_ERR, "ERROR ( %s/core ): Packet sampling and classification are mutual exclusive.\n", config.name);
-        exit_gracefully(1);
-      }
-
       if (list->cfg.sampling_rate && config.ext_sampling_rate) {
         Log(LOG_ERR, "ERROR ( %s/core ): Internal packet sampling and external packet sampling are mutual exclusive.\n", config.name);
         exit_gracefully(1);
@@ -512,7 +506,10 @@ int main(int argc,char **argv, char **envp)
       else if (list->type.id == PLUGIN_ID_NFPROBE) {
 	/* If we already renormalizing an external sampling rate,
 	   we cancel the sampling information from the probe plugin */
-	if (config.sfacctd_renormalize && list->cfg.ext_sampling_rate) list->cfg.ext_sampling_rate = 0; 
+	if (config.sfacctd_renormalize && (list->cfg.ext_sampling_rate || list->cfg.sampling_rate)) {
+	  list->cfg.ext_sampling_rate = 0; 
+	  list->cfg.sampling_rate = 0; 
+	}
 
 	config.handle_fragments = TRUE;
 	list->cfg.nfprobe_what_to_count = list->cfg.what_to_count;
@@ -545,11 +542,6 @@ int main(int argc,char **argv, char **envp)
 	  list->cfg.what_to_count |= COUNT_PEER_DST_IP;
 	}
 	if (list->cfg.nfprobe_version == 9 || list->cfg.nfprobe_version == 10) {
-	  if (list->cfg.classifiers_path) {
-	    list->cfg.what_to_count |= COUNT_CLASS; 
-	    config.handle_flows = TRUE;
-	  }
-
           if (list->cfg.nfprobe_what_to_count_2 & COUNT_NDPI_CLASS)
             list->cfg.what_to_count_2 |= COUNT_NDPI_CLASS;
 
@@ -594,16 +586,14 @@ int main(int argc,char **argv, char **envp)
       else if (list->type.id == PLUGIN_ID_SFPROBE) {
         /* If we already renormalizing an external sampling rate,
            we cancel the sampling information from the probe plugin */
-        if (config.sfacctd_renormalize && list->cfg.ext_sampling_rate) list->cfg.ext_sampling_rate = 0;
+        if (config.sfacctd_renormalize && (list->cfg.ext_sampling_rate || list->cfg.sampling_rate)) {
+	  list->cfg.ext_sampling_rate = 0;
+	  list->cfg.sampling_rate = 0;
+	}
 
 	if (config.snaplen < 128) config.snaplen = 128; /* SFL_DEFAULT_HEADER_SIZE */
 	list->cfg.what_to_count = COUNT_PAYLOAD;
 	list->cfg.what_to_count_2 = 0;
-	if (list->cfg.classifiers_path) {
-	  list->cfg.what_to_count |= COUNT_CLASS;
-	  config.handle_fragments = TRUE;
-	  config.handle_flows = TRUE;
-	}
 #if defined (WITH_NDPI)
 	if (list->cfg.ndpi_num_roots) list->cfg.what_to_count_2 |= COUNT_NDPI_CLASS;
 #endif
@@ -647,11 +637,10 @@ int main(int argc,char **argv, char **envp)
         if (list->cfg.what_to_count_2 & (COUNT_POST_NAT_SRC_HOST|COUNT_POST_NAT_DST_HOST|
                         COUNT_POST_NAT_SRC_PORT|COUNT_POST_NAT_DST_PORT|COUNT_NAT_EVENT|
                         COUNT_TIMESTAMP_START|COUNT_TIMESTAMP_END|COUNT_TIMESTAMP_ARRIVAL|
-			COUNT_EXPORT_PROTO_TIME))
+			COUNT_EXPORT_PROTO_TIME|COUNT_FWD_STATUS|COUNT_FW_EVENT))
           list->cfg.data_type |= PIPE_TYPE_NAT;
 
-        if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM|
-                        COUNT_MPLS_STACK_DEPTH))
+        if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM))
           list->cfg.data_type |= PIPE_TYPE_MPLS;
 
 	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_MAC|COUNT_TUNNEL_DST_MAC|
@@ -662,17 +651,13 @@ int main(int argc,char **argv, char **envp)
 	  cb_data.has_tun_prims = TRUE;
 	}
 
-        if (list->cfg.what_to_count_2 & (COUNT_LABEL))
+        if (list->cfg.what_to_count_2 & (COUNT_LABEL|COUNT_MPLS_LABEL_STACK))
           list->cfg.data_type |= PIPE_TYPE_VLEN;
 
 	evaluate_sums(&list->cfg.what_to_count, &list->cfg.what_to_count_2, list->name, list->type.string);
 	if (list->cfg.what_to_count & (COUNT_SRC_PORT|COUNT_DST_PORT|COUNT_SUM_PORT|COUNT_TCPFLAGS))
 	  config.handle_fragments = TRUE;
 	if (list->cfg.what_to_count & COUNT_FLOWS) {
-	  config.handle_fragments = TRUE;
-	  config.handle_flows = TRUE;
-	}
-	if (list->cfg.what_to_count & COUNT_CLASS) {
 	  config.handle_fragments = TRUE;
 	  config.handle_flows = TRUE;
 	}
@@ -711,11 +696,6 @@ int main(int argc,char **argv, char **envp)
           }
         }
 
-	if (list->cfg.what_to_count & COUNT_CLASS && !list->cfg.classifiers_path) {
-	  Log(LOG_ERR, "ERROR ( %s/%s ): 'class' aggregation selected but NO 'classifiers' key specified. Exiting...\n\n", list->name, list->type.string);
-	  exit_gracefully(1);
-	}
-
 	list->cfg.type_id = list->type.id;
 	bgp_config_checks(&list->cfg);
 
@@ -729,21 +709,11 @@ int main(int argc,char **argv, char **envp)
 	config.handle_fragments = TRUE;
 	config.classifier_ndpi = TRUE;
       } 
-
-      if ((list->cfg.what_to_count & COUNT_CLASS) && (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS)) { 
-	Log(LOG_ERR, "ERROR ( %s/%s ): 'class_legacy' and 'class' primitives are mutual exclusive. Exiting...\n\n", list->name, list->type.string);
-	exit_gracefully(1);
-      }
     }
     list = list->next;
   }
 
   /* plugins glue: creation (since 094) */
-  if (config.classifiers_path) {
-    init_classifiers(config.classifiers_path);
-    init_conntrack_table();
-  }
-
 #if defined (WITH_NDPI)
   if (config.classifier_ndpi) {
     config.handle_fragments = TRUE;

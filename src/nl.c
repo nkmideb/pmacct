@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "pmacct-data.h"
 #include "pmacct-dlt.h"
 #include "pretag_handlers.h"
@@ -192,7 +191,7 @@ void pm_pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *bu
   }
 
   if (reload_log) {
-    reload_logs();
+    reload_logs(PMACCTD_USAGE_HEADER);
     reload_log = FALSE;
   }
 
@@ -293,10 +292,7 @@ int ip_handler(register struct packet_ptrs *pptrs)
       }
     }
     else {
-      if (pptrs->l4_proto != IPPROTO_ICMP) {
-        pptrs->tlh_ptr = dummy_tlhdr;
-      }
-
+      pptrs->tlh_ptr = dummy_tlhdr;
       if (off < caplen) pptrs->payload_ptr = ptr;
     }
 
@@ -479,10 +475,7 @@ int ip6_handler(register struct packet_ptrs *pptrs)
       }
     }
     else {
-      if (pptrs->l4_proto != IPPROTO_ICMPV6) {
-        pptrs->tlh_ptr = dummy_tlhdr;
-      }
-
+      pptrs->tlh_ptr = dummy_tlhdr;
       if (off < caplen) pptrs->payload_ptr = ptr;
     }
 
@@ -527,6 +520,12 @@ int ip6_handler(register struct packet_ptrs *pptrs)
   return ret;
 }
 
+int unknown_etype_handler(register struct packet_ptrs *pptrs)
+{
+  /* NO-OP - just return TRUE so packet is counted */
+  return TRUE;
+}
+
 int PM_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_id_t *tag2)
 {
   int x;
@@ -542,7 +541,7 @@ int PM_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
     pptrs->have_tag2 = FALSE;
   }
 
-  /* Giving a first try with index(es) */
+  /* If we have any index defined, let's use it */
   if (config.maps_index && pretag_index_have_one(t)) {
     struct id_entry *index_results[ID_TABLE_INDEX_RESULTS];
     u_int32_t iterator;
@@ -555,7 +554,7 @@ int PM_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
       if (!(ret & PRETAG_MAP_RCODE_JEQ)) return ret;
     }
 
-    /* if we have at least one index we trust we did a good job */
+    /* done */
     return ret;
   }
 
@@ -621,7 +620,6 @@ void compute_once()
   MyTCPHdrSz = TCPFlagOff+1;
   PptrsSz = sizeof(struct packet_ptrs);
   UDPHdrSz = 8;
-  CSSz = sizeof(struct class_st);
   IpFlowCmnSz = sizeof(struct ip_flow_common);
   HostAddrSz = sizeof(struct host_addr);
   IP6HdrSz = sizeof(struct ip6_hdr);

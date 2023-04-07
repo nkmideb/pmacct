@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -99,12 +99,7 @@
 #endif
 
 #if defined (WITH_NDPI)
-/* NDPI_LIB_COMPILATION definition appears to be new in 2.5 */
-#ifndef NDPI_LIB_COMPILATION
-#define NDPI_LIB_COMPILATION
-#endif
 #include <ndpi_main.h>
-#undef NDPI_LIB_COMPILATION
 #endif
 
 #if !defined ETHER_ADDRSTRLEN
@@ -252,6 +247,7 @@ typedef struct {
 #define PM_GNUTLS_CAFILE "ca-certificates.crt"
 #endif
 
+#include "addr.h"
 #include "network.h"
 #include "pretag.h"
 #include "cfg.h"
@@ -347,6 +343,11 @@ struct _primitives_matrix_struct {
   char desc[PRIMITIVE_DESC_LEN];
 };
 
+struct _id_to_string_struct {
+  u_int64_t id;
+  char str[PRIMITIVE_DESC_LEN];
+};
+
 struct largebuf {
   u_char base[LARGEBUFLEN];
   u_char *end;
@@ -385,7 +386,7 @@ void reload_maps(int);
 extern void pm_pcap_device_initialize(struct pm_pcap_devices *);
 extern void pm_pcap_device_copy_all(struct pm_pcap_devices *, struct pm_pcap_devices *);
 extern void pm_pcap_device_copy_entry(struct pm_pcap_devices *, struct pm_pcap_devices *, int);
-extern int pm_pcap_device_getindex_byifname(struct pm_pcap_devices *, char *);
+extern int pm_pcap_device_getindex_by_ifname_direction(struct pm_pcap_devices *, char *, int);
 extern pcap_t *pm_pcap_open(const char *, int, int, int, int, int, char *);
 extern void pm_pcap_add_filter(struct pm_pcap_device *);
 extern int pm_pcap_add_interface(struct pm_pcap_device *, char *, struct pm_pcap_interface *, int);
@@ -405,6 +406,7 @@ extern void chdlc_handler(const struct pcap_pkthdr *, register struct packet_ptr
 
 extern int ip_handler(register struct packet_ptrs *);
 extern int ip6_handler(register struct packet_ptrs *);
+extern int unknown_etype_handler(register struct packet_ptrs *);
 extern int gtp_tunnel_func(register struct packet_ptrs *);
 extern int gtp_tunnel_configurator(struct tunnel_handler *, char *);
 extern void tunnel_registry_init();

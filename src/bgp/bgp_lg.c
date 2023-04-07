@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #if defined WITH_ZMQ
 #include "zmq_common.h"
 #endif
@@ -370,8 +369,8 @@ char *bgp_lg_daemon_encode_reply_ip_lookup_data_json(struct bgp_lg_rep_ipl_data 
     memset(&dummy_node, 0, sizeof(dummy_node));
     memcpy(&dummy_node.p, rep_data->pref, sizeof(struct prefix)); 
 
-    bgp_peer_log_msg(&dummy_node, rep_data->info, rep_data->afi, rep_data->safi, event_type,
-		     PRINT_OUTPUT_JSON, &data_str, BGP_LOG_TYPE_MISC);
+    bgp_peer_log_msg(&dummy_node, rep_data->info, rep_data->afi, rep_data->safi, NULL,
+		     event_type, PRINT_OUTPUT_JSON, &data_str, BGP_LOG_TYPE_MISC);
   }
 
   return data_str;

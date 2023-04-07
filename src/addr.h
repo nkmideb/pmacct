@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -31,6 +31,25 @@
 #define IS_IPV6_MULTICAST(a) (((const uint8_t *) (a))[0] == 0xff)
 #define IS_MAC_MULTICAST(a) (((const uint8_t *) (a))[0] == 0x01)
 
+/* structs */
+struct host_addr {
+  u_int8_t family;
+  union {
+    struct in_addr ipv4;
+    struct in6_addr ipv6;
+  } address;
+};
+
+struct host_mask {
+  u_int8_t family;
+  u_int8_t len;
+  union {
+    u_int32_t m4;
+    u_int8_t m6[16];
+  } mask;
+};
+
+/* vars */
 static const char __attribute__((unused)) *ip_version_string[] = {
   "v4",
   "v6"
@@ -46,6 +65,7 @@ extern unsigned int str_to_addr(const char *, struct host_addr *);
 extern unsigned int addr_to_str(char *, const struct host_addr *);
 extern unsigned int addr_to_str2(char *, const struct host_addr *, int);
 extern unsigned int addr_mask_to_str(char *, int, const struct host_addr *, const struct host_mask *);
+extern unsigned int apply_addr_mask(struct host_addr *, struct host_mask *);
 extern unsigned int str_to_addr_mask(const char *, struct host_addr *, struct host_mask *);
 extern unsigned int addr_to_sa(struct sockaddr *, struct host_addr *, u_int16_t);
 extern unsigned int sa_to_addr(struct sockaddr *, struct host_addr *, u_int16_t *);
@@ -57,7 +77,7 @@ extern int host_addr_mask_sa_cmp(struct host_addr *, struct host_mask *, struct 
 extern int host_addr_mask_cmp(struct host_addr *, struct host_mask *, struct host_addr *);
 extern unsigned int raw_to_sa(struct sockaddr *, u_char *, u_int16_t port, u_int8_t);
 extern unsigned int raw_to_addr(struct host_addr *, u_char *, u_int8_t);
-extern unsigned int sa_to_str(char *, int, const struct sockaddr *);
+extern unsigned int sa_to_str(char *, int, const struct sockaddr *, int);
 extern unsigned int sa_to_port(int *, const struct sockaddr *);
 extern void *pm_htonl6(void *);
 extern void *pm_ntohl6(void *);

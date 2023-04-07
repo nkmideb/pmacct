@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -41,7 +41,9 @@ static const struct _dictionary_line dictionary[] = {
   {"snaplen", cfg_key_snaplen},
   {"propagate_signals", cfg_key_propagate_signals},
   {"aggregate_filter", cfg_key_aggregate_filter},
+  {"aggregate_unknown_etype", cfg_key_aggregate_unknown_etype},
   {"dtls_path", cfg_key_dtls_path},
+  {"writer_id_string", cfg_key_writer_id_string},
   {"promisc", cfg_key_promisc},
   {"pcap_filter", cfg_key_pcap_filter},
   {"pcap_protocol", cfg_key_pcap_protocol},
@@ -82,10 +84,15 @@ static const struct _dictionary_line dictionary[] = {
   {"networks_no_mask_if_zero", cfg_key_networks_no_mask_if_zero},
   {"networks_cache_entries", cfg_key_networks_cache_entries},
   {"ports_file", cfg_key_ports_file},
+  {"protos_file", cfg_key_protos_file},
+  {"tos_file", cfg_key_tos_file},
   {"timestamps_rfc3339", cfg_key_timestamps_rfc3339},
   {"timestamps_utc", cfg_key_timestamps_utc},
   {"timestamps_secs", cfg_key_timestamps_secs},
   {"timestamps_since_epoch", cfg_key_timestamps_since_epoch},
+  {"tcpflags_encode_as_array", cfg_key_tcpflags_encode_as_array},
+  {"fwd_status_encode_as_string", cfg_key_fwd_status_encode_as_string},
+  {"tos_encode_as_dscp", cfg_key_tos_encode_as_dscp},
   {"imt_path", cfg_key_imt_path},
   {"imt_passwd", cfg_key_imt_passwd},
   {"imt_buckets", cfg_key_imt_buckets},
@@ -219,8 +226,11 @@ static const struct _dictionary_line dictionary[] = {
   {"nfacctd_proc_name", cfg_key_proc_name},
   {"nfacctd_port", cfg_key_nfacctd_port},
   {"nfacctd_ip", cfg_key_nfacctd_ip},
+  {"nfacctd_interface", cfg_key_nfacctd_interface},
   {"nfacctd_ipv6_only", cfg_key_nfacctd_ipv6_only},
+  {"nfacctd_rp_ebpf_prog", cfg_key_nfacctd_rp_ebpf_prog},
   {"nfacctd_allow_file", cfg_key_nfacctd_allow_file},
+  {"nfacctd_nonroot", cfg_key_pmacctd_nonroot},
   {"nfacctd_time_secs", cfg_key_nfacctd_time_secs},
   {"nfacctd_time_new", cfg_key_nfacctd_time_new},
   {"nfacctd_as_new", cfg_key_nfacctd_as_new},
@@ -245,6 +255,7 @@ static const struct _dictionary_line dictionary[] = {
   {"nfacctd_kafka_config_file", cfg_key_nfacctd_kafka_config_file},
   {"nfacctd_zmq_address", cfg_key_nfacctd_zmq_address},
   {"nfacctd_dtls_port", cfg_key_nfacctd_dtls_port},
+  {"mpls_label_stack_encode_as_array", cfg_key_mpls_label_stack_encode_as_array},
   {"pmacctd_proc_name", cfg_key_proc_name},
   {"pmacctd_force_frag_handling", cfg_key_pmacctd_force_frag_handling},
   {"pmacctd_frag_buffer_size", cfg_key_pmacctd_frag_buffer_size},
@@ -275,10 +286,14 @@ static const struct _dictionary_line dictionary[] = {
   {"telemetry_daemon_port_tcp", cfg_key_telemetry_port_tcp},
   {"telemetry_daemon_port_udp", cfg_key_telemetry_port_udp},
   {"telemetry_daemon_ip", cfg_key_telemetry_ip},
+  {"telemetry_daemon_interface", cfg_key_telemetry_interface},
+  {"telemetry_daemon_ipv6_only", cfg_key_telemetry_ipv6_only},
   {"telemetry_daemon_udp_notif_port", cfg_key_telemetry_udp_notif_port},
   {"telemetry_daemon_udp_notif_ip", cfg_key_telemetry_udp_notif_ip},
+  {"telemetry_daemon_udp_notif_interface", cfg_key_telemetry_udp_notif_interface},
+  {"telemetry_daemon_udp_notif_ipv6_only", cfg_key_telemetry_udp_notif_ipv6_only},
   {"telemetry_daemon_udp_notif_nmsgs", cfg_key_telemetry_udp_notif_nmsgs},
-  {"telemetry_daemon_ipv6_only", cfg_key_telemetry_ipv6_only},
+  {"telemetry_daemon_udp_notif_rp_ebpf_prog", cfg_key_telemetry_udp_notif_rp_ebpf_prog},
   {"telemetry_daemon_zmq_address", cfg_key_telemetry_zmq_address},
   {"telemetry_daemon_kafka_broker_host", cfg_key_telemetry_kafka_broker_host},
   {"telemetry_daemon_kafka_broker_port", cfg_key_telemetry_kafka_broker_port},
@@ -287,6 +302,7 @@ static const struct _dictionary_line dictionary[] = {
   {"telemetry_daemon_decoder", cfg_key_telemetry_decoder},
   {"telemetry_daemon_max_peers", cfg_key_telemetry_max_peers},
   {"telemetry_daemon_peer_timeout", cfg_key_telemetry_peer_timeout},
+  {"telemetry_daemon_tag_map", cfg_key_telemetry_tag_map},
   {"telemetry_daemon_allow_file", cfg_key_telemetry_allow_file},
   {"telemetry_daemon_pipe_size", cfg_key_telemetry_pipe_size},
   {"telemetry_daemon_ipprec", cfg_key_telemetry_ip_precedence},
@@ -316,6 +332,7 @@ static const struct _dictionary_line dictionary[] = {
   {"telemetry_dump_file", cfg_key_telemetry_dump_file},
   {"telemetry_dump_latest_file", cfg_key_telemetry_dump_latest_file},
   {"telemetry_dump_refresh_time", cfg_key_telemetry_dump_refresh_time},
+  {"telemetry_dump_time_slots", cfg_key_telemetry_dump_time_slots},
   {"telemetry_dump_amqp_host", cfg_key_telemetry_dump_amqp_host},
   {"telemetry_dump_amqp_vhost", cfg_key_telemetry_dump_amqp_vhost},
   {"telemetry_dump_amqp_user", cfg_key_telemetry_dump_amqp_user},
@@ -343,6 +360,7 @@ static const struct _dictionary_line dictionary[] = {
   {"pre_tag_filter", cfg_key_pre_tag_filter},
   {"pre_tag2_filter", cfg_key_pre_tag2_filter},
   {"pre_tag_label_filter", cfg_key_pre_tag_label_filter},
+  {"pre_tag_label_encode_as_map", cfg_key_pre_tag_label_encode_as_map},
   {"post_tag", cfg_key_post_tag},
   {"post_tag2", cfg_key_post_tag2},
   {"sampling_rate", cfg_key_sampling_rate},
@@ -350,11 +368,14 @@ static const struct _dictionary_line dictionary[] = {
   {"sfacctd_proc_name", cfg_key_proc_name},
   {"sfacctd_port", cfg_key_nfacctd_port},
   {"sfacctd_ip", cfg_key_nfacctd_ip},
+  {"sfacctd_interface", cfg_key_nfacctd_interface},
+  {"sfacctd_rp_ebpf_prog", cfg_key_nfacctd_rp_ebpf_prog},
   {"sfacctd_allow_file", cfg_key_nfacctd_allow_file},
   {"sfacctd_as_new", cfg_key_nfacctd_as_new},
   {"sfacctd_as", cfg_key_nfacctd_as_new},
   {"sfacctd_net", cfg_key_nfacctd_net},
   {"sfacctd_peer_as", cfg_key_nfprobe_peer_as},
+  {"sfacctd_nonroot", cfg_key_pmacctd_nonroot},
   {"sfacctd_time_new", cfg_key_nfacctd_time_new},
   {"sfacctd_pipe_size", cfg_key_nfacctd_pipe_size},
   {"sfacctd_renormalize", cfg_key_sfacctd_renormalize},
@@ -387,9 +408,6 @@ static const struct _dictionary_line dictionary[] = {
   {"sfacctd_kafka_topic", cfg_key_nfacctd_kafka_topic},
   {"sfacctd_kafka_config_file", cfg_key_nfacctd_kafka_config_file},
   {"sfacctd_zmq_address", cfg_key_nfacctd_zmq_address},
-  {"classifiers", cfg_key_classifiers},
-  {"classifier_tentatives", cfg_key_classifier_tentatives},
-  {"classifier_table_num", cfg_key_classifier_table_num},
 #if defined (WITH_NDPI)
   {"classifier_num_roots", cfg_key_classifier_ndpi_num_roots},
   {"classifier_max_flows", cfg_key_classifier_ndpi_max_flows},
@@ -437,10 +455,14 @@ static const struct _dictionary_line dictionary[] = {
   {"tee_kafka_config_file", cfg_key_tee_kafka_config_file},
   {"bgp_daemon", cfg_key_bgp_daemon},
   {"bgp_daemon_ip", cfg_key_bgp_daemon_ip},
+  {"bgp_daemon_interface", cfg_key_bgp_daemon_interface},
   {"bgp_daemon_ipv6_only", cfg_key_bgp_daemon_ipv6_only},
   {"bgp_daemon_id", cfg_key_bgp_daemon_id},
   {"bgp_daemon_as", cfg_key_bgp_daemon_as},
   {"bgp_daemon_port", cfg_key_bgp_daemon_port},
+  {"bgp_daemon_rp_ebpf_prog", cfg_key_bgp_daemon_rp_ebpf_prog},
+  {"bgp_daemon_add_path_ignore", cfg_key_bgp_daemon_add_path_ignore},
+  {"bgp_daemon_tag_map", cfg_key_bgp_daemon_tag_map},	
   {"bgp_daemon_pipe_size", cfg_key_bgp_daemon_pipe_size},
   {"bgp_daemon_max_peers", cfg_key_bgp_daemon_max_peers},
   {"bgp_daemon_msglog_output", cfg_key_bgp_daemon_msglog_output},
@@ -506,6 +528,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bgp_table_dump_latest_file", cfg_key_bgp_daemon_table_dump_latest_file},
   {"bgp_table_dump_avro_schema_file", cfg_key_bgp_daemon_table_dump_avro_schema_file},
   {"bgp_table_dump_refresh_time", cfg_key_bgp_daemon_table_dump_refresh_time},
+  {"bgp_table_dump_time_slots", cfg_key_bgp_daemon_table_dump_time_slots},
   {"bgp_table_dump_amqp_host", cfg_key_bgp_daemon_table_dump_amqp_host},
   {"bgp_table_dump_amqp_vhost", cfg_key_bgp_daemon_table_dump_amqp_vhost},
   {"bgp_table_dump_amqp_user", cfg_key_bgp_daemon_table_dump_amqp_user},
@@ -535,8 +558,11 @@ static const struct _dictionary_line dictionary[] = {
   {"bgp_daemon_xconnect_map", cfg_key_bgp_xconnect_map},
   {"bmp_daemon", cfg_key_bmp_daemon},
   {"bmp_daemon_ip", cfg_key_bmp_daemon_ip},
+  {"bmp_daemon_interface", cfg_key_bmp_daemon_interface},
   {"bmp_daemon_ipv6_only", cfg_key_bmp_daemon_ipv6_only},
   {"bmp_daemon_port", cfg_key_bmp_daemon_port},
+  {"bmp_daemon_rp_ebpf_prog", cfg_key_bmp_daemon_rp_ebpf_prog},
+  {"bmp_daemon_tag_map", cfg_key_bmp_daemon_tag_map},	
   {"bmp_daemon_pipe_size", cfg_key_bmp_daemon_pipe_size},
   {"bmp_daemon_max_peers", cfg_key_bmp_daemon_max_peers},
   {"bmp_daemon_allow_file", cfg_key_bmp_daemon_allow_file},
@@ -578,6 +604,7 @@ static const struct _dictionary_line dictionary[] = {
   {"bmp_dump_workers", cfg_key_bmp_daemon_dump_workers},
   {"bmp_dump_avro_schema_file", cfg_key_bmp_daemon_dump_avro_schema_file},
   {"bmp_dump_refresh_time", cfg_key_bmp_daemon_dump_refresh_time},
+  {"bmp_dump_time_slots", cfg_key_bmp_daemon_dump_time_slots},
   {"bmp_dump_amqp_host", cfg_key_bmp_daemon_dump_amqp_host},
   {"bmp_dump_amqp_vhost", cfg_key_bmp_daemon_dump_amqp_vhost},
   {"bmp_dump_amqp_user", cfg_key_bmp_daemon_dump_amqp_user},
@@ -628,6 +655,8 @@ static const struct _dictionary_line dictionary[] = {
   {"tmp_bgp_lookup_compare_ports", cfg_key_tmp_bgp_lookup_compare_ports},
   {"tmp_bgp_daemon_route_refresh", cfg_key_tmp_bgp_daemon_route_refresh},
   {"tmp_bgp_daemon_origin_type_int", cfg_key_tmp_bgp_daemon_origin_type_int},
+  {"tmp_telemetry_daemon_udp_notif_legacy", cfg_key_tmp_telemetry_daemon_udp_notif_legacy},
+  {"tmp_telemetry_decode_cisco_v1_json_string", cfg_key_tmp_telemetry_decode_cisco_v1_json_string},
   {"", NULL}
 };
 
@@ -797,7 +826,7 @@ int parse_configuration_file(char *filename)
   if (!cmdlineflag) num = parse_plugin_names(filename, rows, FALSE);
   else num = parse_plugin_names(filename, rows, TRUE);
 
-  if (!num && config.acct_type < ACCT_FWPLANE_MAX) {
+  if (!num && config.acct_type < ACCT_FWDPLANE_MAX) {
     Log(LOG_WARNING, "WARN: [%s] No plugin has been activated; defaulting to in-memory table.\n", filename); 
     num = create_plugin(filename, "default_memory", "memory");
   }

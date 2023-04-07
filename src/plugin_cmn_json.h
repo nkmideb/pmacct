@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -32,6 +32,17 @@ typedef void (*compose_json_handler)(json_t *, struct chained_cache *);
 extern compose_json_handler cjhandler[N_PRIMITIVES];
 
 /* prototypes */
+extern void compose_json_map_label(json_t *, struct chained_cache *);
+extern void compose_json_array_tcpflags(json_t *, struct chained_cache *);
+extern void compose_json_string_fwd_status(json_t *, struct chained_cache *);
+extern void compose_json_array_mpls_label_stack(json_t *, struct chained_cache *);
+extern void compose_json_array_tunnel_tcp_flags(json_t *, struct chained_cache *);
+
+extern json_t *compose_label_json_data(cdada_list_t *, int);
+extern json_t *compose_tcpflags_json_data(cdada_list_t *, int);
+extern json_t *compose_fwd_status_json_data(size_t, cdada_list_t *, int);
+extern json_t *compose_mpls_label_stack_json_data(u_int32_t *, int);
+
 extern void compose_json_event_type(json_t *, struct chained_cache *);
 extern void compose_json_tag(json_t *, struct chained_cache *);
 extern void compose_json_tag2(json_t *, struct chained_cache *);
@@ -43,6 +54,7 @@ extern void compose_json_ndpi_class(json_t *, struct chained_cache *);
 extern void compose_json_src_mac(json_t *, struct chained_cache *);
 extern void compose_json_dst_mac(json_t *, struct chained_cache *);
 extern void compose_json_vlan(json_t *, struct chained_cache *);
+extern void compose_json_out_vlan(json_t *, struct chained_cache *);
 extern void compose_json_cos(json_t *, struct chained_cache *);
 extern void compose_json_etype(json_t *, struct chained_cache *);
 extern void compose_json_src_as(json_t *, struct chained_cache *);
@@ -90,6 +102,8 @@ extern void compose_json_src_host_coords(json_t *, struct chained_cache *);
 extern void compose_json_dst_host_coords(json_t *, struct chained_cache *);
 #endif
 extern void compose_json_tcp_flags(json_t *, struct chained_cache *);
+extern void compose_json_fwd_status(json_t *, struct chained_cache *);
+extern void compose_json_mpls_label_stack(json_t *, struct chained_cache *);
 extern void compose_json_proto(json_t *, struct chained_cache *);
 extern void compose_json_tos(json_t *, struct chained_cache *);
 extern void compose_json_sampling_rate(json_t *, struct chained_cache *);
@@ -99,9 +113,9 @@ extern void compose_json_post_nat_dst_host(json_t *, struct chained_cache *);
 extern void compose_json_post_nat_src_port(json_t *, struct chained_cache *);
 extern void compose_json_post_nat_dst_port(json_t *, struct chained_cache *);
 extern void compose_json_nat_event(json_t *, struct chained_cache *);
+extern void compose_json_fw_event(json_t *, struct chained_cache *);
 extern void compose_json_mpls_label_top(json_t *, struct chained_cache *);
 extern void compose_json_mpls_label_bottom(json_t *, struct chained_cache *);
-extern void compose_json_mpls_stack_depth(json_t *, struct chained_cache *);
 extern void compose_json_tunnel_src_mac(json_t *, struct chained_cache *);
 extern void compose_json_tunnel_dst_mac(json_t *, struct chained_cache *);
 extern void compose_json_tunnel_src_host(json_t *, struct chained_cache *);
@@ -110,6 +124,7 @@ extern void compose_json_tunnel_proto(json_t *, struct chained_cache *);
 extern void compose_json_tunnel_tos(json_t *, struct chained_cache *);
 extern void compose_json_tunnel_src_port(json_t *, struct chained_cache *);
 extern void compose_json_tunnel_dst_port(json_t *, struct chained_cache *);
+extern void compose_json_tunnel_tcp_flags(json_t *, struct chained_cache *);
 extern void compose_json_vxlan(json_t *, struct chained_cache *);
 extern void compose_json_timestamp_start(json_t *, struct chained_cache *);
 extern void compose_json_timestamp_end(json_t *, struct chained_cache *);

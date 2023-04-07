@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /* 
@@ -32,7 +32,6 @@
 #include "plugin_hooks.h"
 #include "plugin_common.h"
 #include "net_aggr.h"
-#include "ports_aggr.h"
 
 #define SFL_DIRECTION_IN 0
 #define SFL_DIRECTION_OUT 1
@@ -124,10 +123,18 @@ static void setDefaults(SflSp *sp)
   sp->ifType = 6; // ethernet_csmacd 
   sp->ifSpeed = 100000000L;  // assume 100 MBit
   sp->ifDirection = 1; // assume full duplex 
-  // if (config.acct_type != ACCT_SF) sp->samplingRate = SFL_DEFAULT_SAMPLING_RATE;
-  sp->samplingRate = SFL_DEFAULT_SFACCTD_SAMPLING_RATE;
-  sp->counterSamplingInterval = 20;
-  sp->snaplen = 128;
+
+  sp->samplingRate = SFL_DEFAULT_FLOW_SAMPLING_RATE;
+  sp->counterSamplingInterval = SFL_DEFAULT_COUNTER_INTERVAL_RATE;
+
+  if (config.snaplen && config.snaplen <= SFL_DEFAULT_HEADER_SIZE) {
+    sp->snaplen = config.snaplen;
+  }
+  else {
+    sp->snaplen = SFL_DEFAULT_HEADER_SIZE;
+    Log(LOG_WARNING, "WARN ( %s/%s ): Max Flow Sample packet headers length set to %u (wanted: %u)\n",
+	config.name, config.type, sp->snaplen, config.snaplen);
+  }
 
   sp->collectorIP.family = AF_INET;
   sp->collectorIP.address.ipv4.s_addr = Name_to_IP("localhost");
@@ -298,7 +305,7 @@ static void init_agent(SflSp *sp)
 
 static void readPacket(SflSp *sp, struct pkt_payload *hdr, const unsigned char *buf)
 {
-  SFLFlow_sample_element hdrElem, classHdrElem, tagHdrElem;
+  SFLFlow_sample_element hdrElem, tagHdrElem;
 #if defined (WITH_NDPI)
   SFLFlow_sample_element class2HdrElem;
 #endif
@@ -501,13 +508,6 @@ static void readPacket(SflSp *sp, struct pkt_payload *hdr, const unsigned char *
     hdrElem.flowType.header.header_bytes = (u_int8_t *)local_buf;
     SFLADD_ELEMENT(&fs, &hdrElem);
 
-    if (config.what_to_count & COUNT_CLASS) {
-      memset(&classHdrElem, 0, sizeof(classHdrElem));
-      classHdrElem.tag = SFLFLOW_EX_CLASS;
-      classHdrElem.flowType.class.class = hdr->class;
-      SFLADD_ELEMENT(&fs, &classHdrElem);
-    }
-
 #if defined (WITH_NDPI)
     if (config.what_to_count_2 & COUNT_NDPI_CLASS) {
       memset(&class2HdrElem, 0, sizeof(class2HdrElem));
@@ -537,11 +537,18 @@ static void readPacket(SflSp *sp, struct pkt_payload *hdr, const unsigned char *
 	gatewayHdrElem.tag = SFLFLOW_EX_GATEWAY;
 	// gatewayHdrElem.flowType.gateway.src_as = htonl(hdr->src_ip.address.ipv4.s_addr);
 	gatewayHdrElem.flowType.gateway.src_as = hdr->src_as;
-	gatewayHdrElem.flowType.gateway.dst_as_path_segments = 1;
-	gatewayHdrElem.flowType.gateway.dst_as_path = &as_path_segment;
-	as_path_segment.type = SFLEXTENDED_AS_SET;
-	as_path_segment.length = 1;
-	as_path_segment.as.set = &hdr->dst_as;
+
+        if (hdr->dst_as == 0) {
+          gatewayHdrElem.flowType.gateway.dst_as_path_segments = 0;
+        }
+        else {
+          gatewayHdrElem.flowType.gateway.dst_as_path_segments = 1;
+          gatewayHdrElem.flowType.gateway.dst_as_path = &as_path_segment;
+          as_path_segment.type = SFLEXTENDED_AS_SET;
+          as_path_segment.length = 1;
+          as_path_segment.as.set = &hdr->dst_as;
+        }
+
 	if (config.what_to_count & COUNT_PEER_DST_IP) {
           switch (hdr->bgp_next_hop.family) {
           case AF_INET:
@@ -745,7 +752,7 @@ void sfprobe_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     }
 
     if (reload_log) {
-      reload_logs();
+      reload_logs(NULL);
       reload_log = FALSE;
     }
 

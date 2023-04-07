@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "sflow.h"
 #include "bgp/bgp_packet.h"
 #include "bgp/bgp.h"
@@ -33,11 +32,13 @@
 #include "pkt_handlers.h"
 #include "ip_flow.h"
 #include "ip_frag.h"
-#include "classifier.h"
 #include "net_aggr.h"
 #include "crc32.h"
 #include "isis/isis.h"
 #include "bmp/bmp.h"
+#if defined WITH_EBPF
+#include "ebpf/ebpf_rp_balancer.h"
+#endif
 #ifdef WITH_RABBITMQ
 #include "amqp_common.h"
 #endif
@@ -205,7 +206,6 @@ int main(int argc,char **argv, char **envp)
   memset(&pptrs, 0, sizeof(pptrs));
   memset(&req, 0, sizeof(req));
   memset(&spp, 0, sizeof(spp));
-  memset(&class, 0, sizeof(class));
   memset(&xflow_status_table, 0, sizeof(xflow_status_table));
   memset(empty_mem_area_256b, 0, sizeof(empty_mem_area_256b));
 
@@ -492,11 +492,10 @@ int main(int argc,char **argv, char **envp)
         if (list->cfg.what_to_count_2 & (COUNT_POST_NAT_SRC_HOST|COUNT_POST_NAT_DST_HOST|
                         COUNT_POST_NAT_SRC_PORT|COUNT_POST_NAT_DST_PORT|COUNT_NAT_EVENT|
                         COUNT_TIMESTAMP_START|COUNT_TIMESTAMP_END|COUNT_TIMESTAMP_ARRIVAL|
-			COUNT_EXPORT_PROTO_TIME))
+			COUNT_EXPORT_PROTO_TIME|COUNT_FWD_STATUS|COUNT_FW_EVENT))
           list->cfg.data_type |= PIPE_TYPE_NAT;
 
-        if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM|
-                        COUNT_MPLS_STACK_DEPTH))
+        if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM))
           list->cfg.data_type |= PIPE_TYPE_MPLS;
 
 	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_MAC|COUNT_TUNNEL_DST_MAC|
@@ -507,7 +506,7 @@ int main(int argc,char **argv, char **envp)
 	  alloc_sppi = TRUE;
 	}
 
-        if (list->cfg.what_to_count_2 & (COUNT_LABEL))
+        if (list->cfg.what_to_count_2 & (COUNT_LABEL|COUNT_MPLS_LABEL_STACK))
           list->cfg.data_type |= PIPE_TYPE_VLEN;
 
 	evaluate_sums(&list->cfg.what_to_count, &list->cfg.what_to_count_2, list->name, list->type.string);
@@ -546,20 +545,10 @@ int main(int argc,char **argv, char **envp)
           }
         }
 
-	if (list->cfg.what_to_count & COUNT_CLASS && !list->cfg.classifiers_path) {
-	  Log(LOG_ERR, "ERROR ( %s/%s ): 'class' aggregation selected but NO 'classifiers' key specified. Exiting...\n\n", list->name, list->type.string);
-	  exit_gracefully(1);
-	}
-
 #if defined (WITH_NDPI)
 	if (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS) {
           enable_ip_fragment_handler();
           config.classifier_ndpi = TRUE;
-	}
-
-	if ((list->cfg.what_to_count & COUNT_CLASS) && (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS)) {
-	  Log(LOG_ERR, "ERROR ( %s/%s ): 'class_legacy' and 'class' primitives are mutual exclusive. Exiting...\n\n", list->name, list->type.string);
-	  exit_gracefully(1);
 	}
 #endif
 
@@ -714,6 +703,13 @@ int main(int argc,char **argv, char **envp)
 
     rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
+
+#if (defined HAVE_SO_BINDTODEVICE)
+    if (config.nfacctd_interface)  {
+      rc = setsockopt(config.sock, SOL_SOCKET, SO_BINDTODEVICE, config.nfacctd_interface, (socklen_t) strlen(config.nfacctd_interface));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, errno);
+    }
+#endif
 
     if (config.nfacctd_ipv6_only) {
       int yes=1;
@@ -903,9 +899,13 @@ int main(int argc,char **argv, char **envp)
       Log(LOG_ERR, "ERROR ( %s/core ): bind() to ip=%s port=%d/udp failed (errno: %d).\n", config.name, config.nfacctd_ip, config.nfacctd_port, errno);
       exit_gracefully(1);
     }
-  }
 
-  if (config.classifiers_path) init_classifiers(config.classifiers_path);
+#if defined WITH_EBPF
+    if (config.nfacctd_rp_ebpf_prog) {
+      attach_ebpf_reuseport_balancer(config.sock, config.nfacctd_rp_ebpf_prog, config.cluster_name, "sfacctd", config.cluster_id, FALSE);
+    }
+#endif
+  }
 
 #if defined (WITH_NDPI)
   if (config.classifier_ndpi) {
@@ -1280,7 +1280,7 @@ int main(int argc,char **argv, char **envp)
     }
 
     if (reload_log) {
-      reload_logs();
+      reload_logs(SFACCTD_USAGE_HEADER);
       reload_log = FALSE;
     }
 
@@ -1669,7 +1669,6 @@ void SF_compute_once()
   SFLAddressSz = sizeof(SFLAddress);
   SFrenormEntrySz = sizeof(struct xflow_status_entry_sampling);
   PptrsSz = sizeof(struct packet_ptrs);
-  CSSz = sizeof(struct class_st);
   HostAddrSz = sizeof(struct host_addr);
   UDPHdrSz = sizeof(struct pm_udphdr);
 
@@ -2077,7 +2076,8 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
 
   if (!t) return 0;
 
-  /* The id_table is shared between by IPv4 and IPv6 sFlow collectors.
+  /*
+     The id_table is shared between by IPv4 and IPv6 sFlow collectors.
      IPv4 ones are in the lower part (0..x), IPv6 ones are in the upper
      part (x+1..end)
   */
@@ -2090,7 +2090,7 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
     pptrs->have_tag2 = FALSE;
   }
 
-  /* Giving a first try with index(es) */
+  /* If we have any index defined, let's use it */
   if (config.maps_index && pretag_index_have_one(t)) {
     struct id_entry *index_results[ID_TABLE_INDEX_RESULTS];
     u_int32_t iterator, num_results;
@@ -2102,7 +2102,7 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
       if (!(ret & PRETAG_MAP_RCODE_JEQ)) return ret;
     }
 
-    /* if we have at least one index we trust we did a good job */
+    /* done */
     return ret;
   }
 
@@ -2238,7 +2238,7 @@ void sfv245_check_counter_log_init(struct packet_ptrs *pptrs)
     if (!peer->log) { 
       memcpy(&peer->addr, &entry->agent_addr, sizeof(struct host_addr));
       addr_to_str(peer->addr_str, &peer->addr);
-      bgp_peer_log_init(peer, config.sfacctd_counter_output, FUNC_TYPE_SFLOW_COUNTER);
+      bgp_peer_log_init(peer, NULL, config.sfacctd_counter_output, FUNC_TYPE_SFLOW_COUNTER);
     }
   }
 }

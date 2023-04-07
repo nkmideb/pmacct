@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -28,7 +28,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "sql_common.h"
@@ -79,6 +78,14 @@ void count_vlan_handler(const struct db_cache *cache_elem, struct insert_data *i
 {
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.vlan_id);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.vlan_id);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_out_vlan_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.out_vlan_id);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.out_vlan_id);
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
@@ -268,8 +275,8 @@ void count_sampling_rate_handler(const struct db_cache *cache_elem, struct inser
 
 void count_sampling_direction_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->primitives.sampling_direction);
-  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->primitives.sampling_direction);
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, sampling_direction_print(cache_elem->primitives.sampling_direction));
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, sampling_direction_print(cache_elem->primitives.sampling_direction));
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
@@ -320,6 +327,22 @@ void count_nat_event_handler(const struct db_cache *cache_elem, struct insert_da
   *ptr_values += strlen(*ptr_values);
 }
 
+void count_fw_event_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->pnat->fw_event);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->pnat->fw_event);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_fwd_status_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->pnat->fwd_status);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->pnat->fwd_status);
+  *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
 void count_mpls_label_top_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->pmpls->mpls_label_top);
@@ -336,10 +359,21 @@ void count_mpls_label_bottom_handler(const struct db_cache *cache_elem, struct i
   *ptr_values += strlen(*ptr_values);
 }
 
-void count_mpls_stack_depth_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+void count_mpls_label_stack_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
 {
-  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->pmpls->mpls_stack_depth);
-  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->pmpls->mpls_stack_depth);
+  char label_stack[MAX_MPLS_LABEL_STACK];
+  char *label_stack_ptr = NULL;
+  int label_stack_len = 0;
+
+  memset(label_stack, 0, MAX_MPLS_LABEL_STACK);
+
+  label_stack_len = vlen_prims_get(cache_elem->pvlen, COUNT_INT_MPLS_LABEL_STACK, &label_stack_ptr);
+  if (label_stack_ptr) {
+    mpls_label_stack_to_str(label_stack, sizeof(label_stack), (u_int32_t *)label_stack_ptr, label_stack_len);
+  }
+
+  snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, label_stack);
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, label_stack);
   *ptr_where += strlen(*ptr_where);
   *ptr_values += strlen(*ptr_values);
 }
@@ -433,6 +467,12 @@ void count_tunnel_dst_port_handler(const struct db_cache *cache_elem, struct ins
   snprintf(*ptr_where, SPACELEFT(where_clause), where[num].string, cache_elem->ptun->tunnel_dst_port);
   snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->ptun->tunnel_dst_port);
   *ptr_where += strlen(*ptr_where);
+  *ptr_values += strlen(*ptr_values);
+}
+
+void count_tunnel_tcpflags_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_values, char **ptr_where)
+{
+  snprintf(*ptr_values, SPACELEFT(values_clause), values[num].string, cache_elem->tunnel_tcp_flags);
   *ptr_values += strlen(*ptr_values);
 }
 
@@ -1024,6 +1064,12 @@ void count_flows_setclause_handler(const struct db_cache *cache_elem, struct ins
 void count_tcpflags_setclause_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_set, char **ptr_none)
 {
   snprintf(*ptr_set, SPACELEFT(set_clause), set[num].string, cache_elem->tcp_flags);
+  *ptr_set  += strlen(*ptr_set);
+}
+
+void count_tunnel_tcpflags_setclause_handler(const struct db_cache *cache_elem, struct insert_data *idata, int num, char **ptr_set, char **ptr_none)
+{
+  snprintf(*ptr_set, SPACELEFT(set_clause), set[num].string, cache_elem->tunnel_tcp_flags);
   *ptr_set  += strlen(*ptr_set);
 }
 

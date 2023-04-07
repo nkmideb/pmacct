@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp/bgp.h"
 #include "telemetry.h"
 #if defined WITH_RABBITMQ
@@ -157,6 +156,9 @@ void telemetry_link_misc_structs(telemetry_misc_structs *tms)
   strcpy(tms->peer_str, "telemetry_node");
   tms->peer_port_str = malloc(strlen("telemetry_node_port") + 1);
   strcpy(tms->peer_port_str, "telemetry_node_port");
+
+  tms->tag = &telemetry_logdump_tag;
+  tms->tag_map = config.telemetry_tag_map;
 }
 
 int telemetry_validate_input_output_decoders(int input, int output)
@@ -170,6 +172,9 @@ int telemetry_validate_input_output_decoders(int input, int output)
     /* else if (output == PRINT_OUTPUT_GPB) return ERR; */
   }
   else if (input == TELEMETRY_DATA_DECODER_UNKNOWN) {
+    if (output == PRINT_OUTPUT_JSON) return FALSE;
+  }
+  else if (input == TELEMETRY_DATA_DECODER_JSON_STRING) {
     if (output == PRINT_OUTPUT_JSON) return FALSE;
   }
 
@@ -237,5 +242,89 @@ void telemetry_init_kafka_host(void *kh)
   p_kafka_set_topic(kafka_host, config.telemetry_kafka_topic);
   p_kafka_set_content_type(kafka_host, PM_KAFKA_CNT_TYPE_STR);
   p_kafka_manage_consumer(kafka_host, TRUE);
+}
+#endif
+
+#ifdef WITH_UNYTE_UDP_NOTIF
+int create_socket_unyte_udp_notif(struct telemetry_data *t_data, char *address, char *port)
+{
+  uint64_t receive_buf_size;
+  struct addrinfo *addr_info;
+  struct addrinfo hints;
+  int rc;
+
+  memset(&hints, 0, sizeof(hints));
+
+  hints.ai_socktype = SOCK_DGRAM;
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
+
+  /* Using getaddrinfo to support both IPv4 and IPv6 */
+  rc = getaddrinfo(address, port, &hints, &addr_info);
+
+  if (rc != 0) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): create_socket_unyte_udp_notif(): getaddrinfo error: %s\n", config.name, t_data->log_str, gai_strerror(rc));
+    exit_gracefully(1);
+  }
+
+  Log(LOG_INFO, "INFO ( %s/%s ): create_socket_unyte_udp_notif(): family=%s port=%d\n",
+      config.name, t_data->log_str, (addr_info->ai_family == AF_INET) ? "IPv4" : "IPv6",
+      ntohs(((struct sockaddr_in *)addr_info->ai_addr)->sin_port));
+
+  /* create socket on UDP protocol */
+  int sockfd = socket(addr_info->ai_family, addr_info->ai_socktype, addr_info->ai_protocol);
+
+  /* handle error */
+  if (sockfd < 0) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): create_socket_unyte_udp_notif(): cannot create socket\n", config.name, t_data->log_str);
+    exit_gracefully(1);
+  }
+
+  /* Use SO_REUSEPORT to be able to launch multiple collector on the same address */
+#if (defined HAVE_SO_REUSEPORT)
+  int optval = 1;
+  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(int)) < 0) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): create_socket_unyte_udp_notif(): cannot set SO_REUSEPORT option on socket\n", config.name, t_data->log_str);
+    exit_gracefully(1);
+  }
+#endif
+
+#if (defined HAVE_SO_BINDTODEVICE)
+  if (config.telemetry_udp_notif_interface)  {
+    rc = setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, config.telemetry_udp_notif_interface, (socklen_t) strlen(config.telemetry_udp_notif_interface));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, t_data->log_str, errno);
+  }
+#endif
+
+  if (config.telemetry_udp_notif_ipv6_only) {
+    int yes=1;
+
+    rc = setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &yes, (socklen_t) sizeof(yes));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IPV6_V6ONLY (errno: %d).\n", config.name, t_data->log_str, errno);
+  }
+
+  /* Setting socket buffer to default 20 MB */
+  if (!config.telemetry_pipe_size) {
+    receive_buf_size = DEFAULT_SK_BUFF_SIZE;
+  }
+  else {
+    receive_buf_size = config.telemetry_pipe_size;
+  }
+
+  if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &receive_buf_size, sizeof(receive_buf_size)) < 0) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): create_socket_unyte_udp_notif(): cannot set buffer size\n", config.name, t_data->log_str);
+    exit_gracefully(1);
+  }
+
+  if (bind(sockfd, addr_info->ai_addr, (int)addr_info->ai_addrlen) == -1) {
+    Log(LOG_ERR, "ERROR ( %s/%s ): create_socket_unyte_udp_notif(): bind() failed\n", config.name, t_data->log_str);
+    close(sockfd);
+    exit_gracefully(1);
+  }
+
+  /* free addr_info after usage */
+  freeaddrinfo(addr_info);
+
+  return sockfd;
 }
 #endif

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp/bgp.h"
 #include "bmp.h"
 #if defined WITH_RABBITMQ
@@ -198,6 +197,11 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->bgp_msg_open_router_id_check = NULL;
 
   if (!bms->is_thread && !bms->dump_backend_methods) bms->skip_rib = TRUE;
+
+  bms->tag = &bmp_logdump_tag;
+  bms->tag_map = config.bmp_daemon_tag_map;
+  bms->tag_peer = &bmp_logdump_tag_peer;
+  bms->bgp_table_info_delete_tag_find = bgp_table_info_delete_tag_find_bmp;
 }
 
 struct bgp_peer *bmp_sync_loc_rem_peers(struct bgp_peer *bgp_peer_loc, struct bgp_peer *bgp_peer_rem)
@@ -209,7 +213,38 @@ struct bgp_peer *bmp_sync_loc_rem_peers(struct bgp_peer *bgp_peer_loc, struct bg
   /* XXX: since BGP OPENs are fabricated, we assume that if remote
      peer is marked as able to send ADD-PATH capability, the local
      pper will be able to receive it just fine */
-  /* if (!bgp_peer_loc->cap_add_paths || !bgp_peer_rem->cap_add_paths) bgp_peer_rem->cap_add_paths = FALSE; */
+
+  /* Checking peers do agree on add-path capability; above comment
+     left for historical reference in case checks below have to be
+     further fine tuned */
+  {
+    afi_t afi, afi_max;
+    safi_t safi, safi_max;
+
+    if (bgp_peer_loc->cap_add_paths.afi_max > bgp_peer_rem->cap_add_paths.afi_max) {
+     afi_max = bgp_peer_loc->cap_add_paths.afi_max;
+    }
+    else {
+     afi_max = bgp_peer_rem->cap_add_paths.afi_max;
+    }
+
+    if (bgp_peer_loc->cap_add_paths.safi_max > bgp_peer_rem->cap_add_paths.safi_max) {
+     safi_max = bgp_peer_loc->cap_add_paths.safi_max;
+    }
+    else {
+     safi_max = bgp_peer_rem->cap_add_paths.safi_max;
+    }
+
+    for (afi = 0; afi <= afi_max; afi++) {
+      for (safi = 0; safi <= safi_max; safi++) {
+        if ((bgp_peer_loc->cap_add_paths.cap[afi][safi] && !bgp_peer_rem->cap_add_paths.cap[afi][safi]) ||
+	    (!bgp_peer_loc->cap_add_paths.cap[afi][safi] && bgp_peer_rem->cap_add_paths.cap[afi][safi])) {
+	  bgp_peer_loc->cap_add_paths.cap[afi][safi] = FALSE;
+	  bgp_peer_rem->cap_add_paths.cap[afi][safi] = FALSE;
+        }
+      }
+    }
+  }
 
   bgp_peer_rem->type = FUNC_TYPE_BMP;
   memcpy(&bgp_peer_rem->id, &bgp_peer_rem->addr, sizeof(struct host_addr));
@@ -511,4 +546,17 @@ char *decode_tstamp_arrival(char *buf)
   tstamp_len = strlen(buf);
 
   return &buf[tstamp_len + 1];
+}
+
+void bgp_table_info_delete_tag_find_bmp(struct bgp_peer *peer)
+{
+  struct bgp_misc_structs *bms = bgp_select_misc_db(peer->type);
+  struct bmp_peer *bmpp = NULL;
+  struct bgp_peer *bgpp = NULL;
+
+  if (peer && peer->bmp_se) bmpp = peer->bmp_se;
+  if (bmpp) bgpp = &bmpp->self;
+
+  bgp_tag_init_find(bgpp ? bgpp : peer, (struct sockaddr *) bms->tag_peer, bms->tag);
+  bgp_tag_find((struct id_table *)bms->tag->tag_table, bms->tag, &bms->tag->tag, NULL);
 }

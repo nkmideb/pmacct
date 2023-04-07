@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -32,13 +32,13 @@
 #error "--enable-rabbitmq requires --enable-jansson"
 #endif
 #include "net_aggr.h"
-#include "ports_aggr.h"
 
 /* Functions */
 void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr) 
 {
   struct pkt_data *data;
   struct ports_table pt;
+  struct protos_table prt, tost;
   unsigned char *pipebuf;
   struct pollfd pfd;
   struct insert_data idata;
@@ -169,11 +169,15 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   memset(&nt, 0, sizeof(nt));
   memset(&nc, 0, sizeof(nc));
   memset(&pt, 0, sizeof(pt));
+  memset(&prt, 0, sizeof(prt));
+  memset(&tost, 0, sizeof(tost));
 
   load_networks(config.networks_file, &nt, &nc);
   set_net_funcs(&nt);
 
   if (config.ports_file) load_ports(config.ports_file, &pt);
+  if (config.protos_file) load_protos(config.protos_file, &prt);
+  if (config.tos_file) load_tos(config.tos_file, &tost);
   
   memset(&idata, 0, sizeof(idata));
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
@@ -234,7 +238,7 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     poll_ops:
     P_update_time_reference(&idata);
 
-    if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
+    if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt, &prt, &tost);
 
 #ifdef WITH_AVRO
     if (idata.now > avro_schema_deadline) {
@@ -328,9 +332,17 @@ void amqp_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 	  (*net_funcs[num])(&nt, &nc, &data->primitives, prim_ptrs.pbgp, &nfd);
 
 	if (config.ports_file) {
-          if (!pt.table[data->primitives.src_port]) data->primitives.src_port = 0;
-          if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = 0;
+          if (!pt.table[data->primitives.src_port]) data->primitives.src_port = PM_L4_PORT_OTHERS;
+          if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = PM_L4_PORT_OTHERS;
         }
+
+	if (config.protos_file) {
+	  if (!prt.table[data->primitives.proto]) data->primitives.proto = PM_IP_PROTO_OTHERS;
+	}
+
+	if (config.tos_file) {
+	  if (!tost.table[data->primitives.tos]) data->primitives.tos = PM_IP_TOS_OTHERS;
+	}
 
         prim_ptrs.data = data;
         (*insert_func)(&prim_ptrs, &idata);
@@ -371,6 +383,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
   struct primitives_ptrs prim_ptrs;
   struct pkt_data dummy_data;
   pid_t writer_pid = getpid();
+  struct dynname_tokens writer_id_tokens;
 
   char *json_buf = NULL;
   int json_buf_off = 0;
@@ -425,6 +438,12 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
     Log(LOG_ERR, "ERROR ( %s/%s ): Unsupported amqp_output value specified. Exiting.\n", config.name, config.type);
     exit_gracefully(1);
   }
+
+  if (!config.writer_id_string) {
+    config.writer_id_string = DYNNAME_DEFAULT_WRITER_ID;
+  }
+
+  dynname_tokens_prepare(config.writer_id_string, &writer_id_tokens, DYN_STR_WRITER_ID);
 
   p_amqp_init_routing_key_rr(&amqpp_amqp_host);
   p_amqp_set_routing_key_rr(&amqpp_amqp_host, config.amqp_routing_key_rr);
@@ -556,7 +575,7 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
       int idx;
 
       for (idx = 0; idx < N_PRIMITIVES && cjhandler[idx]; idx++) cjhandler[idx](json_obj, queue[j]);
-      add_writer_name_and_pid_json(json_obj, config.name, writer_pid);
+      add_writer_name_and_pid_json(json_obj, &writer_id_tokens);
 
       json_str = compose_json_str(json_obj);
 #endif
@@ -568,9 +587,9 @@ void amqp_cache_purge(struct chained_cache *queue[], int index, int safe_action)
       avro_value_t p_avro_value = compose_avro_acct_data(config.what_to_count, config.what_to_count_2,
 			   queue[j]->flow_type, &queue[j]->primitives, pbgp, pnat, pmpls, ptun, pcust,
 			   pvlen, queue[j]->bytes_counter, queue[j]->packet_counter,
-			   queue[j]->flow_counter, queue[j]->tcp_flags, &queue[j]->basetime,
-			   queue[j]->stitch, p_avro_iface);
-      add_writer_name_and_pid_avro(p_avro_value, config.name, writer_pid);
+			   queue[j]->flow_counter, queue[j]->tcp_flags, queue[j]->tunnel_tcp_flags,
+			   &queue[j]->basetime, queue[j]->stitch, p_avro_iface);
+      add_writer_name_and_pid_avro_v2(p_avro_value, &writer_id_tokens);
 
       if (config.message_broker_output & PRINT_OUTPUT_AVRO_BIN) {
 	size_t p_avro_value_size;

@@ -31,7 +31,7 @@ bgp_table_dump_refresh_time: 60
 Title | Description
 :----- | :-----------
 `seq` | pmacct sequence number. Uniquely identifies each metric.
-`log_type` | pmacct log type. Either "update" or "delete" depending if BGP advertisement is an update or withdrawal
+`log_type` | pmacct log type. One of "update", "withdraw", "delete" or "end-of-rib"
 `timestamp` | pmacct time stamp of data collection
 `peer_ip_src` | IP address of BGP router which peers to pmacct
 `peer_tcp_port` | TCP port of BGP router which peers to pmacct
@@ -113,9 +113,9 @@ bmp_daemon_msglog_kafka_config_file: /etc/pmacct/librdkafka.conf
 Title | Description
 :----- | :-----------
 `seq` | pmacct sequence number. Uniquely identifies each metric.
-`log_type` | pmacct log type. Either "update" or "delete" depending if BGP advertisement is an update or withdrawal
+`log_type` | pmacct log type. One of "update", "withdraw", "delete" or "end-of-rib" 
 `timestamp` | time stamp when data was generated on router
-`timestamp` | time stamp of BMP data export
+`timestamp_arrival` | time stamp of BMP data export
 `bmp_router` | IP address of BMP router which peers to pmacct
 `bmp_router_port` | TCP port of BMP router which peers to pmacct
 `event_type` | pmacct event type. Can be either "log" for msglog or "dump" for table_dump.

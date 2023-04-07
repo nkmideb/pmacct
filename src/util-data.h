@@ -1,6 +1,6 @@
-/*  
+/*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -19,9 +19,20 @@
     Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 */
 
-#ifndef _PMACCT_VERSION_H_
-#define _PMACCT_VERSION_H_
+const struct dynname_token_dict_registry_line dynname_token_dict_registry[] = {
+  {DYN_STR_KAFKA_TOPIC, "kafka_topic", NULL},
+  {DYN_STR_KAFKA_PART, "kafka_parttion", NULL},
+  {DYN_STR_RABBITMQ_RK, "amqp_routing_key", NULL},
+  {DYN_STR_MONGODB_TABLE, "mongodb_table", NULL},
+  {DYN_STR_SQL_TABLE, "sql_table", NULL},
+  {DYN_STR_PRINT_FILE, "print_output_file", NULL},
+  {DYN_STR_WRITER_ID, "writer_id", dtdr_writer_id},
+  {DYN_STR_UNKNOWN, "unknown", dtdr_unknown}
+};
 
-#define PMACCT_VERSION	"@PMACCT_VERSION@"
-
-#endif /* _PMACCT_VERSION_H_ */
+const struct dynname_type_dictionary_line dynname_writer_id_dictionary[] = {
+  {"proc_name", dwi_proc_name_handler},
+  {"writer_pid", dwi_writer_pid_handler},
+  {"pmacct_build", dwi_pmacct_build_handler},
+  {"", NULL}
+};

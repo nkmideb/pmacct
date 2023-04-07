@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -35,7 +35,7 @@ const struct _map_dictionary_line tag_map_dictionary[] = {
   {"flowset_id", PT_map_flowset_id_handler},
   {"sample_type", PT_map_sample_type_handler},
   {"direction", PT_map_direction_handler},
-  {"nat_event", PT_map_nat_event_handler},
+  {"nat_event", PT_map_nat_event_handler}, /* XXX: to be deprecated */
   {"src_as", PT_map_src_as_handler},
   {"dst_as", PT_map_dst_as_handler},
   {"peer_src_as", PT_map_peer_src_as_handler},
@@ -63,12 +63,15 @@ const struct _map_dictionary_line tag_map_dictionary[] = {
   {"jeq", PT_map_jeq_handler},
   {"return", PT_map_return_handler},
   {"stack", PT_map_stack_handler},
-  {"fwdstatus", PT_map_fwdstatus_handler},
+  {"fwdstatus", PT_map_fwd_status_handler}, /* XXX: to be deprecated */
+  {"fwd_status", PT_map_fwd_status_handler},
   {"is_bi_flow", PT_map_is_bi_flow_handler},
+  {"is_nsel", PT_map_is_nsel_handler},
+  {"is_nel", PT_map_is_nel_handler},
   {"", NULL}
 };
 
-const struct _map_index_dictionary_line tag_map_index_entries_dictionary[] = {
+const struct _map_index_internal_dictionary_line tag_map_index_entries_dictionary[] = {
   {PRETAG_IP, PT_map_index_entries_ip_handler},
   {PRETAG_IN_IFACE, PT_map_index_entries_input_handler},
   {PRETAG_OUT_IFACE, PT_map_index_entries_output_handler},
@@ -88,7 +91,8 @@ const struct _map_index_dictionary_line tag_map_index_entries_dictionary[] = {
   {PRETAG_SRC_NET, PT_map_index_entries_src_net_handler},
   {PRETAG_DST_NET, PT_map_index_entries_dst_net_handler},
   {PRETAG_IS_MULTICAST, PT_map_index_entries_is_multicast_handler},
-  {PRETAG_FWDSTATUS_ID, PT_map_index_entries_fwdstatus_handler},
+  {PRETAG_FWDSTATUS_ID, PT_map_index_entries_fwd_status_handler},
+  {PRETAG_NULL, PT_map_index_entries_null_handler},
   {0, NULL}
 };
 
@@ -112,7 +116,8 @@ const struct _map_index_dictionary_line tag_map_index_fdata_dictionary[] = {
   {PRETAG_SRC_NET, PT_map_index_fdata_src_net_handler},
   {PRETAG_DST_NET, PT_map_index_fdata_dst_net_handler},
   {PRETAG_IS_MULTICAST, PT_map_index_fdata_is_multicast_handler},
-  {PRETAG_FWDSTATUS_ID, PT_map_index_fdata_fwdstatus_handler},
+  {PRETAG_FWDSTATUS_ID, PT_map_index_fdata_fwd_status_handler},
+  {PRETAG_NULL, PT_map_index_fdata_null_handler},
   {0, NULL}
 };
 
@@ -132,10 +137,11 @@ const struct _map_index_size_dictionary_line tag_map_index_entries_size_dictiona
   {PRETAG_DST_MAC, ETH_ADDR_LEN},
   {PRETAG_VLAN_ID, sizeof(u_int16_t)},
   {PRETAG_CVLAN_ID, sizeof(u_int16_t)},
-  {PRETAG_SRC_NET, sizeof(struct host_addr)},
-  {PRETAG_DST_NET, sizeof(struct host_addr)},
+  {PRETAG_SRC_NET, (sizeof(struct host_addr) /* net */ + sizeof(u_int8_t) /* mask */)},
+  {PRETAG_DST_NET, (sizeof(struct host_addr) /* net */ + sizeof(u_int8_t) /* mask */)},
   {PRETAG_IS_MULTICAST, sizeof(u_int8_t)},
   {PRETAG_FWDSTATUS_ID, sizeof(u_int8_t)},
+  {PRETAG_NULL, sizeof(u_int8_t)},
   {0, 0}
 };
 
@@ -161,6 +167,13 @@ const struct _map_dictionary_line tag_map_tee_dictionary[] = {
   {"jeq", PT_map_jeq_handler},
   {"return", PT_map_return_handler},
   {"stack", PT_map_stack_handler},
+  {"", NULL}
+};
+
+const struct _map_dictionary_line tag_map_nonflow_dictionary[] = {
+  {"set_tag", PT_map_id_handler},
+  {"ip", PT_map_ip_handler},
+  {"set_label", PT_map_label_handler},
   {"", NULL}
 };
 

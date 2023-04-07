@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -45,9 +45,10 @@
 #define TELEMETRY_DECODER_CISCO_V0	3
 #define TELEMETRY_DECODER_CISCO_V1	4
 
-#define TELEMETRY_DATA_DECODER_UNKNOWN	0
-#define TELEMETRY_DATA_DECODER_JSON	1
-#define TELEMETRY_DATA_DECODER_GPB	2
+#define TELEMETRY_DATA_DECODER_UNKNOWN      0
+#define TELEMETRY_DATA_DECODER_JSON         1
+#define TELEMETRY_DATA_DECODER_GPB          2
+#define TELEMETRY_DATA_DECODER_JSON_STRING  3
 
 #define TELEMETRY_CISCO_VERSION_0		0
 #define TELEMETRY_CISCO_HDR_LEN_V0		12
@@ -79,6 +80,9 @@
 #define TELEMETRY_UDP_NOTIF_ENC_JSON		1
 #define TELEMETRY_UDP_NOTIF_ENC_XML		2
 #endif
+
+typedef bgp_tag_t telemetry_tag_t;
+typedef bgp_tag_cache_t telemetry_tag_cache_t;
 
 struct telemetry_cisco_hdr_v0 {
   u_int32_t type;
@@ -154,6 +158,8 @@ extern void telemetry_wrapper();
 extern int telemetry_daemon(void *);
 extern void telemetry_prepare_thread(struct telemetry_data *);
 extern void telemetry_prepare_daemon(struct telemetry_data *);
+extern void telemetry_tag_init_find(telemetry_peer *, struct sockaddr *, telemetry_tag_t *);
+extern int telemetry_tag_find(struct id_table *, telemetry_tag_t *, pm_id_t *, pm_id_t *);
 
 /* global variables */
 extern telemetry_misc_structs *telemetry_misc_db; 
@@ -162,4 +168,6 @@ extern telemetry_peer *telemetry_peers;
 extern void *telemetry_peers_cache;
 extern telemetry_peer_timeout *telemetry_peers_timeout; 
 extern int zmq_input, kafka_input, unyte_udp_notif_input;
+extern telemetry_tag_t telemetry_logdump_tag;
+extern struct sockaddr_storage telemetry_logdump_tag_peer;
 #endif //TELEMETRY_H

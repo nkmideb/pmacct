@@ -4,7 +4,7 @@ if WITH_EXTERNAL_DEPS
 SUBDIRS += external_libs
 endif
 
-SUBDIRS += nfprobe_plugin sfprobe_plugin bgp tee_plugin isis bmp telemetry rpki filters
+SUBDIRS += nfprobe_plugin sfprobe_plugin bgp tee_plugin isis bmp telemetry rpki filters ebpf
 sbin_PROGRAMS =
 bin_PROGRAMS =
 EXTRA_PROGRAMS =
@@ -48,10 +48,8 @@ libdaemons_la_SOURCES = signals.c util.c plugin_hooks.c		\
         imt_plugin.c log.c pkt_handlers.c			\
         cfg_handlers.c net_aggr.c				\
         print_plugin.c pretag.c ip_frag.c			\
-        ports_aggr.c pretag_handlers.c				\
-        ip_flow.c setproctitle.c				\
-        classifier.c regexp.c					\
-        conntrack.c xflow_status.c				\
+        pretag_handlers.c ip_flow.c setproctitle.c		\
+        classifier.c conntrack.c xflow_status.c			\
 	plugin_common.c preprocess.c				\
 	ll.c nl.c						\
 	base64.c pmsearch.c linklist.c				\
@@ -71,6 +69,7 @@ libdaemons_la_LIBADD += filters/libpmfilters.la
 libdaemons_la_LIBADD += tee_plugin/libtee_plugin.la
 libdaemons_la_LIBADD += isis/libpmisis.la
 libdaemons_la_LIBADD += telemetry/libpmtelemetry.la
+libdaemons_la_LIBADD += ebpf/libpmebpf.la
 libdaemons_la_LIBADD += libcommon.la
 libdaemons_la_CFLAGS  = $(AM_CFLAGS)
 if WITH_MYSQL
@@ -145,6 +144,10 @@ endif
 if WITH_UNYTE_UDP_NOTIF
 libdaemons_la_LIBADD  += @UNYTE_UDP_NOTIF_LIBS@
 libdaemons_la_CFLAGS  += @UNYTE_UDP_NOTIF_CFLAGS@
+endif
+if WITH_EBPF
+libdaemons_la_LIBADD  += @EBPF_LIBS@
+libdaemons_la_CFLAGS  += @EBPF_CFLAGS@
 endif
 
 if USING_TRAFFIC_BINS

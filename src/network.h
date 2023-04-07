@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -79,6 +79,7 @@ struct chdlc_header {
 #define ETHERTYPE_8021Q		0x8100          /* 802.1Q */
 #define ETHERTYPE_MPLS          0x8847		/* MPLS */
 #define ETHERTYPE_MPLS_MULTI    0x8848		/* MPLS */
+#define ETHERTYPE_8021AD	0x88A8		/* 802.1AD */
 #define ETHERTYPE_ISO		0xFEFE		/* OSI */
 #define ETHERTYPE_GRE_ISO	0x00FE		/* OSI over GRE */
 #define ETHERTYPE_CFP		0x8903		/* Cisco FabricPath */
@@ -290,15 +291,6 @@ typedef struct rd_as rd_t;
 
 typedef u_int32_t path_id_t;
 
-/* class status */
-struct class_st {
-  u_int8_t tentatives;
-  struct timeval stamp;	/* accumulator timestamp */
-  u_int32_t ba;		/* bytes accumulator */
-  u_int16_t pa;		/* packet accumulator */
-  u_int8_t fa;		/* flow accumulator */
-};
-
 struct flow_chars {
   u_int8_t traffic_type;
   u_int8_t is_bi;
@@ -312,6 +304,7 @@ struct packet_ptrs {
   u_char *f_tpl; /* ptr to NetFlow V9 template */
   u_char *f_status; /* ptr to status table entry */
   u_char *f_status_g; /* ptr to status table entry. global per f_agent */
+  u_char *tag_table; /* ptr to a tag table map */
   u_char *bpas_table; /* ptr to bgp_peer_as_src table map */
   u_char *blp_table; /* ptr to bgp_src_local_pref table map */
   u_char *bmed_table; /* ptr to bgp_src_med table map */
@@ -364,14 +357,14 @@ struct packet_ptrs {
   u_int8_t frag_first_found; /* entry found in fragments table */
   u_int16_t frag_sum_bytes; /* accumulated bytes by fragment entry, ie. due to out of order */
   u_int16_t frag_sum_pkts; /* accumulated packets by fragment entry, ie. due to out of order */
-  u_char *vlan_ptr; /* ptr to vlan id */
+  u_char *vlan_ptr; /* ptr to (outer) vlan id */
+  u_char *cvlan_ptr; /* ptr to inner vlan id */
   u_char *mpls_ptr; /* ptr to base MPLS label */
   u_char *iph_ptr; /* ptr to ip header */
   u_char *tlh_ptr; /* ptr to transport level protocol header */
   u_char *vxlan_ptr; /* ptr to VXLAN VNI */
   u_char *payload_ptr; /* classifiers: ptr to packet payload */
   pm_class_t class; /* classifiers: class id */
-  struct class_st cst; /* classifiers: class status */
   u_int8_t shadow; /* 0=the packet is being distributed for the 1st time
 		      1=the packet is being distributed for the 2nd+ time */
   u_int32_t ifindex_in;  /* input ifindex; used by pmacctd/uacctd */
@@ -397,28 +390,12 @@ struct packet_ptrs {
 #endif
 };
 
-struct host_addr {
-  u_int8_t family;
-  union {
-    struct in_addr ipv4;
-    struct in6_addr ipv6;
-  } address;
-};
-
-struct host_mask {
-  u_int8_t family;
-  u_int8_t len;
-  union {
-    u_int32_t m4;
-    u_int8_t m6[16];
-  } mask;
-};
-
 struct pkt_primitives {
 #if defined (HAVE_L2)
   u_int8_t eth_dhost[ETH_ADDR_LEN];
   u_int8_t eth_shost[ETH_ADDR_LEN];
   u_int16_t vlan_id;
+  u_int16_t out_vlan_id;
   u_int8_t cos;
   u_int16_t etype;
 #endif
@@ -453,9 +430,9 @@ struct pkt_primitives {
   pm_id_t tag2;
   pm_class_t class;
   u_int32_t sampling_rate;
-  char sampling_direction[2]; /* 'i' = ingress, 'e' = egress, 'u' = unknown */
+  u_int8_t sampling_direction;
   u_int32_t export_proto_seqno;
-  u_int16_t export_proto_version;
+  u_int8_t export_proto_version;
   u_int32_t export_proto_sysid;
 };
 
@@ -465,10 +442,10 @@ struct pkt_data {
   pm_counter_t pkt_num;
   pm_counter_t flo_num;
   u_int8_t flow_type;
-  u_int32_t tcp_flags; /* XXX */
+  u_int8_t tcp_flags;
+  u_int8_t tunnel_tcp_flags;
   struct timeval time_start;
   struct timeval time_end;
-  struct class_st cst;
 };
 
 struct pkt_payload {
@@ -530,6 +507,10 @@ struct pkt_stitching {
 #define MAX_BGP_LRG_COMMS       96
 #define MAX_BGP_ASPATH          128
 
+/* MPLS */
+#define MAX_MPLS_LABELS         10
+#define MAX_MPLS_LABEL_LEN      16
+
 struct extra_primitives {
   u_int16_t off_pkt_bgp_primitives;
   u_int16_t off_pkt_lbgp_primitives;
@@ -589,6 +570,8 @@ struct pkt_nat_primitives {
   u_int16_t post_nat_src_port;
   u_int16_t post_nat_dst_port;
   u_int8_t nat_event;
+  u_int8_t fw_event;
+  u_int8_t fwd_status;
   struct timeval timestamp_start; /* XXX: clean-up: to be moved in a separate structure */
   struct timeval timestamp_end; /* XXX: clean-up: to be moved in a separate structure */
   struct timeval timestamp_arrival; /* XXX: clean-up: to be moved in a separate structure */
@@ -598,7 +581,6 @@ struct pkt_nat_primitives {
 struct pkt_mpls_primitives {
   u_int32_t mpls_label_top;
   u_int32_t mpls_label_bottom;
-  u_int8_t mpls_stack_depth;
 };
 
 struct pkt_tunnel_primitives {
@@ -610,6 +592,7 @@ struct pkt_tunnel_primitives {
   u_int8_t tunnel_proto;
   u_int16_t tunnel_src_port;
   u_int16_t tunnel_dst_port;
+  u_int8_t tunnel_tcp_flags;
   u_int32_t tunnel_id; /* ie. VXLAN VNI */
 };
 

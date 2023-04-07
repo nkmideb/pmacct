@@ -36,8 +36,6 @@ if test "x$ac_cv_prog_gcc" = xyes ; then
   CFLAGS="-O2 ${CFLAGS}"
 fi
 
-AC_CHECK_FUNCS([strlcpy])
-
 dnl: shared object handling
 AC_MSG_CHECKING([whether to disable linking against shared objects])
 AC_ARG_ENABLE(so,
@@ -404,9 +402,14 @@ AC_ARG_ENABLE(mysql,
     AC_CHECK_HEADERS([mysql.h mysql/mysql.h])
     CFLAGS="$_save_CFLAGS"
 
-    AC_CHECK_LIB([numa], [numa_bind], [], [AC_MSG_ERROR([
-      ERROR: missing libnuma. Requirement for building MySQL.
-    ])])
+    case "$host_os" in
+    linux*)
+      AC_CHECK_LIB([numa], [numa_bind], [], [AC_MSG_ERROR([
+        ERROR: missing libnuma. Requirement for building MySQL.
+      ])])
+    ;;
+    esac
+
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -899,7 +902,7 @@ AC_ARG_ENABLE(ndpi,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
-    PKG_CHECK_MODULES([NDPI], [libndpi >= 3.2], [
+    PKG_CHECK_MODULES([NDPI], [libndpi >= 4.0], [
       SUPPORTS="${SUPPORTS} ndpi"
       USING_NDPI="yes"
 
@@ -940,25 +943,27 @@ AC_ARG_ENABLE(unyte-udp-notif,
   [ case "$enableval" in
   yes)
     AC_MSG_RESULT(yes)
+    PKG_CHECK_MODULES([UNYTE_UDP_NOTIF], [unyte-udp-notif >= 0.6.0], [
+      AC_SUBST(UNYTE_UDP_NOTIF_CFLAGS)
+      AC_SUBST(UNYTE_UDP_NOTIF_LIBS)
 
-    AC_SUBST(UNYTE_UDP_NOTIF_CFLAGS)
-    AC_SUBST(UNYTE_UDP_NOTIF_LIBS)
-
-    SUPPORTS="${SUPPORTS} unyte-udp-notif"
-    USING_UNYTE_UDP_NOTIF="yes"
-    PMACCT_CFLAGS="$PMACCT_CFLAGS $UNYTE_UDP_NOTIF_CFLAGS"
-    UNYTE_UDP_NOTIF_LIBS="$UNYTE_UDP_NOTIF_LIBS -lunyte-udp-notif"
-    AC_DEFINE(WITH_UNYTE_UDP_NOTIF, 1)
-    _save_LIBS="$LIBS"
-    LIBS="$LIBS $UNYTE_UDP_NOTIF_LIBS -lpthread"
-    AC_CHECK_LIB([unyte-udp-notif], [unyte_udp_start_collector], [], [AC_MSG_ERROR([
+      SUPPORTS="${SUPPORTS} unyte-udp-notif"
+      USING_UNYTE_UDP_NOTIF="yes"
+      PMACCT_CFLAGS="$PMACCT_CFLAGS $UNYTE_UDP_NOTIF_CFLAGS"
+      UNYTE_UDP_NOTIF_LIBS="$UNYTE_UDP_NOTIF_LIBS -lunyte-udp-notif"
+      AC_DEFINE(WITH_UNYTE_UDP_NOTIF, 1)
+      _save_LIBS="$LIBS"
+      LIBS="$LIBS $UNYTE_UDP_NOTIF_LIBS -lpthread"
+      AC_CHECK_LIB([unyte-udp-notif], [unyte_udp_start_collector], [], [AC_MSG_ERROR([
 	ERROR: missing unyte-udp-notif library. Refer to: https://github.com/insa-unyte/udp-notif-c-collector
-    ])])
-    LIBS="$_save_LIBS"
-    _save_CFLAGS="$CFLAGS"
-    CFLAGS="$CFLAGS $UNYTE_UDP_NOTIF_CFLAGS"
-    AC_CHECK_HEADER([unyte-udp-notif/unyte_udp_collector.h], [], [AC_MSG_ERROR(ERROR: missing unyte-udp-notif headers)])
-    CFLAGS="$_save_CFLAGS"
+      ])])
+      LIBS="$_save_LIBS"
+      _save_CFLAGS="$CFLAGS"
+      CFLAGS="$CFLAGS $UNYTE_UDP_NOTIF_CFLAGS"
+      AC_CHECK_HEADER([unyte-udp-notif/unyte_udp_collector.h], [], [AC_MSG_ERROR(ERROR: missing unyte-udp-notif headers)])
+      CFLAGS="$_save_CFLAGS"
+    ],
+    [AC_MSG_ERROR([ERROR: missing unyte-udp-notif pkg-config. Refer to: https://github.com/insa-unyte/udp-notif-c-collector])])
     ;;
   no)
     AC_MSG_RESULT(no)
@@ -969,6 +974,42 @@ AC_ARG_ENABLE(unyte-udp-notif,
   ]
 )
 dnl finish: unyte udp notif handling
+
+dnl start: eBPF handling
+AC_MSG_CHECKING(whether to enable eBPF support)
+AC_ARG_ENABLE(ebpf,
+  [  --enable-ebpf                    Enable eBPF support (default: no)],
+  [ case "$enableval" in
+  yes)
+    AC_MSG_RESULT(yes)
+    AC_SUBST(EBPF_CFLAGS)
+    AC_SUBST(EBPF_LIBS)
+
+    SUPPORTS="${SUPPORTS} ebpf"
+    USING_EBPF="yes"
+    PMACCT_CFLAGS="$PMACCT_CFLAGS $EBPF_CFLAGS"
+    EBPF_LIBS="$EBPF_LIBS -lbpf"
+    AC_DEFINE(WITH_EBPF, 1)
+    _save_LIBS="$LIBS"
+    LIBS="$LIBS $EBPF_LIBS"
+    AC_CHECK_LIB([bpf], [bpf_object__open_file], [], [AC_MSG_ERROR([
+      ERROR: missing libbpf library. Refer to: https://github.com/libbpf/libbpf 
+    ])])
+    LIBS="$_save_LIBS"
+    _save_CFLAGS="$CFLAGS"
+    CFLAGS="$CFLAGS $EBPF_CFLAGS"
+    AC_CHECK_HEADER([bpf/libbpf.h], [], [AC_MSG_ERROR(ERROR: missing libbpf headers)])
+    CFLAGS="$_save_CFLAGS"
+    ;;
+  no)
+    AC_MSG_RESULT(no)
+    ;;
+  esac ],
+  [
+    AC_MSG_RESULT(no)
+  ]
+)
+dnl finish: ebpf handling
 
 if test x"$USING_DLOPEN" = x"yes"; then
 	AC_DEFINE(HAVE_DLOPEN, 1)
@@ -1109,19 +1150,19 @@ AC_ARG_ENABLE(st-bins,
 dnl Checks for library functions.
 AC_TYPE_SIGNAL
 
-AC_CHECK_FUNCS([setproctitle mallopt tdestroy])
+AC_CHECK_FUNCS([setproctitle mallopt tdestroy strlcpy vfork])
 
-dnl Check for SO_REUSEPORT & friends
-AC_CHECK_DECL([SO_REUSEPORT],
-	AC_DEFINE(HAVE_SO_REUSEPORT, 1, [Check if kernel supports SO_REUSEPORT]),,
+dnl Check for SO_BINDTODEVICE
+AC_CHECK_DECL([SO_BINDTODEVICE],
+	AC_DEFINE(HAVE_SO_BINDTODEVICE, 1, [Check if kernel supports SO_BINDTODEVICE]),,
 		[
-		  #include <sys/types.h>
 		  #include <sys/socket.h>
 		]
 )
 
-AC_CHECK_DECL([SO_ATTACH_REUSEPORT_CBPF],
-	AC_DEFINE(HAVE_SO_ATTACH_REUSEPORT_CBPF, 1, [Check if kernel supports SO_ATTACH_REUSEPORT_CBPF]),,
+dnl Check for SO_REUSEPORT & friends
+AC_CHECK_DECL([SO_REUSEPORT],
+	AC_DEFINE(HAVE_SO_REUSEPORT, 1, [Check if kernel supports SO_REUSEPORT]),,
 		[
 		  #include <sys/types.h>
 		  #include <sys/socket.h>
@@ -1251,6 +1292,7 @@ AM_CONDITIONAL([WITH_AVRO], [test x"$USING_AVRO" = x"yes"])
 AM_CONDITIONAL([WITH_SERDES], [test x"$USING_SERDES" = x"yes"])
 AM_CONDITIONAL([WITH_NDPI], [test x"$USING_NDPI" = x"yes"])
 AM_CONDITIONAL([WITH_UNYTE_UDP_NOTIF], [test x"$USING_UNYTE_UDP_NOTIF" = x"yes"])
+AM_CONDITIONAL([WITH_EBPF], [test x"$USING_EBPF" = x"yes"])
 AM_CONDITIONAL([WITH_NFLOG], [test x"$USING_NFLOG" = x"yes"])
 AM_CONDITIONAL([WITH_DLOPEN], [test x"$USING_DLOPEN" = x"yes"])
 AM_CONDITIONAL([USING_TRAFFIC_BINS], [test x"$USING_TRAFFIC_BINS" = x"yes"])
@@ -1270,4 +1312,4 @@ AC_OUTPUT([ Makefile \
 	    src/bmp/Makefile src/rpki/Makefile \
 	    src/telemetry/Makefile src/ndpi/Makefile \
 	    src/filters/Makefile examples/lg/Makefile \
-	    examples/custom/Makefile	])
+	    src/ebpf/Makefile examples/custom/Makefile ])

@@ -1,7 +1,7 @@
 /*  
  * pmacct (Promiscuous mode IP Accounting package)
  *
- * Copyright (c) 2003-2020 Paolo Lucente <paolo@pmacct.net>
+ * Copyright (c) 2003-2022 Paolo Lucente <paolo@pmacct.net>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -19,7 +19,6 @@
 /* includes */
 #include "pmacct.h"
 #include "pmacct-data.h"
-#include "addr.h"
 #include "thread_pool.h"
 
 /* Global variables */
@@ -79,11 +78,6 @@ void p_redis_init(struct p_redis_host *redis_host, char *log_id, redis_thread_ha
       exit_gracefully(1);
     }
 
-    if (!config.cluster_id) {
-      Log(LOG_ERR, "ERROR ( %s ): redis_host requires cluster_id to be specified. Exiting...\n\n", redis_host->log_id);
-      exit_gracefully(1);
-    }
-
     p_redis_thread_wrapper(redis_host);
   }
 }
@@ -93,7 +87,7 @@ int p_redis_connect(struct p_redis_host *redis_host, int fatal)
   struct sockaddr_storage dest;
   socklen_t dest_len = sizeof(dest);
   char dest_str[INET6_ADDRSTRLEN];
-  int dest_port = PM_REDIS_DEFAULT_PORT;
+  int dest_port;
 
   time_t now = time(NULL);
 
@@ -105,8 +99,12 @@ int p_redis_connect(struct p_redis_host *redis_host, int fatal)
 
       /* round of parsing and validation */
       parse_hostport(config.redis_host, (struct sockaddr *)&dest, &dest_len);
-      sa_to_str(dest_str, sizeof(dest_str), (struct sockaddr *)&dest);
+      sa_to_str(dest_str, sizeof(dest_str), (struct sockaddr *)&dest, FALSE);
+
       sa_to_port(&dest_port, (struct sockaddr *)&dest);
+      if (!dest_port) {
+	dest_port = PM_REDIS_DEFAULT_PORT;
+      }
 
       redis_host->ctx = redisConnect(dest_str, dest_port);
 
@@ -259,7 +257,7 @@ void p_redis_thread_produce_common_core_handler(void *rh)
 	   config.name, PM_REDIS_DEFAULT_SEP, config.type);
   p_redis_set_int(redis_host, name_and_type, TRUE, PM_REDIS_DEFAULT_EXP_TIME);
 
-  if (config.acct_type < ACCT_FWPLANE_MAX) {
+  if (config.acct_type < ACCT_FWDPLANE_MAX) {
     if (config.nfacctd_isis) {
       snprintf(buf, sizeof(buf), "%s%sisis", name_and_type, PM_REDIS_DEFAULT_SEP);
       p_redis_set_int(redis_host, buf, TRUE, PM_REDIS_DEFAULT_EXP_TIME);

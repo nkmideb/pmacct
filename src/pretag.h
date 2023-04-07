@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -23,10 +23,13 @@
 #define PRETAG_H
 
 /* Pre-Tag map stuff */
-#define N_MAP_HANDLERS N_PRIMITIVES
+#define N_MAP_HANDLERS 8
+#define N_MAP_SET_HANDLERS 4
 #define MAX_LABEL_LEN 32
 #define MAX_BITMAP_ENTRIES 64 /* pt_bitmap_t -> u_int64_t */
 #define MAX_PRETAG_MAP_ENTRIES 384 
+#define PRETAG_LABEL_KV_SEP "%"
+#define PRETAG_LABEL_KV_SEP_INT '%'
 
 #define MAX_ID_TABLE_INDEXES 8
 #define ID_TABLE_INDEX_RESULTS (MAX_ID_TABLE_INDEXES * 8)
@@ -73,6 +76,10 @@
 #define PRETAG_DST_ROA			0x0000008000000000ULL
 #define PRETAG_IS_BI_FLOW		0x0000010000000000ULL
 #define PRETAG_IS_MULTICAST		0x0000020000000000ULL
+#define PRETAG_IS_NSEL			0x0000040000000000ULL
+#define PRETAG_IS_NEL			0x0000080000000000ULL
+/* ... */
+#define PRETAG_NULL			0x8000000000000000ULL
 
 #define PRETAG_MAP_RCODE_ID		0x00000100
 #define PRETAG_MAP_RCODE_ID2		0x00000200
@@ -84,6 +91,11 @@
 #define PRETAG_MAP_RCODE_LABEL		0x00008000
 
 #define PRETAG_FLAG_NEG			0x00000001
+#define PRETAG_FLAG_JEQ			0x00000002
+
+#define PRETAG_IDX_ERR_NONE		0x00000000
+#define PRETAG_IDX_ERR_FATAL		0x00000001
+#define PRETAG_IDX_ERR_WARN		0x00000002
 
 typedef int (*pretag_handler) (struct packet_ptrs *, void *, void *);
 typedef pm_id_t (*pretag_stack_handler) (pm_id_t, pm_id_t);
@@ -165,6 +177,8 @@ struct id_entry_key {
   pt_uint32_t sampling_rate; /* applies to sFlow sampling rate */
   pt_uint32_t sample_type; /* applies to NetFlow/IPFIX (inferred) & sFlow sample type */
   pt_uint8_t is_bi_flow;
+  pt_uint8_t is_nsel;
+  pt_uint8_t is_nel;
   pt_uint8_t direction;
   pt_uint8_t nat_event;
   pt_uint32_t src_as;
@@ -189,8 +203,9 @@ struct id_entry_key {
   pt_uint32_t mpls_vpn_id;
   pt_rd_t mpls_vpn_rd;
   pt_uint32_t mpls_pw_id;
-  pt_uint32_t fwdstatus;
+  pt_uint8_t fwd_status;
   struct bpf_program filter;
+  pt_uint8_t null;
 };
 
 struct id_entry {
@@ -203,9 +218,9 @@ struct id_entry {
   struct id_entry_key key;
   pretag_handler func[N_MAP_HANDLERS];
   pt_bitmap_t func_type[N_MAP_HANDLERS];
-  pretag_handler set_func[N_MAP_HANDLERS];
-  pt_bitmap_t set_func_type[N_MAP_HANDLERS];
-  char entry_label[MAX_LABEL_LEN];
+  pretag_handler set_func[N_MAP_SET_HANDLERS];
+  pt_bitmap_t set_func_type[N_MAP_SET_HANDLERS];
+  char *entry_label;
   pt_jeq_t jeq;
   u_int8_t ret;
   pt_stack_t stack;
@@ -214,13 +229,27 @@ struct id_entry {
   u_int8_t id2_inc;
 };
 
-typedef int (*pretag_copier)(struct id_entry *, pm_hash_serial_t *, void *);
+struct id_table_index; /* just to make the compiler swallow the next typedef */
+typedef int (*pretag_prep)(struct id_table_index *, int, pm_hash_serial_t *, void *);
+typedef int (*pretag_copier)(struct id_table_index *, int, int, struct id_entry *, pm_hash_serial_t *, void *);
+
+struct id_table_index_netmask_list {
+  cdada_list_t *list;
+  int size;
+};
+
+struct id_table_index_netmask {
+  struct id_table_index_netmask_list v4;
+  struct id_table_index_netmask_list v6;
+  int hdlr_no;
+};
 
 struct id_table_index {
   pt_bitmap_t bitmap; 
   u_int32_t entries;
-  pretag_copier idt_handler[MAX_BITMAP_ENTRIES];
+  pretag_prep idt_handler[MAX_BITMAP_ENTRIES];
   pretag_copier fdata_handler[MAX_BITMAP_ENTRIES];
+  struct id_table_index_netmask netmask;
   pm_hash_serial_t hash_serializer;
   cdada_map_t *idx_map;
 };
@@ -238,11 +267,18 @@ struct id_table {
   unsigned int index_num;
   time_t timestamp;
   u_int32_t flags;
+  cdada_map_t *label_map_v4;
+  cdada_map_t *label_map_v6;
 };
 
 struct _map_dictionary_line {
   char key[SRVBUFLEN];
   int (*func)(char *, struct id_entry *, char *, struct plugin_requests *, int);
+};
+
+struct _map_index_internal_dictionary_line {
+  pt_bitmap_t key;
+  pretag_prep func;
 };
 
 struct _map_index_dictionary_line {
@@ -269,11 +305,12 @@ struct pretag_label_filter {
 extern void load_id_file(int, char *, struct id_table *, struct plugin_requests *, int *);
 extern void load_pre_tag_map(int, char *, struct id_table *, struct plugin_requests *, int *, int, int);
 extern u_int8_t pt_check_neg(char **, u_int32_t *);
+extern void pt_set_jeq(u_int32_t *);
 extern char * pt_check_range(char *);
 extern void pretag_init_vars(struct packet_ptrs *, struct id_table *);
 extern void pretag_init_label(pt_label_t *);
 extern int pretag_malloc_label(pt_label_t *, int);
-extern int pretag_realloc_label(pt_label_t *, int);
+extern int pretag_realloc_label(pt_label_t *, int, int);
 extern int pretag_copy_label(pt_label_t *, pt_label_t *);
 extern int pretag_move_label(pt_label_t *, pt_label_t *);
 extern int pretag_append_label(pt_label_t *, pt_label_t *);
@@ -283,7 +320,8 @@ extern pt_bitmap_t pretag_index_build_bitmap(struct id_entry *, int);
 extern int pretag_index_insert_bitmap(struct id_table *, pt_bitmap_t);
 extern int pretag_index_set_handlers(struct id_table *);
 extern int pretag_index_allocate(struct id_table *);
-extern int pretag_index_fill(struct id_table *, pt_bitmap_t, struct id_entry *);
+extern int pretag_index_fill(struct id_table *, pt_bitmap_t, struct id_entry *, int);
+extern int pretag_index_validate_dedup_netmask_lists(struct id_table *);
 extern void pretag_index_print_key(const cdada_map_t *, const void *, void *, void *);
 extern void pretag_index_report(struct id_table *);
 extern void pretag_index_destroy(struct id_table *);

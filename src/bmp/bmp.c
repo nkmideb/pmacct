@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,13 +21,15 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp/bgp.h"
 #include "bmp.h"
 #include "rpki/rpki.h"
 #include "thread_pool.h"
 #include "ip_flow.h"
 #include "ip_frag.h"
+#if defined WITH_EBPF
+#include "ebpf/ebpf_rp_balancer.h"
+#endif
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
 #endif
@@ -40,6 +42,8 @@
 
 /* variables to be exported away */
 thread_pool_t *bmp_pool;
+bgp_tag_t bmp_logdump_tag;
+struct sockaddr_storage bmp_logdump_tag_peer;
 
 /* Functions */
 void bmp_daemon_wrapper()
@@ -88,6 +92,11 @@ int skinny_bmp_daemon()
   struct packet_ptrs recv_pptrs;
   unsigned char *bmp_packet;
   int sf_ret, pcap_savefile_round = 1;
+
+  /* bmp_daemon_tag_map stuff */
+  struct plugin_requests req;
+  struct id_table bmp_logdump_tag_table;
+  int bmp_logdump_tag_map_allocated;
 
   /* initial cleanups */
   reload_map_bmp_thread = FALSE;
@@ -252,6 +261,13 @@ int skinny_bmp_daemon()
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEPORT (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
 #endif
 
+#if (defined HAVE_SO_BINDTODEVICE)
+  if (config.bmp_daemon_interface)  {
+    rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_BINDTODEVICE, config.bmp_daemon_interface, (socklen_t) strlen(config.bmp_daemon_interface));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
+  }
+#endif
+
     rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
 
@@ -301,6 +317,12 @@ int skinny_bmp_daemon()
       Log(LOG_INFO, "INFO ( %s/%s ): waiting for BMP data on %s:%u\n", config.name, bmp_misc_db->log_str, srv_string, srv_port);
     }
 
+#if defined WITH_EBPF
+    if (config.bmp_daemon_rp_ebpf_prog) {
+      attach_ebpf_reuseport_balancer(config.bmp_sock, config.bmp_daemon_rp_ebpf_prog, config.cluster_name, "bmp", config.cluster_id, TRUE);
+    }
+#endif
+
     /* Preparing ACL, if any */
     if (config.bmp_daemon_allow_file) load_allow_file(config.bmp_daemon_allow_file, &allow);
   }
@@ -337,6 +359,10 @@ int skinny_bmp_daemon()
     config.bmp_daemon_batch_interval = 0;
   }
   else bgp_batch_init(&bp_batch, config.bmp_daemon_batch, config.bmp_daemon_batch_interval);
+
+  /* bmp_link_misc_structs() will re-apply. But we need to anticipate
+     this definition in order to build the Avro schemas correctly */
+  bmp_misc_db->tag_map = config.bmp_daemon_tag_map;
 
   if (bmp_misc_db->msglog_backend_methods) {
 #ifdef WITH_JANSSON
@@ -492,6 +518,16 @@ int skinny_bmp_daemon()
     char dump_roundoff[] = "m";
     time_t tmp_time;
 
+    if (!config.bmp_dump_time_slots) {
+      config.bmp_dump_time_slots = 1;
+    }
+
+    bmp_misc_db->current_slot = 0;
+    
+    if (config.bmp_dump_refresh_time % config.bmp_dump_time_slots != 0) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): 'bmp_dump_time_slots' is not a divisor of 'bmp_dump_refresh_time', please fix.\n", config.name, bmp_misc_db->log_str);
+    }
+
     if (config.bmp_dump_refresh_time) {
       gettimeofday(&bmp_misc_db->log_tstamp, NULL);
       dump_refresh_deadline = bmp_misc_db->log_tstamp.tv_sec;
@@ -525,10 +561,29 @@ int skinny_bmp_daemon()
 #endif
   }
 
+  if (!config.writer_id_string) {
+    config.writer_id_string = DYNNAME_DEFAULT_WRITER_ID;
+  }
+
+  dynname_tokens_prepare(config.writer_id_string, &bmp_misc_db->writer_id_tokens, DYN_STR_WRITER_ID);
+
   select_fd = bkp_select_fd = (config.bmp_sock + 1);
   recalc_fds = FALSE;
 
   bmp_link_misc_structs(bmp_misc_db);
+
+  if (config.bmp_daemon_tag_map) {
+    memset(&bmp_logdump_tag, 0, sizeof(bmp_logdump_tag));
+    memset(&bmp_logdump_tag_table, 0, sizeof(bmp_logdump_tag_table));
+    memset(&req, 0, sizeof(req));
+    bmp_logdump_tag_map_allocated = FALSE;
+
+    load_pre_tag_map(ACCT_PMBMP, config.bmp_daemon_tag_map, &bmp_logdump_tag_table, &req,
+                     &bmp_logdump_tag_map_allocated, config.maps_entries, config.maps_row_len);
+
+    /* making some bindings */
+    bmp_logdump_tag.tag_table = (unsigned char *) &bmp_logdump_tag_table;
+  }
 
   sigemptyset(&signal_set);
   sigaddset(&signal_set, SIGCHLD);
@@ -582,6 +637,11 @@ int skinny_bmp_daemon()
     if (reload_map_bmp_thread) {
       if (config.bmp_daemon_allow_file) load_allow_file(config.bmp_daemon_allow_file, &allow);
 
+      if (config.bmp_daemon_tag_map) {
+	load_pre_tag_map(ACCT_PMBMP, config.bmp_daemon_tag_map, &bmp_logdump_tag_table, &req,
+			 &bmp_logdump_tag_map_allocated, config.maps_entries, config.maps_row_len);
+      }
+
       reload_map_bmp_thread = FALSE;
     }
 
@@ -599,7 +659,7 @@ int skinny_bmp_daemon()
     }
 
     if (reload_log && !bmp_misc_db->is_thread) {
-      reload_logs();
+      reload_logs(PMBMPD_USAGE_HEADER);
       reload_log = FALSE;
     }
 
@@ -614,20 +674,22 @@ int skinny_bmp_daemon()
 	  bgp_peer_log_seq_init(&bmp_misc_db->log_seq);
       }
 
+
+      int refreshTimePerSlot = config.bmp_dump_refresh_time / config.bmp_dump_time_slots;
       if (bmp_misc_db->dump_backend_methods) {
         while (bmp_misc_db->log_tstamp.tv_sec > dump_refresh_deadline) {
           bmp_misc_db->dump.tstamp.tv_sec = dump_refresh_deadline;
           bmp_misc_db->dump.tstamp.tv_usec = 0;
           compose_timestamp(bmp_misc_db->dump.tstamp_str, SRVBUFLEN, &bmp_misc_db->dump.tstamp, FALSE,
 			    config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
-	  bmp_misc_db->dump.period = config.bmp_dump_refresh_time;
+	  bmp_misc_db->dump.period = refreshTimePerSlot;
 
 	  if (bgp_peer_log_seq_has_ro_bit(&bmp_misc_db->log_seq))
 	    bgp_peer_log_seq_init(&bmp_misc_db->log_seq);
 
           bmp_handle_dump_event(max_peers_idx);
 
-          dump_refresh_deadline += config.bmp_dump_refresh_time;
+          dump_refresh_deadline += refreshTimePerSlot;
         }
       }
 
@@ -716,7 +778,7 @@ int skinny_bmp_daemon()
       if (!allowed) {
 	char disallowed_str[INET6_ADDRSTRLEN];
 
-	sa_to_str(disallowed_str, sizeof(disallowed_str), (struct sockaddr *) &client);
+	sa_to_str(disallowed_str, sizeof(disallowed_str), (struct sockaddr *) &client, TRUE);
 	Log(LOG_INFO, "INFO ( %s/%s ): [%s] peer '%s' not allowed. close()\n", config.name, bmp_misc_db->log_str, config.bmp_daemon_allow_file, disallowed_str);
 
 	close(fd);
@@ -784,8 +846,13 @@ int skinny_bmp_daemon()
       memcpy(&peer->id, &peer->addr, sizeof(struct host_addr)); /* XXX: some inet_ntoa()'s could be around against peer->id */
 
       if (!config.bmp_daemon_parse_proxy_header) {
+	if (config.bmp_daemon_tag_map) {
+	  bgp_tag_init_find(peer, (struct sockaddr *) &bmp_logdump_tag_peer, &bmp_logdump_tag);
+	  bgp_tag_find((struct id_table *)bmp_logdump_tag.tag_table, &bmp_logdump_tag, &bmp_logdump_tag.tag, NULL);
+	}
+
         if (bmp_misc_db->msglog_backend_methods) {
-          bgp_peer_log_init(peer, config.bmp_daemon_msglog_output, FUNC_TYPE_BMP);
+          bgp_peer_log_init(peer, &bmp_logdump_tag, config.bmp_daemon_msglog_output, FUNC_TYPE_BMP);
 	}
 
         if (bmp_misc_db->dump_backend_methods) {
@@ -839,8 +906,13 @@ int skinny_bmp_daemon()
       }
       addr_to_str(peer->addr_str, &peer->addr);
 
+      if (config.bmp_daemon_tag_map) {
+	bgp_tag_init_find(peer, (struct sockaddr *) &bmp_logdump_tag_peer, &bmp_logdump_tag);
+	bgp_tag_find((struct id_table *)bmp_logdump_tag.tag_table, &bmp_logdump_tag, &bmp_logdump_tag.tag, NULL);
+      }
+
       if (bmp_misc_db->msglog_backend_methods) {
-        bgp_peer_log_init(peer, config.bmp_daemon_msglog_output, FUNC_TYPE_BMP);
+        bgp_peer_log_init(peer, &bmp_logdump_tag, config.bmp_daemon_msglog_output, FUNC_TYPE_BMP);
       }
 
       if (bmp_misc_db->dump_backend_methods) {
@@ -933,6 +1005,11 @@ int skinny_bmp_daemon()
       /* recvfrom_savefile() already invoked before */
       memcpy(peer->buf.base, bmp_packet, len);
       peer->msglen = len;
+    }
+
+    if (config.bmp_daemon_tag_map) {
+      bgp_tag_init_find(peer, (struct sockaddr *) &bmp_logdump_tag_peer, &bmp_logdump_tag);
+      bgp_tag_find((struct id_table *)bmp_logdump_tag.tag_table, &bmp_logdump_tag, &bmp_logdump_tag.tag, NULL);
     }
 
     do_term = FALSE;

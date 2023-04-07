@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -22,10 +22,10 @@
 /* includes */
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp/bgp.h"
 #include "bmp.h"
 #include "thread_pool.h"
+#include "util.h"
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
 #endif
@@ -36,14 +36,11 @@
 #include "plugin_cmn_avro.h"
 #endif
 
-int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *tlvs, void *log_data, u_int64_t log_seq, char *event_type, int output, int log_type)
+int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *tlvs, bgp_tag_t *tag,
+		void *log_data, u_int64_t log_seq, char *event_type, int output, int log_type)
 {
   struct bgp_misc_structs *bms = bgp_select_misc_db(FUNC_TYPE_BMP);
   int ret = 0, amqp_ret = 0, kafka_ret = 0, etype = BGP_LOGDUMP_ET_NONE;
-
-#if defined (WITH_JANSSON) || defined (WITH_AVRO)
-  pid_t writer_pid = getpid();
-#endif
 
   if (!bms || !peer || !peer->log || !bdata || !event_type) return ERR;
 
@@ -103,6 +100,10 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *t
 
     json_object_set_new_nocheck(obj, "bmp_router_port", json_integer((json_int_t)peer->tcp_port));
 
+    if (config.bmp_daemon_tag_map && tag) {
+      bgp_tag_print_json(obj, tag);
+    }
+
     switch (log_type) {
     case BMP_LOG_TYPE_STATS:
       ret = bmp_log_msg_stats(peer, bdata, tlvs, (struct bmp_log_stats *) log_data, event_type, output, obj);
@@ -133,7 +134,7 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *t
 
     if ((config.bmp_daemon_msglog_amqp_routing_key && etype == BGP_LOGDUMP_ET_LOG) ||
 	(config.bmp_dump_amqp_routing_key && etype == BGP_LOGDUMP_ET_DUMP)) {
-      add_writer_name_and_pid_json(obj, config.proc_name, writer_pid);
+      add_writer_name_and_pid_json(obj, &bms->writer_id_tokens);
 #ifdef WITH_RABBITMQ
       amqp_ret = write_and_free_json_amqp(peer->log->amqp_host, obj);
       p_amqp_unset_routing_key(peer->log->amqp_host);
@@ -142,7 +143,7 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *t
 
     if ((config.bmp_daemon_msglog_kafka_topic && etype == BGP_LOGDUMP_ET_LOG) ||
         (config.bmp_dump_kafka_topic && etype == BGP_LOGDUMP_ET_DUMP)) {
-      add_writer_name_and_pid_json(obj, config.proc_name, writer_pid);
+      add_writer_name_and_pid_json(obj, &bms->writer_id_tokens);
 #ifdef WITH_KAFKA
       kafka_ret = write_and_free_json_kafka(peer->log->kafka_host, obj);
       p_kafka_unset_topic(peer->log->kafka_host);
@@ -159,7 +160,7 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *t
     size_t p_avro_obj_len, p_avro_len;
     void *p_avro_local_buf = NULL;
 
-    char wid[SHORTSHORTBUFLEN], tstamp_str[SRVBUFLEN];
+    char tstamp_str[SRVBUFLEN];
 
     p_avro_writer = avro_writer_memory(bms->avro_buf, LARGEBUFLEN);
 
@@ -226,6 +227,10 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *t
       pm_avro_check(avro_value_set_branch(&p_avro_field, FALSE, &p_avro_branch));
     }
 
+    if (config.bmp_daemon_tag_map && tag) {
+      bgp_tag_print_avro(p_avro_obj, tag);
+    }
+
     switch (log_type) {
     case BMP_LOG_TYPE_STATS:
       ret = bmp_log_msg_stats(peer, bdata, tlvs, (struct bmp_log_stats *) log_data, event_type, output, &p_avro_obj);
@@ -250,9 +255,7 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *t
       break;
     }
 
-    pm_avro_check(avro_value_get_by_name(&p_avro_obj, "writer_id", &p_avro_field, NULL));
-    snprintf(wid, SHORTSHORTBUFLEN, "%s/%u", config.proc_name, writer_pid);
-    pm_avro_check(avro_value_set_string(&p_avro_field, wid));
+    add_writer_name_and_pid_avro_v2(p_avro_obj, &bms->writer_id_tokens);
 
     if (((config.bmp_daemon_msglog_file && etype == BGP_LOGDUMP_ET_LOG) ||
          (config.bmp_dump_file && etype == BGP_LOGDUMP_ET_DUMP) ||
@@ -345,7 +348,8 @@ int bmp_log_msg(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_list *t
     avro_value_iface_decref(p_avro_iface);
     avro_writer_reset(p_avro_writer);
     avro_writer_free(p_avro_writer);
-    if (bms->dump_kafka_avro_schema_registry) {
+    
+    if (bms->msglog_kafka_avro_schema_registry || bms->dump_kafka_avro_schema_registry) {
       free(p_avro_local_buf);
     }
 #endif
@@ -1613,12 +1617,16 @@ void bmp_handle_dump_event(int max_peers_idx)
       if (bmp_peers[idx].self.fd) {
 	peer = &bmp_peers[idx].self;
 	bdsell = peer->bmp_se;
-
-	if (bdsell && bdsell->start) bmp_dump_se_ll_destroy(bdsell);
+  
+	if (bdsell && bdsell->start && abs((int) pm_djb2_string_hash((unsigned char*) peer->addr_str)) % config.bmp_dump_time_slots == bms->current_slot)
+	{
+	  bmp_dump_se_ll_destroy(bdsell);
+	}
       }
     }
     break;
   }
+  bms->current_slot = (bms->current_slot + 1) % config.bmp_dump_time_slots;
 }
 
 int bmp_dump_event_runner(struct pm_dump_runner *pdr)
@@ -1734,10 +1742,17 @@ int bmp_dump_event_runner(struct pm_dump_runner *pdr)
 											     config.bmp_dump_kafka_avro_schema_registry);
   }
 #endif
+  
+  if (config.bmp_dump_time_slots > 1) {
+    Log(LOG_INFO, "INFO ( %s/%s ): *** Dumping BMP tables - SLOT %d / %d ***\n",
+	config.name, bms->log_str, bms->current_slot + 1, config.bmp_dump_time_slots);
+  }
 
   for (peer = NULL, saved_peer = NULL, peers_idx = pdr->first; peers_idx <= pdr->last; peers_idx++) {
-    if (bmp_peers[peers_idx].self.fd) {
-      peer = &bmp_peers[peers_idx].self;
+    peer = &bmp_peers[peers_idx].self;
+
+    int bmp_router_slot = abs((int) pm_djb2_string_hash((unsigned char*) peer->addr_str)) % config.bmp_dump_time_slots;
+    if (bmp_peers[peers_idx].self.fd && bmp_router_slot == bms->current_slot) {
       peer->log = &peer_log; /* abusing struct bgp_peer a bit, but we are in a child */
       bdsell = peer->bmp_se;
 
@@ -1810,7 +1825,15 @@ int bmp_dump_event_runner(struct pm_dump_runner *pdr)
       }
 #endif
 
-      bgp_peer_dump_init(peer, config.bmp_dump_output, FUNC_TYPE_BMP);
+      /* Being bmp_daemon_tag_map limited to 'ip' key lookups, this is
+	 finely placed here. Should further lookups be possible, this
+	 may be very possibly moved inside the loop */
+      if (config.bmp_daemon_tag_map) {
+	bgp_tag_init_find(peer, (struct sockaddr *) &bmp_logdump_tag_peer, &bmp_logdump_tag);
+	bgp_tag_find((struct id_table *)bmp_logdump_tag.tag_table, &bmp_logdump_tag, &bmp_logdump_tag.tag, NULL);
+      }
+
+      bgp_peer_dump_init(peer, &bmp_logdump_tag, config.bmp_dump_output, FUNC_TYPE_BMP);
       inter_domain_routing_db = bgp_select_routing_db(FUNC_TYPE_BMP);
 
       if (!inter_domain_routing_db) return ERR;
@@ -1831,7 +1854,7 @@ int bmp_dump_event_runner(struct pm_dump_runner *pdr)
 
                 if (local_bmpp && (&local_bmpp->self == peer)) {
 		  ri->peer->log = peer->log;
-                  bgp_peer_log_msg(node, ri, afi, safi, event_type, config.bmp_dump_output, NULL, BGP_LOG_TYPE_MISC);
+                  bgp_peer_log_msg(node, ri, afi, safi, &bmp_logdump_tag, event_type, config.bmp_dump_output, NULL, BGP_LOG_TYPE_MISC);
                   dump_elems++;
                 }
               }
@@ -1849,24 +1872,26 @@ int bmp_dump_event_runner(struct pm_dump_runner *pdr)
 	for (se_ll_elem = bdsell->start; se_ll_elem; se_ll_elem = se_ll_elem->next) {
 	  switch (se_ll_elem->rec.se_type) {
 	  case BMP_LOG_TYPE_STATS:
-	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, NULL, &se_ll_elem->rec.se.stats,
+	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, NULL, &bmp_logdump_tag, &se_ll_elem->rec.se.stats,
 			se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_STATS);
 	    break;
 	  case BMP_LOG_TYPE_INIT:
-	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, se_ll_elem->rec.tlvs, NULL,
+	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, se_ll_elem->rec.tlvs, &bmp_logdump_tag, NULL,
 			se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_INIT);
 	    break;
 	  case BMP_LOG_TYPE_TERM:
-	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, se_ll_elem->rec.tlvs, NULL,
+	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, se_ll_elem->rec.tlvs, &bmp_logdump_tag, NULL,
 			se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_TERM);
 	    break;
 	  case BMP_LOG_TYPE_PEER_UP:
-	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, se_ll_elem->rec.tlvs, &se_ll_elem->rec.se.peer_up,
-			se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_PEER_UP);
+	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, se_ll_elem->rec.tlvs, &bmp_logdump_tag,
+			&se_ll_elem->rec.se.peer_up, se_ll_elem->rec.seq, event_type,
+			config.bmp_dump_output, BMP_LOG_TYPE_PEER_UP);
 	    break;
 	  case BMP_LOG_TYPE_PEER_DOWN:
-	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, se_ll_elem->rec.tlvs, &se_ll_elem->rec.se.peer_down,
-			se_ll_elem->rec.seq, event_type, config.bmp_dump_output, BMP_LOG_TYPE_PEER_DOWN);
+	    bmp_log_msg(peer, &se_ll_elem->rec.bdata, se_ll_elem->rec.tlvs, &bmp_logdump_tag,
+			&se_ll_elem->rec.se.peer_down, se_ll_elem->rec.seq, event_type,
+			config.bmp_dump_output, BMP_LOG_TYPE_PEER_DOWN);
 	    break;
 	  default:
 	    break;
@@ -1876,10 +1901,11 @@ int bmp_dump_event_runner(struct pm_dump_runner *pdr)
  
       saved_peer = peer;
       strlcpy(last_filename, current_filename, SRVBUFLEN);
-      bgp_peer_dump_close(peer, NULL, config.bmp_dump_output, FUNC_TYPE_BMP);
+      bgp_peer_dump_close(peer, &bmp_logdump_tag, NULL, config.bmp_dump_output, FUNC_TYPE_BMP);
       tables_num++;
     }
   }
+
 
 #ifdef WITH_RABBITMQ
   if (config.bmp_dump_amqp_routing_key) {
@@ -2040,7 +2066,7 @@ avro_schema_t p_avro_schema_build_bmp_rm(int log_type, char *schema_name)
   if (log_type != BGP_LOGDUMP_ET_LOG && log_type != BGP_LOGDUMP_ET_DUMP) return NULL;
 
   p_avro_schema_init_bgp(&schema, &optlong_s, &optstr_s, &optint_s, FUNC_TYPE_BMP, schema_name);
-  p_avro_schema_build_bgp_common(&schema, &optlong_s, &optstr_s, &optint_s, log_type);
+  p_avro_schema_build_bgp_common(&schema, &optlong_s, &optstr_s, &optint_s, log_type, FUNC_TYPE_BMP);
   p_avro_schema_build_bgp_route(&schema, &optlong_s, &optstr_s, &optint_s);
 
   /* also cherry-picking from avro_schema_build_bmp_common() */ 
@@ -2257,7 +2283,7 @@ avro_schema_t p_avro_schema_build_bmp_log_initclose(int log_type, char *schema_n
 
   /* prevent log_type from being added to Avro schema */
   log_type = BGP_LOGDUMP_ET_NONE;
-  p_avro_schema_build_bgp_common(&schema, &optlong_s, &optstr_s, &optint_s, log_type);
+  p_avro_schema_build_bgp_common(&schema, &optlong_s, &optstr_s, &optint_s, log_type, FUNC_TYPE_BMP);
   log_type = BGP_LOGDUMP_ET_LOG;
 
   avro_schema_record_field_append(schema, "bmp_router", avro_schema_string());
@@ -2280,7 +2306,7 @@ avro_schema_t p_avro_schema_build_bmp_dump_init(int log_type, char *schema_name)
   if (log_type != BGP_LOGDUMP_ET_DUMP) return NULL;
 
   p_avro_schema_init_bgp(&schema, &optlong_s, &optstr_s, &optint_s, FUNC_TYPE_BMP, schema_name);
-  p_avro_schema_build_bgp_common(&schema, &optlong_s, &optstr_s, &optint_s, log_type);
+  p_avro_schema_build_bgp_common(&schema, &optlong_s, &optstr_s, &optint_s, log_type, FUNC_TYPE_BMP);
 
   avro_schema_record_field_append(schema, "bmp_router", avro_schema_string());
   avro_schema_record_field_append(schema, "bmp_router_port", optint_s);
@@ -2303,7 +2329,7 @@ avro_schema_t p_avro_schema_build_bmp_dump_close(int log_type, char *schema_name
   if (log_type != BGP_LOGDUMP_ET_DUMP) return NULL;
 
   p_avro_schema_init_bgp(&schema, &optlong_s, &optstr_s, &optint_s, FUNC_TYPE_BMP, schema_name);
-  p_avro_schema_build_bgp_common(&schema, &optlong_s, &optstr_s, &optint_s, log_type);
+  p_avro_schema_build_bgp_common(&schema, &optlong_s, &optstr_s, &optint_s, log_type, FUNC_TYPE_BMP);
 
   avro_schema_record_field_append(schema, "bmp_router", avro_schema_string());
   avro_schema_record_field_append(schema, "bmp_router_port", optint_s);
@@ -2328,5 +2354,16 @@ void p_avro_schema_build_bmp_common(avro_schema_t *schema, avro_schema_t *optlon
   avro_schema_record_field_append((*schema), "bmp_router_port", (*optint_s));
   avro_schema_record_field_append((*schema), "bmp_msg_type", avro_schema_string());
   avro_schema_record_field_append((*schema), "writer_id", avro_schema_string());
+
+  if (config.bmp_daemon_tag_map) {
+    avro_schema_record_field_append((*schema), "tag", (*optlong_s));
+
+    if (config.pretag_label_encode_as_map) {
+      compose_label_avro_schema_opt((*schema));
+    }
+    else {
+      avro_schema_record_field_append((*schema), "label", (*optstr_s));
+    }
+  }
 }
 #endif

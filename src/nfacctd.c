@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #ifdef WITH_KAFKA
 #include "kafka_common.h"
 #endif
@@ -39,6 +38,9 @@
 #include "isis/isis.h"
 #include "bmp/bmp.h"
 #include "telemetry/telemetry.h"
+#if defined WITH_EBPF
+#include "ebpf/ebpf_rp_balancer.h"
+#endif
 #if defined (WITH_NDPI)
 #include "ndpi/ndpi.h"
 #endif
@@ -49,6 +51,7 @@ struct template_cache tpl_cache;
 struct host_addr debug_a;
 char debug_agent_addr[50];
 u_int16_t debug_agent_port;
+cdada_map_t *tpl_data_map, *tpl_opt_map;
 
 /* Functions */
 void usage_daemon(char *prog_name)
@@ -243,6 +246,23 @@ int main(int argc,char **argv, char **envp)
   num_descs = 0;
   FD_ZERO(&read_descs);
   FD_ZERO(&bkp_read_descs);
+
+  {
+    u_int16_t tpl_hash_keylen = calc_template_keylen();
+    char pm_cdada_map_container[tpl_hash_keylen];
+
+    tpl_data_map = cdada_map_create(pm_cdada_map_container);
+    if (!tpl_data_map) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Unable to allocate tpl_data_map. Exiting.\n", config.name, config.type);
+      exit_gracefully(1);
+    }
+
+    tpl_opt_map = cdada_map_create(pm_cdada_map_container);
+    if (!tpl_opt_map) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Unable to allocate tpl_opt_map. Exiting.\n", config.name, config.type);
+      exit_gracefully(1);
+    }
+  }
 
   /* getting commandline values */
   while (!errflag && ((cp = getopt(argc, argv, ARGS_NFACCTD)) != -1)) {
@@ -509,11 +529,10 @@ int main(int argc,char **argv, char **envp)
 	if (list->cfg.what_to_count_2 & (COUNT_POST_NAT_SRC_HOST|COUNT_POST_NAT_DST_HOST|
 			COUNT_POST_NAT_SRC_PORT|COUNT_POST_NAT_DST_PORT|COUNT_NAT_EVENT|
 			COUNT_TIMESTAMP_START|COUNT_TIMESTAMP_END|COUNT_TIMESTAMP_ARRIVAL|
-			COUNT_EXPORT_PROTO_TIME))
+			COUNT_EXPORT_PROTO_TIME|COUNT_FWD_STATUS|COUNT_FW_EVENT))
 	  list->cfg.data_type |= PIPE_TYPE_NAT;
 
-	if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM|
-			COUNT_MPLS_STACK_DEPTH))
+	if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP| COUNT_MPLS_LABEL_BOTTOM))
 	  list->cfg.data_type |= PIPE_TYPE_MPLS;
 
 	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_MAC|COUNT_TUNNEL_DST_MAC|
@@ -522,7 +541,7 @@ int main(int argc,char **argv, char **envp)
 			COUNT_VXLAN))
 	  list->cfg.data_type |= PIPE_TYPE_TUN;
 
-	if (list->cfg.what_to_count_2 & (COUNT_LABEL))
+	if (list->cfg.what_to_count_2 & (COUNT_LABEL|COUNT_MPLS_LABEL_STACK))
 	  list->cfg.data_type |= PIPE_TYPE_VLEN;
 
         if (list->cfg.what_to_count & (COUNT_SRC_PORT|COUNT_DST_PORT|COUNT_SUM_PORT|COUNT_TCPFLAGS)) {
@@ -570,11 +589,6 @@ int main(int argc,char **argv, char **envp)
 	  enable_ip_fragment_handler();
           config.classifier_ndpi = TRUE;
         }
-
-        if ((list->cfg.what_to_count & COUNT_CLASS) && (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS)) {
-          Log(LOG_ERR, "ERROR ( %s/%s ): 'class_legacy' and 'class' primitives are mutual exclusive. Exiting.\n\n", list->name, list->type.string);
-          exit_gracefully(1);
-        }
 #endif
 
 	list->cfg.type_id = list->type.id;
@@ -607,12 +621,14 @@ int main(int argc,char **argv, char **envp)
     exit_gracefully(1);
   }
 
-  if (config.nfacctd_templates_receiver) {
+  if (config.nfacctd_templates_port) {
     if (!config.nfacctd_port && !config.nfacctd_ip && capture_methods) {
-      Log(LOG_ERR, "ERROR ( %s/core ): nfacctd_templates_receiver only applies to live UDP collection (nfacctd_ip, nfacctd_port). Exiting.\n\n", config.name);
+      Log(LOG_ERR, "ERROR ( %s/core ): nfacctd_templates_port only applies to live UDP collection (nfacctd_ip, nfacctd_port). Exiting.\n\n", config.name);
       exit_gracefully(1);
     }
+  }
 
+  if (config.nfacctd_templates_receiver) {
     if (tee_plugins) {
       Log(LOG_ERR, "ERROR ( %s/core ): nfacctd_templates_receiver and tee plugin ae mutual exclusive. Exiting.\n\n", config.name);
       exit_gracefully(1);
@@ -844,6 +860,13 @@ int main(int argc,char **argv, char **envp)
     rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
 
+#if (defined HAVE_SO_BINDTODEVICE)
+    if (config.nfacctd_interface)  {
+      rc = setsockopt(config.sock, SOL_SOCKET, SO_BINDTODEVICE, config.nfacctd_interface, (socklen_t) strlen(config.nfacctd_interface));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, errno);
+    }
+#endif
+
     if (config.nfacctd_templates_port) {
 #if (defined HAVE_SO_REUSEPORT)
       rc = setsockopt(config.nfacctd_templates_sock, SOL_SOCKET, SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
@@ -852,6 +875,13 @@ int main(int argc,char **argv, char **envp)
 
       rc = setsockopt(config.nfacctd_templates_sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
       if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
+
+#if (defined HAVE_SO_BINDTODEVICE)
+      if (config.nfacctd_interface)  {
+	rc = setsockopt(config.nfacctd_templates_sock, SOL_SOCKET, SO_BINDTODEVICE, config.nfacctd_interface, (socklen_t) strlen(config.nfacctd_interface));
+	if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, errno);
+      }
+#endif
     }
 
 #ifdef WITH_GNUTLS
@@ -863,6 +893,13 @@ int main(int argc,char **argv, char **envp)
 
       rc = setsockopt(config.nfacctd_dtls_sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
       if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
+
+#if (defined HAVE_SO_BINDTODEVICE)
+      if (config.nfacctd_interface)  {
+	rc = setsockopt(config.nfacctd_dtls_sock, SOL_SOCKET, SO_BINDTODEVICE, config.nfacctd_interface, (socklen_t) strlen(config.nfacctd_interface));
+	if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, errno);
+      }
+#endif
     }
 #endif
 
@@ -909,18 +946,18 @@ int main(int argc,char **argv, char **envp)
     }
 
     memset(&tee_templates, 0, sizeof(struct tee_receiver));
+  }
 
-    if (config.nfacctd_templates_receiver) {
-      tee_templates.dest_len = sizeof(tee_templates.dest);
+  if (config.nfacctd_templates_receiver) {
+    tee_templates.dest_len = sizeof(tee_templates.dest);
 
-      ret = Tee_parse_hostport(config.nfacctd_templates_receiver, (struct sockaddr *) &tee_templates.dest, &tee_templates.dest_len, FALSE);
-      if (ret) {
-	Log(LOG_ERR, "ERROR ( %s/core ): Invalid receiver: %s.\n", config.name, config.nfacctd_templates_receiver);
-	exit_gracefully(1);
-      }
-
-      tee_templates.fd = Tee_prepare_sock((struct sockaddr *) &tee_templates.dest, tee_templates.dest_len, NULL, FALSE, TRUE, FALSE);
+    ret = Tee_parse_hostport(config.nfacctd_templates_receiver, (struct sockaddr *) &tee_templates.dest, &tee_templates.dest_len, FALSE);
+    if (ret) {
+      Log(LOG_ERR, "ERROR ( %s/core ): Invalid nfacctd_templates_receiver: %s.\n", config.name, config.nfacctd_templates_receiver);
+      exit_gracefully(1);
     }
+
+    tee_templates.fd = Tee_prepare_sock((struct sockaddr *) &tee_templates.dest, tee_templates.dest_len, NULL, FALSE, TRUE, FALSE);
   }
 
   if (config.nfacctd_allow_file) load_allow_file(config.nfacctd_allow_file, &allow);
@@ -1077,12 +1114,24 @@ int main(int argc,char **argv, char **envp)
       exit_gracefully(1);
     }
 
+#if defined WITH_EBPF
+    if (config.nfacctd_rp_ebpf_prog) {
+      attach_ebpf_reuseport_balancer(config.sock, config.nfacctd_rp_ebpf_prog, config.cluster_name, "nfacctd", config.cluster_id, FALSE);
+    }
+#endif
+
     if (config.nfacctd_templates_port) {
       rc = bind(config.nfacctd_templates_sock, (struct sockaddr *) &server_templates, slen);
       if (rc < 0) {
 	Log(LOG_ERR, "ERROR ( %s/core ): bind() to ip=%s port=%d/udp failed (errno: %d).\n", config.name, config.nfacctd_ip, config.nfacctd_templates_port, errno);
 	exit_gracefully(1);
       }
+
+#if defined WITH_EBPF
+      if (config.nfacctd_rp_ebpf_prog) {
+        attach_ebpf_reuseport_balancer(config.nfacctd_templates_sock, config.nfacctd_rp_ebpf_prog, config.cluster_name, "nfacctd_tpl", config.cluster_id, FALSE);
+      }
+#endif
     }
 
 #ifdef WITH_GNUTLS
@@ -1096,7 +1145,7 @@ int main(int argc,char **argv, char **envp)
 #endif
   }
 
-  init_classifiers(NULL);
+  init_classifiers();
 
 #if defined (WITH_NDPI)
   if (config.classifier_ndpi) {
@@ -1476,7 +1525,7 @@ int main(int argc,char **argv, char **envp)
     }
 
     if (reload_log) {
-      reload_logs();
+      reload_logs(NFACCTD_USAGE_HEADER);
       reload_log = FALSE;
     }
 
@@ -1762,6 +1811,14 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
     tee_dissect->flowSetLen = NfDataHdrV9Sz; /* updated later */
   }
 
+  if (config.debug) {
+    sa_to_addr((struct sockaddr *)pptrs->f_agent, &debug_a, &debug_agent_port);
+    addr_to_str(debug_agent_addr, &debug_a);
+
+    Log(LOG_DEBUG, "DEBUG ( %s/core ): Processing NetFlow/IPFIX flowset [%d] from [%s:%u] seqno [%u]\n",
+	config.name, fid, debug_agent_addr, debug_agent_port, FlowSeq);
+  }
+
   if (fid == 0 || fid == 2) { /* template: 0 NetFlow v9, 2 IPFIX */ 
     unsigned char *tpl_ptr = pkt;
     u_int16_t pens = 0;
@@ -1788,11 +1845,16 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
       u_int32_t tpl_len = 0;
 
       template_hdr = (struct template_hdr_v9 *) tpl_ptr;
-      if (off+flowsetlen > len) { 
+      if ((off + flowsetlen) > len) {
         notify_malf_packet(LOG_INFO, "INFO", "unable to read next Template Flowset (incomplete NetFlow v9/IPFIX packet)",
 		        (struct sockaddr *) pptrsv->v4.f_agent, FlowSeq);
         xflow_status_table.tot_bad_datagrams++;
         return;
+      }
+
+      if ((flowsetlen - flowoff) < sizeof(struct template_hdr_v9)) {
+	/* skip padding */
+	break;
       }
 
       tpl = handle_template(template_hdr, pptrs, fid, SourceId, &pens, flowsetlen-flowoff, FlowSeq);
@@ -1831,20 +1893,31 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
       u_int32_t tpl_len = 0;
 
       opt_template_hdr = (struct options_template_hdr_v9 *) tpl_ptr;
-      if (off+flowsetlen > len) {
+      if ((off + flowsetlen) > len) {
         notify_malf_packet(LOG_INFO, "INFO", "unable to read next Options Template Flowset (incomplete NetFlow v9/IPFIX packet)",
                         (struct sockaddr *) pptrsv->v4.f_agent, FlowSeq);
         xflow_status_table.tot_bad_datagrams++;
         return;
       }
 
+      if ((flowsetlen - flowoff) < sizeof(struct options_template_hdr_v9)) {
+	/* skip padding */
+	break;
+      }
+
       tpl = handle_template((struct template_hdr_v9 *)opt_template_hdr, pptrs, fid, SourceId, &pens, flowsetlen-flowoff, FlowSeq);
       if (!tpl) return;
 
-      /* Increment is not precise for NetFlow v9 but will work */
-      tpl_len = sizeof(struct options_template_hdr_v9) +
-		(((ntohs(opt_template_hdr->scope_len) + ntohs(opt_template_hdr->option_len)) * sizeof(struct template_field_v9)) +
-		(pens * sizeof(u_int32_t)));
+      if (fid == 3 /* IPFIX */) {
+	tpl_len = sizeof(struct options_template_hdr_v9) +
+		  (((ntohs(opt_template_hdr->scope_len) + ntohs(opt_template_hdr->option_len)) * sizeof(struct template_field_v9)) +
+		  (pens * sizeof(u_int32_t)));
+      }
+      else if (fid == 1 /* NetFlow v9 */) {
+	tpl_len = sizeof(struct options_template_hdr_v9) +
+		  ((ntohs(opt_template_hdr->scope_len) + ntohs(opt_template_hdr->option_len)) +
+		  (pens * sizeof(u_int32_t)));
+      }
 
       tpl_ptr += tpl_len;
       flowoff += tpl_len;
@@ -2020,6 +2093,9 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 
 	    css.id = centry->class_int_id;
 	    strlcpy(css.protocol, centry->class_name, MAX_PROTOCOL_LEN);
+#if defined (WITH_NDPI)
+	    css.category = FALSE; /* unused */
+#endif
 	    pmct_register(&css);
           }
 	}
@@ -2032,11 +2108,18 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
           else entry = (struct xflow_status_entry *) pptrs->f_status_g;
 
 	  if (entry) {
+	    int got_v4 = FALSE;
+
 	    if (tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].len) {
 	      raw_to_addr(&entry->exp_addr, pkt+tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].off, AF_INET);
 	      raw_to_sa(&entry->exp_sa, pkt+tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].off, 0, AF_INET);
+
+	      if (!is_any(&entry->exp_addr)) {
+		got_v4 = TRUE;
+	      }
 	    }
-	    else if (tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].len) {
+
+	    if (!got_v4 && tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].len) {
 	      raw_to_addr(&entry->exp_addr, pkt+tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].off, AF_INET6);
 	      raw_to_sa(&entry->exp_sa, pkt+tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].off, 0, AF_INET6);
 	    }
@@ -2191,6 +2274,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  memcpy(&pptrs->l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
 	  NF_process_classifiers(pptrs, pptrs, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(pptrs);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(pptrs);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, pptrs, &pptrs->bta, &pptrs->bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, pptrs, &pptrs->bitr, NULL);
@@ -2239,6 +2323,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  memcpy(&pptrsv->v6.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
 	  NF_process_classifiers(pptrs, &pptrsv->v6, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->v6);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->v6);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->v6, &pptrsv->v6.bta, &pptrsv->v6.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->v6, &pptrsv->v6.bitr, NULL);
@@ -2289,6 +2374,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  memcpy(&pptrsv->vlan4.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
 	  NF_process_classifiers(pptrs, &pptrsv->vlan4, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->vlan4);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlan4);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlan4, &pptrsv->vlan4.bta, &pptrsv->vlan4.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlan4, &pptrsv->vlan4.bitr, NULL);
@@ -2339,6 +2425,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  memcpy(&pptrsv->vlan6.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
 	  NF_process_classifiers(pptrs, &pptrsv->vlan6, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->vlan6);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlan6);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlan6, &pptrsv->vlan6.bta, &pptrsv->vlan6.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlan6, &pptrsv->vlan6.bitr, NULL);
@@ -2399,6 +2486,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  memcpy(&pptrsv->mpls4.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
 	  NF_process_classifiers(pptrs, &pptrsv->mpls4, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->mpls4);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->mpls4);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->mpls4, &pptrsv->mpls4.bta, &pptrsv->mpls4.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->mpls4, &pptrsv->mpls4.bitr, NULL);
@@ -2458,6 +2546,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  memcpy(&pptrsv->mpls6.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
 	  NF_process_classifiers(pptrs, &pptrsv->mpls6, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->mpls6);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->mpls6);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->mpls6, &pptrsv->mpls6.bta, &pptrsv->mpls6.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->mpls6, &pptrsv->mpls6.bitr, NULL);
@@ -2520,6 +2609,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  memcpy(&pptrsv->vlanmpls4.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
 	  NF_process_classifiers(pptrs, &pptrsv->vlanmpls4, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->vlanmpls4);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlanmpls4);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bta, &pptrsv->vlanmpls4.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bitr, NULL);
@@ -2581,6 +2671,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  memcpy(&pptrsv->vlanmpls6.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
 	  NF_process_classifiers(pptrs, &pptrsv->vlanmpls6, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->vlanmpls6);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlanmpls6);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bta, &pptrsv->vlanmpls6.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bitr, NULL);
@@ -2821,7 +2912,6 @@ void NF_compute_once()
   IP4HdrSz = sizeof(struct pm_iphdr);
   IP4TlSz = sizeof(struct pm_iphdr)+sizeof(struct pm_tlhdr);
   PptrsSz = sizeof(struct packet_ptrs);
-  CSSz = sizeof(struct class_st);
   HostAddrSz = sizeof(struct host_addr);
   UDPHdrSz = sizeof(struct pm_udphdr);
   IpFixHdrSz = sizeof(struct struct_header_ipfix); 
@@ -2996,7 +3086,8 @@ int NF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
 
   sa = (struct sockaddr *) pptrs->f_agent;
 
-  /* The id_table is shared between by IPv4 and IPv6 NetFlow agents.
+  /* 
+     The id_table is shared between by IPv4 and IPv6 NetFlow agents.
      IPv4 ones are in the lower part (0..x), IPv6 ones are in the upper
      part (x+1..end)
   */
@@ -3009,7 +3100,7 @@ int NF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
     pptrs->have_tag2 = FALSE;
   }
 
-  /* Giving a first try with index(es) */
+  /* If we have any index defined, let's use it */
   if (config.maps_index && pretag_index_have_one(t)) {
     struct id_entry *index_results[ID_TABLE_INDEX_RESULTS];
     u_int32_t iterator, num_results;
@@ -3021,7 +3112,7 @@ int NF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
       if (!(ret & PRETAG_MAP_RCODE_JEQ)) goto exit_lane;
     }
 
-    /* if we have at least one index we trust we did a good job */
+    /* done */
     goto exit_lane;
   }
 
@@ -3205,3 +3296,22 @@ void NF_init_zmq_host(void *zh, int *pipe_fd)
   if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
 }
 #endif
+
+void NF_mpls_vpn_rd_fromie90(struct packet_ptrs *pptrs)
+{
+  struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+
+  switch(hdr->version) {
+  case 10:
+  case 9:
+    if (tpl->tpl[NF9_MPLS_VPN_RD].len) {
+      memcpy(&pptrs->bitr, pptrs->f_data+tpl->tpl[NF9_MPLS_VPN_RD].off, MIN(tpl->tpl[NF9_MPLS_VPN_RD].len, 8));
+      bgp_rd_ntoh((rd_t *)&pptrs->bitr);
+      bgp_rd_origin_set((rd_t *)&pptrs->bitr, RD_ORIGIN_FLOW);
+    }
+    break;
+  default:
+    break;
+  }
+}

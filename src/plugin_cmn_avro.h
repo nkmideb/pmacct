@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -46,6 +46,19 @@
 #define	AVRO_ACCT_CLOSE_SID	2
 
 /* prototypes */
+extern void compose_label_avro_schema_opt(avro_schema_t);
+extern void compose_label_avro_schema_nonopt(avro_schema_t);
+extern void compose_tcpflags_avro_schema(avro_schema_t);
+extern void compose_tunnel_tcpflags_avro_schema(avro_schema_t);
+extern void compose_fwd_status_avro_schema(avro_schema_t);
+extern void compose_mpls_label_stack_schema(avro_schema_t);
+extern int compose_label_avro_data_opt(char *, avro_value_t);
+extern int compose_label_avro_data_nonopt(char *, avro_value_t);
+extern int compose_tcpflags_avro_data(size_t, avro_value_t);
+extern int compose_tunnel_tcpflags_avro_data(size_t, avro_value_t);
+extern int compose_mpls_label_stack_data(u_int32_t *, int, avro_value_t);
+extern int compose_fwd_status_avro_data(size_t, avro_value_t);
+
 extern void pm_avro_exit_gracefully(int);
 
 extern avro_schema_t p_avro_schema_build_acct_data(u_int64_t wtc, u_int64_t wtc_2);
@@ -53,14 +66,15 @@ extern avro_schema_t p_avro_schema_build_acct_init();
 extern avro_schema_t p_avro_schema_build_acct_close();
 extern void p_avro_schema_add_writer_id(avro_schema_t);
 extern void add_writer_name_and_pid_avro(avro_value_t, char *, pid_t);
+extern void add_writer_name_and_pid_avro_v2(avro_value_t, struct dynname_tokens *);
 
 extern avro_value_t compose_avro_acct_data(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type,
   struct pkt_primitives *pbase, struct pkt_bgp_primitives *pbgp,
   struct pkt_nat_primitives *pnat, struct pkt_mpls_primitives *pmpls,
   struct pkt_tunnel_primitives *ptun, u_char *pcust,
   struct pkt_vlen_hdr_primitives *pvlen, pm_counter_t bytes_counter,
-  pm_counter_t packet_counter, pm_counter_t flow_counter, u_int32_t tcp_flags,
-  struct timeval *basetime, struct pkt_stitching *stitch,
+  pm_counter_t packet_counter, pm_counter_t flow_counter, u_int8_t tcp_flags, 
+  u_int8_t tunnel_tcp_flags, struct timeval *basetime, struct pkt_stitching *stitch,
   avro_value_iface_t *iface);
 extern avro_value_t compose_avro_acct_init(char *, pid_t, avro_value_iface_t *);
 extern avro_value_t compose_avro_acct_close(char *, pid_t, int, int, int, avro_value_iface_t *);
