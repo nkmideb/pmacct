@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -37,6 +37,7 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 {
   struct pkt_data *data;
   struct ports_table pt;
+  struct protos_table prt, tost;
   unsigned char *pipebuf;
   struct pollfd pfd;
   struct insert_data idata;
@@ -150,11 +151,15 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   memset(&nt, 0, sizeof(nt));
   memset(&nc, 0, sizeof(nc));
   memset(&pt, 0, sizeof(pt));
+  memset(&prt, 0, sizeof(prt));
+  memset(&tost, 0, sizeof(tost));
 
   load_networks(config.networks_file, &nt, &nc);
   set_net_funcs(&nt);
 
   if (config.ports_file) load_ports(config.ports_file, &pt);
+  if (config.protos_file) load_protos(config.protos_file, &prt);
+  if (config.tos_file) load_tos(config.tos_file, &tost);
   
   memset(&idata, 0, sizeof(idata));
   memset(&prim_ptrs, 0, sizeof(prim_ptrs));
@@ -189,6 +194,48 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   }
 #endif
 
+  /* setting some defaults */
+  if (!config.sql_host)
+    config.sql_host = default_kafka_broker_host;
+  if (!config.kafka_broker_port)
+    config.kafka_broker_port = default_kafka_broker_port;
+
+  if (!config.sql_table)
+    config.sql_table = default_kafka_topic;
+
+  p_kafka_init_host_struct(&kafkap_kafka_host);
+
+#if defined(WITH_AVRO) && defined(WITH_SERDES)
+  if (config.kafka_avro_schema_registry) {
+    if (strchr(config.sql_table, '$')) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): dynamic 'kafka_topic' is not compatible with 'avro_schema_registry'. Exiting.\n",
+          config.name, config.type);
+      exit_gracefully(1);
+    }
+
+    kafkap_kafka_host.sd_schema[AVRO_ACCT_DATA_SID] =
+      compose_avro_schema_registry_name_2(config.sql_table, FALSE,
+                                          p_avro_acct_schema, "acct", "data",
+                                          config.kafka_avro_schema_registry);
+    kafkap_kafka_host.sd_schema[AVRO_ACCT_INIT_SID] =
+      compose_avro_schema_registry_name_2(config.sql_table, FALSE,
+                                          p_avro_acct_init_schema, "acct", "init",
+                                          config.kafka_avro_schema_registry);
+    kafkap_kafka_host.sd_schema[AVRO_ACCT_CLOSE_SID] =
+      compose_avro_schema_registry_name_2(config.sql_table, FALSE,
+                                          p_avro_acct_close_schema, "acct", "close",
+                                          config.kafka_avro_schema_registry);
+
+    if (!kafkap_kafka_host.sd_schema[AVRO_ACCT_DATA_SID] ||
+        !kafkap_kafka_host.sd_schema[AVRO_ACCT_INIT_SID] ||
+        !kafkap_kafka_host.sd_schema[AVRO_ACCT_CLOSE_SID]) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Failed to register schema information. Exiting.\n",
+          config.name, config.type);
+      exit_gracefully(1);
+    }
+  }
+#endif
+
   /* plugin main loop */
   for(;;) {
     poll_again:
@@ -214,7 +261,7 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     poll_ops:
     P_update_time_reference(&idata);
 
-    if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt);
+    if (idata.now > refresh_deadline) P_cache_handle_flush_event(&pt, &prt, &tost);
 
     recv_budget = 0;
     if (poll_bypass) {
@@ -298,9 +345,17 @@ void kafka_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
 	  (*net_funcs[num])(&nt, &nc, &data->primitives, prim_ptrs.pbgp, &nfd);
 
 	if (config.ports_file) {
-          if (!pt.table[data->primitives.src_port]) data->primitives.src_port = 0;
-          if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = 0;
+          if (!pt.table[data->primitives.src_port]) data->primitives.src_port = PM_L4_PORT_OTHERS;
+          if (!pt.table[data->primitives.dst_port]) data->primitives.dst_port = PM_L4_PORT_OTHERS;
         }
+
+	if (config.protos_file) {
+	  if (!prt.table[data->primitives.proto]) data->primitives.proto = PM_IP_PROTO_OTHERS;
+	}
+
+	if (config.tos_file) {
+	  if (!tost.table[data->primitives.tos]) data->primitives.tos = PM_IP_TOS_OTHERS;
+	}
 
         prim_ptrs.data = data;
         (*insert_func)(&prim_ptrs, &idata);
@@ -342,6 +397,7 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
   struct primitives_ptrs prim_ptrs;
   struct pkt_data dummy_data;
   pid_t writer_pid = getpid();
+  struct dynname_tokens writer_id_tokens;
 
   //TODO solve these warnings correctly
   (void)pvlen;
@@ -362,18 +418,11 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
   size_t p_avro_len = 0;
 #endif
 
-  p_kafka_init_host(&kafkap_kafka_host, config.kafka_config_file);
+  p_kafka_init_host_conf(&kafkap_kafka_host, config.kafka_config_file);
 
-  /* setting some defaults */
-  if (!config.sql_host) config.sql_host = default_kafka_broker_host;
-  if (!config.kafka_broker_port) config.kafka_broker_port = default_kafka_broker_port;
-
-  if (!config.sql_table) config.sql_table = default_kafka_topic;
-  else {
-    if (strchr(config.sql_table, '$')) {
-      is_topic_dyn = TRUE;
-      orig_kafka_topic = config.sql_table;
-    }
+  if (strchr(config.sql_table, '$')) {
+    is_topic_dyn = TRUE;
+    orig_kafka_topic = config.sql_table;
   }
 
   if (config.amqp_routing_key_rr) orig_kafka_topic = config.sql_table;
@@ -413,7 +462,7 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
     exit_gracefully(1);
   }
 
-  if (!config.kafka_partition_dynamic) config.kafka_partition = RD_KAFKA_PARTITION_UA;
+  if (!config.kafka_partition_dynamic && !config.kafka_partition) config.kafka_partition = RD_KAFKA_PARTITION_UA;
 
   p_kafka_set_partition(&kafkap_kafka_host, config.kafka_partition);
 
@@ -428,32 +477,24 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
     exit_gracefully(1);
   }
 
+  if (!config.writer_id_string) {
+    config.writer_id_string = DYNNAME_DEFAULT_WRITER_ID;
+  }
+
+  dynname_tokens_prepare(config.writer_id_string, &writer_id_tokens, DYN_STR_WRITER_ID);
+
   for (j = 0, stop = 0; (!stop) && P_preprocess_funcs[j]; j++)
     stop = P_preprocess_funcs[j](queue, &index, j);
 
   Log(LOG_INFO, "INFO ( %s/%s ): *** Purging cache - START (PID: %u) ***\n", config.name, config.type, writer_pid);
   start = time(NULL);
 
-#ifdef WITH_AVRO
+#if defined(WITH_AVRO) && defined(WITH_SERDES)
   if (config.kafka_avro_schema_registry) {
-#ifdef WITH_SERDES
     if (is_topic_dyn) {
       Log(LOG_ERR, "ERROR ( %s/%s ): dynamic 'kafka_topic' is not compatible with 'avro_schema_registry'. Exiting.\n", config.name, config.type);
       exit_gracefully(1);
     }
-
-    kafkap_kafka_host.sd_schema[AVRO_ACCT_DATA_SID] = compose_avro_schema_registry_name_2(p_kafka_get_topic(&kafkap_kafka_host),
-											  FALSE, p_avro_acct_schema, "acct", "data",
-											  config.kafka_avro_schema_registry);
-
-    kafkap_kafka_host.sd_schema[AVRO_ACCT_INIT_SID] = compose_avro_schema_registry_name_2(p_kafka_get_topic(&kafkap_kafka_host),
-											  FALSE, p_avro_acct_init_schema, "acct", "init",
-											  config.kafka_avro_schema_registry);
-
-    kafkap_kafka_host.sd_schema[AVRO_ACCT_CLOSE_SID] = compose_avro_schema_registry_name_2(p_kafka_get_topic(&kafkap_kafka_host),
-											   FALSE, p_avro_acct_close_schema, "acct", "close",
-											   config.kafka_avro_schema_registry);
-#endif
   }
 #endif
 
@@ -587,7 +628,7 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
       int idx;
 
       for (idx = 0; idx < N_PRIMITIVES && cjhandler[idx]; idx++) cjhandler[idx](json_obj, queue[j]);
-      add_writer_name_and_pid_json(json_obj, config.name, writer_pid);
+      add_writer_name_and_pid_json(json_obj, &writer_id_tokens);
 
       json_str = compose_json_str(json_obj);
 #endif
@@ -599,9 +640,9 @@ void kafka_cache_purge(struct chained_cache *queue[], int index, int safe_action
       avro_value_t p_avro_value = compose_avro_acct_data(config.what_to_count, config.what_to_count_2,
 			   queue[j]->flow_type, &queue[j]->primitives, pbgp, pnat, pmpls, ptun, pcust,
 			   pvlen, queue[j]->bytes_counter, queue[j]->packet_counter,
-			   queue[j]->flow_counter, queue[j]->tcp_flags, &queue[j]->basetime,
-			   queue[j]->stitch, p_avro_iface);
-      add_writer_name_and_pid_avro(p_avro_value, config.name, writer_pid);
+			   queue[j]->flow_counter, queue[j]->tcp_flags, queue[j]->tunnel_tcp_flags,
+			   &queue[j]->basetime, queue[j]->stitch, p_avro_iface);
+      add_writer_name_and_pid_avro_v2(p_avro_value, &writer_id_tokens);
 
       if (config.message_broker_output & PRINT_OUTPUT_AVRO_BIN) {
 	size_t p_avro_value_size;

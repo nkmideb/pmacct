@@ -1,5 +1,5 @@
 See how to configure and compile pmacct for PostgreSQL use in the "Configuring
-pmacct for compilation and installing" chapter of QUICKSTART. 
+pmacct for compilation and installing" chapter of QUICKSTART.
 
 To create the database and grant default permission to the daemon you have to execute
 the two scripts below, in the same order; which user has to execute them and how to
@@ -123,6 +123,8 @@ are no longer supplied as part of the PostgreSQL table creation script.
   * src_mac => mac_src (macaddr NOT NULL DEFAULT '0:0:0:0:0:0')
   * dst_mac => mac_dst (macaddr NOT NULL DEFAULT '0:0:0:0:0:0')
   * vlan => vlan (INT NOT NULL DEFAULT 0)
+  * in_vlan => vlan_in (INT NOT NULL DEFAULT 0)
+  * out_vlan => vlan_out (INT NOT NULL DEFAULT 0)
   * src_as => as_src (BIGINT NOT NULL DEFAULT 0)
   * dst_as => as_dst (BIGINT NOT NULL DEFAULT 0)
   * src_host => ip_src (inet NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
@@ -139,9 +141,11 @@ are no longer supplied as part of the PostgreSQL table creation script.
   * post_nat_src_port => post_nat_port_src (INT NOT NULL DEFAULT 0)
   * post_nat_dst_port => post_nat_port_dst (INT NOT NULL DEFAULT 0)
   * nat_event => nat_event (INT NOT NULL DEFAULT 0)
+  * fwd_status => fwd_status (INT NOT NULL DEFAULT 0)
+    - or (VARCHAR(50) NOT NULL DEFAULT ' ', if fwd_status_encode_as_string: true)
   * mpls_label_top => mpls_label_top (INT NOT NULL DEFAULT 0)
   * mpls_label_bottom => mpls_label_bottom (INT NOT NULL DEFAULT 0)
-  * mpls_stack_depth => mpls_stack_depth (INT NOT NULL DEFAULT 0)
+  * mpls_label_stack => mpls_label_stack (VARCHAR(255) NOT NULL DEFAULT ' ')
   * tunnel_src_mac => tunnel_mac_src (macaddr NOT NULL DEFAULT '0:0:0:0:0:0')
   * tunnel_dst_mac => tunnel_mac_dst (macaddr NOT NULL DEFAULT '0:0:0:0:0:0')
   * tunnel_src_host => tunnel_ip_src (inet NOT NULL DEFAULT '0.0.0.0', see README.IPv6)
@@ -150,6 +154,7 @@ are no longer supplied as part of the PostgreSQL table creation script.
   * tunnel_tos => tunnel_tos (INT NOT NULL DEFAULT 0)
   * tunnel_src_port => tunnel_port_src (INT NOT NULL DEFAULT 0)
   * tunnel_dst_port => tunnel_port_dst (INT NOT NULL DEFAULT 0)
+  * tunnel_tcpflags => tunnel_tcp_flags (SMALLINT NOT NULL DEFAULT 0)
   * timestamp_start => timestamp_start, timestamp_start_residual:
     - timestamp_start timestamp without time zone NOT NULL DEFAULT '0000-01-01 00:00:00', see README.timestamp)
     - timestamp_start_residual INT NOT NULL DEFAULT 0, see README.timestamp)
@@ -177,12 +182,14 @@ are no longer supplied as part of the PostgreSQL table creation script.
   'stamp_updated' time references are mandatory only if temporal aggregation
   (sql_history) is enabled:
   * packets (INT NOT NULL)
-    - or (packets BIGINT NOT NULL, see README.64bit)
+    - or (packets BIGINT NOT NULL)
   * flows (INT NOT NULL)
-    - or (flows BIGINT NOT NULL, see README.64bit)
+    - or (flows BIGINT NOT NULL)
   * bytes (BIGINT NOT NULL)
   * stamp_inserted (timestamp without time zone NOT NULL DEFAULT '0000-01-01 00:00:00')
+    or (stamp_inserted bigint NOT NULL DEFAULT 0, if timestamps_since_epoch: true)
   * stamp_updated (timestamp without time zone)
+    or (stamp_updated bigint DEFAULT 0, if timestamps_since_epoch: true)
 
 - For custom-defined primitives refer to the README.custom_primitives doc.
 

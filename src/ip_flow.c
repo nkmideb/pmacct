@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,11 +21,9 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "pmacct-data.h"
 #include "plugin_hooks.h"
 #include "ip_flow.h"
-#include "classifier.h"
 #include "jhash.h"
 
 /* Global variables */
@@ -76,8 +74,7 @@ void init_ip4_flow_handler()
 
   if (config.flow_tcp_lifetime) flow_tcpest_lifetime = config.flow_tcp_lifetime;
   else {
-    if (config.classifiers_path) flow_tcpest_lifetime = FLOW_TCPEST_LIFETIME;
-    else flow_tcpest_lifetime = flow_generic_lifetime;
+    flow_tcpest_lifetime = flow_generic_lifetime;
   }
 }
 
@@ -134,7 +131,6 @@ void clear_tcp_flow_cmn(struct ip_flow_common *fp, unsigned int idx)
   fp->last[idx].tv_usec = 0;
   fp->tcp_flags[idx] = 0;
   fp->class[idx] = 0;
-  memset(&fp->cst[idx], 0, CSSz);
 } 
 
 void find_flow(struct timeval *now, struct packet_ptrs *pptrs)
@@ -162,7 +158,7 @@ void find_flow(struct timeval *now, struct packet_ptrs *pptrs)
 	fp->cmn.last[idx].tv_sec = now->tv_sec;
 	fp->cmn.last[idx].tv_usec = now->tv_usec;
 	pptrs->new_flow = FALSE; 
-	if (config.classifiers_path) evaluate_classifiers(pptrs, &fp->cmn, idx);
+
 	return;
       }
       else {
@@ -172,7 +168,7 @@ void find_flow(struct timeval *now, struct packet_ptrs *pptrs)
 	fp->cmn.last[idx].tv_sec = now->tv_sec;
 	fp->cmn.last[idx].tv_usec = now->tv_usec;
 	pptrs->new_flow = TRUE;
-	if (config.classifiers_path) evaluate_classifiers(pptrs, &fp->cmn, idx);
+
 	return;
       } 
     }
@@ -231,8 +227,7 @@ void create_flow(struct timeval *now, struct ip_flow *fp, u_int8_t is_candidate,
 	fp->lru_next = NULL;
 	flow_lru_list.last = fp;
       }
-      clear_context_chain(&fp->cmn, 0);
-      clear_context_chain(&fp->cmn, 1);
+
       memset(&fp->cmn, 0, sizeof(struct ip_flow_common));
     }
   }
@@ -269,7 +264,6 @@ void create_flow(struct timeval *now, struct ip_flow *fp, u_int8_t is_candidate,
   fp->cmn.last[idx].tv_usec = now->tv_usec; 
 
   pptrs->new_flow = TRUE;
-  if (config.classifiers_path) evaluate_classifiers(pptrs, &fp->cmn, idx); 
 }
 
 void prune_old_flows(struct timeval *now)
@@ -302,8 +296,6 @@ void prune_old_flows(struct timeval *now)
       }
       else fp->lru_prev->lru_next = NULL;
 
-      clear_context_chain(&fp->cmn, 0);
-      clear_context_chain(&fp->cmn, 1);
       free(fp);
       flt_total_nodes++;
 
@@ -418,8 +410,7 @@ void init_ip6_flow_handler()
 
   if (config.flow_tcp_lifetime) flow_tcpest_lifetime = config.flow_tcp_lifetime;
   else {
-    if (config.classifiers_path) flow_tcpest_lifetime = FLOW_TCPEST_LIFETIME;
-    else flow_tcpest_lifetime = flow_generic_lifetime;
+    flow_tcpest_lifetime = flow_generic_lifetime;
   }
 }
 
@@ -520,7 +511,7 @@ void find_flow6(struct timeval *now, struct packet_ptrs *pptrs)
 	fp->cmn.last[idx].tv_sec = now->tv_sec;
 	fp->cmn.last[idx].tv_usec = now->tv_usec;
 	pptrs->new_flow = FALSE;
-	if (config.classifiers_path) evaluate_classifiers(pptrs, &fp->cmn, idx);
+
 	return;
       }
       else {
@@ -530,7 +521,7 @@ void find_flow6(struct timeval *now, struct packet_ptrs *pptrs)
 	fp->cmn.last[idx].tv_sec = now->tv_sec;
 	fp->cmn.last[idx].tv_usec = now->tv_usec;
 	pptrs->new_flow = TRUE;
-	if (config.classifiers_path) evaluate_classifiers(pptrs, &fp->cmn, idx);
+
 	return;
       }
     }
@@ -589,8 +580,7 @@ void create_flow6(struct timeval *now, struct ip_flow6 *fp, u_int8_t is_candidat
         fp->lru_next = NULL;
         flow_lru_list6.last = fp;
       }
-      clear_context_chain(&fp->cmn, 0);
-      clear_context_chain(&fp->cmn, 1);
+
       memset(&fp->cmn, 0, sizeof(struct ip_flow_common));
     }
   }
@@ -626,7 +616,6 @@ void create_flow6(struct timeval *now, struct ip_flow6 *fp, u_int8_t is_candidat
   fp->cmn.last[idx].tv_usec = now->tv_usec;
 
   pptrs->new_flow = TRUE;
-  if (config.classifiers_path) evaluate_classifiers(pptrs, &fp->cmn, idx); 
 }
 
 void prune_old_flows6(struct timeval *now)
@@ -659,8 +648,6 @@ void prune_old_flows6(struct timeval *now)
       }
       else fp->lru_prev->lru_next = NULL;
 
-      clear_context_chain(&fp->cmn, 0);
-      clear_context_chain(&fp->cmn, 1);
       free(fp);
       flt6_total_nodes++;
 

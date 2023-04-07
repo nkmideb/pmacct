@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp/bgp.h"
 #include "bmp.h"
 #ifdef WITH_AVRO
@@ -126,7 +125,7 @@ void bmp_process_msg_rpat(char **bmp_packet, u_int32_t *len, struct bmp_peer *bm
     if (bms->msglog_backend_methods) {
       char event_type[] = "log";
 
-      bmp_log_msg(peer, &bdata, tlvs, &blrpat, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.bmp_daemon_msglog_output, BMP_LOG_TYPE_RPAT);
+      bmp_log_msg(peer, &bdata, tlvs, &bmp_logdump_tag, &blrpat, bgp_peer_log_seq_get(&bms->log_seq), event_type, config.bmp_daemon_msglog_output, BMP_LOG_TYPE_RPAT);
     }
 
     if (bms->dump_backend_methods) bmp_dump_se_ll_append(peer, &bdata, tlvs, &blrpat, BMP_LOG_TYPE_RPAT);
@@ -166,6 +165,10 @@ void bmp_rpat_common_hdr_get_rd(struct bmp_rpat_common_hdr *brch, rd_t *rd)
   if (brch && rd) {
     memcpy(rd, brch->rd, RD_LEN);
     bgp_rd_ntoh(rd);
+
+    if (!is_empty_256b(rd, RD_LEN)) {
+      bgp_rd_origin_set(rd, RD_ORIGIN_BMP);
+    }
   }
 }
 
@@ -308,6 +311,7 @@ int bmp_log_msg_rpat(struct bgp_peer *peer, struct bmp_data *bdata, struct pm_li
 
       bgp_rd2str(rd_str, &bdata->chars.rd);
       json_object_set_new_nocheck(obj, "rd", json_string(rd_str));
+      json_object_set_new_nocheck(obj, "rd_origin", json_string(bgp_rd_origin_print(bdata->chars.rd.type)));
     }
 
     addr_to_str(ip_address, &blrpat->prefix);

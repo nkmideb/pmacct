@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -80,12 +80,14 @@ struct configuration {
   pm_cfgreg_t nfprobe_what_to_count;
   pm_cfgreg_t nfprobe_what_to_count_2;
   char *aggregate_primitives;
+  int aggregate_unknown_etype;
   struct custom_primitives_ptrs cpptrs;
   char *progname;
   char *name;
   char *type;
   int type_id;
   int is_forked;
+  int propagate_signals;
   int pmacctd_nonroot;
   char *proc_name;
   int proc_priority;
@@ -181,6 +183,7 @@ struct configuration {
   int kafka_avro_schema_refresh_time;
   char *kafka_avro_schema_registry;
   char *kafka_config_file;
+  char *kafka_writer_id;
   int print_cache_entries;
   int print_markers;
   int print_output;
@@ -194,6 +197,9 @@ struct configuration {
   char *print_latest_file;
   int nfacctd_port;
   char *nfacctd_ip;
+  char *nfacctd_interface;
+  int nfacctd_ipv6_only;
+  char *nfacctd_rp_ebpf_prog;
   char *nfacctd_kafka_broker_host;
   int nfacctd_kafka_broker_port;
   char *nfacctd_kafka_topic;
@@ -203,6 +209,7 @@ struct configuration {
 #ifdef WITH_GNUTLS
   int nfacctd_dtls_sock;
 #endif
+  char *writer_id_string;
   char *nfacctd_allow_file;
   int nfacctd_time;
   int nfacctd_time_new;
@@ -246,6 +253,14 @@ struct configuration {
   int telemetry_port_tcp;
   int telemetry_port_udp;
   char *telemetry_ip;
+  char *telemetry_interface;
+  int telemetry_udp_notif_port;
+  char *telemetry_udp_notif_ip;
+  char *telemetry_udp_notif_interface;
+  int telemetry_udp_notif_ipv6_only;
+  int telemetry_udp_notif_nmsgs;
+  char *telemetry_udp_notif_rp_ebpf_prog;
+  int telemetry_ipv6_only;
   char *telemetry_zmq_address;
   char *telemetry_kafka_broker_host;
   int telemetry_kafka_broker_port;
@@ -255,6 +270,7 @@ struct configuration {
   int telemetry_decoder_id;
   int telemetry_max_peers;
   int telemetry_peer_timeout;
+  char *telemetry_tag_map;
   char *telemetry_allow_file;
   int telemetry_pipe_size;
   int telemetry_ipprec;
@@ -276,6 +292,7 @@ struct configuration {
   char *telemetry_dump_latest_file;
   int telemetry_dump_output;
   int telemetry_dump_refresh_time;
+  int telemetry_dump_time_slots;
   char *telemetry_dump_amqp_host;
   char *telemetry_dump_amqp_vhost;
   char *telemetry_dump_amqp_user;
@@ -287,6 +304,7 @@ struct configuration {
   int telemetry_dump_amqp_persistent_msg;
   u_int32_t telemetry_dump_amqp_frame_max;
   u_int32_t telemetry_dump_amqp_heartbeat_interval;
+  int telemetry_dump_workers;
   char *telemetry_msglog_kafka_broker_host;
   int telemetry_msglog_kafka_broker_port;
   char *telemetry_msglog_kafka_topic;
@@ -332,12 +350,17 @@ struct configuration {
   char *bgp_daemon_msglog_kafka_avro_schema_registry;
   char *bgp_daemon_id;
   char *bgp_daemon_ip;
+  char *bgp_daemon_interface;
+  int bgp_daemon_ipv6_only;
   as_t bgp_daemon_as;
   int bgp_daemon_port;
+  char *bgp_daemon_rp_ebpf_prog;
+  char *bgp_daemon_tag_map;
   int bgp_daemon_pipe_size;
   int bgp_daemon_ipprec;
   char *bgp_daemon_allow_file;
   int bgp_daemon_max_peers;
+  int bgp_daemon_add_path_ignore;
   int bgp_daemon_aspath_radius;
   char *bgp_daemon_stdcomm_pattern;
   char *bgp_daemon_extcomm_pattern;
@@ -375,6 +398,7 @@ struct configuration {
   char *bgp_table_dump_latest_file;
   char *bgp_table_dump_avro_schema_file;
   int bgp_table_dump_refresh_time;
+  int bgp_table_dump_time_slots;
   char *bgp_table_dump_amqp_host;
   char *bgp_table_dump_amqp_vhost;
   char *bgp_table_dump_amqp_user;
@@ -395,6 +419,7 @@ struct configuration {
   int bgp_table_dump_kafka_broker_port;
   char *bgp_table_dump_kafka_config_file;
   char *bgp_table_dump_kafka_avro_schema_registry;
+  int bgp_table_dump_workers;
   int bgp_lg;
   char *bgp_lg_ip;
   int bgp_lg_port;
@@ -406,7 +431,11 @@ struct configuration {
   int bmp_sock;
   int bmp_daemon;
   char *bmp_daemon_ip;
+  char *bmp_daemon_interface;
+  int bmp_daemon_ipv6_only;
   int bmp_daemon_port;
+  char *bmp_daemon_rp_ebpf_prog;
+  char *bmp_daemon_tag_map;
   int bmp_daemon_pipe_size;
   int bmp_daemon_max_peers;
   char *bmp_daemon_allow_file;
@@ -443,10 +472,12 @@ struct configuration {
   int bmp_table_attr_hash_buckets;
   int bmp_table_per_peer_hash;
   int bmp_dump_output;
+  int bmp_dump_workers;
   char *bmp_dump_file;
   char *bmp_dump_latest_file;
   char *bmp_dump_avro_schema_file;
   int bmp_dump_refresh_time;
+  int bmp_dump_time_slots;
   char *bmp_dump_amqp_host;
   char *bmp_dump_amqp_vhost;
   char *bmp_dump_amqp_user;
@@ -512,12 +543,19 @@ struct configuration {
   int networks_no_mask_if_zero;
   int networks_cache_entries;
   char *ports_file;
+  char *protos_file;
+  char *tos_file;
   char *a_filter;
   int bpfp_a_num;
   struct bpf_program *bpfp_a_table[AGG_FILTER_ENTRIES];
   struct pretag_filter ptf;
   struct pretag_filter pt2f;
   struct pretag_label_filter ptlf;
+  int pretag_label_encode_as_map;
+  int tcpflags_encode_as_array;
+  int mpls_label_stack_encode_as_array;
+  int fwd_status_encode_as_string;
+  int tos_encode_as_dscp;
   int maps_refresh;
   int maps_index;
   int maps_entries;
@@ -536,8 +574,6 @@ struct configuration {
   int debug;
   int debug_internal_msg;
   int snaplen;
-  char *classifiers_path;
-  int classifier_tentatives;
   int classifier_table_num;
   int classifier_ndpi;
   u_int32_t ndpi_num_roots;
@@ -583,11 +619,16 @@ struct configuration {
   int uacctd_threshold;
   char *tunnel0;
   int use_ip_next_hop;
-  int decode_arista_trailer;
+  int pcap_arista_trailer_offset;
+  int pcap_arista_trailer_flag_value;
   int dump_max_writers;
   int tmp_asa_bi_flow;
+  int tmp_vlan_legacy;
   int tmp_bgp_lookup_compare_ports;
   int tmp_bgp_daemon_route_refresh;
+  int tmp_bgp_daemon_origin_type_int;
+  int tmp_telemetry_udp_notif_legacy;
+  int tmp_telemetry_decode_cisco_v1_json_string;
   size_t thread_stack;
   char *rpki_roas_file;
   char *rpki_rtr_cache;

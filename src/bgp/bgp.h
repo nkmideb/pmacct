@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -20,11 +20,11 @@
 */
 
 /* includes */
+#include <pthread.h>
 #include <sys/poll.h>
 #include "bgp_prefix.h"
 #include "bgp_packet.h"
 #include "bgp_table.h"
-#include "bgp_logdump.h"
 
 #ifndef _BGP_H_
 #define _BGP_H_
@@ -66,6 +66,11 @@
 #define BGP_ATTR_AIGP				26
 #define BGP_ATTR_LARGE_COMMUNITIES		32 /* rfc8092 */
 #define BGP_ATTR_PREFIX_SID			40
+
+/* BGP4 internal bitmap type codes.  */
+#define BGP_BMAP_ATTR_MULTI_EXIT_DISC		0x01
+#define BGP_BMAP_ATTR_LOCAL_PREF		0x02
+#define BGP_BMAP_ATTR_AIGP			0x04
 
 #define BGP_NLRI_UNDEFINED			0
 #define BGP_NLRI_UPDATE				1
@@ -113,7 +118,7 @@
 struct bgp_dump_event {
   struct timeval tstamp;
   char tstamp_str[SRVBUFLEN];
-  int period;
+  u_int32_t period;
 };
 
 struct bgp_rt_structs {
@@ -171,6 +176,12 @@ struct bgp_peer_buf {
 #endif
 };
 
+struct cap_per_af {
+  u_int8_t cap[AFI_MAX][SAFI_MAX];
+  afi_t afi_max;
+  safi_t safi_max;
+};
+
 struct bgp_peer {
   int idx;
   int fd;
@@ -188,7 +199,7 @@ struct bgp_peer {
   u_int16_t tcp_port;
   u_int8_t cap_mp;
   char *cap_4as;
-  u_int8_t cap_add_paths[AFI_MAX][SAFI_MAX];
+  struct cap_per_af cap_add_paths;
   u_int32_t msglen;
   struct bgp_peer_stats stats;
   struct bgp_peer_buf buf;
@@ -212,6 +223,9 @@ struct bgp_msg_data {
   int is_blackhole;
 };
 
+typedef struct packet_ptrs bgp_tag_t;
+typedef struct chained_cache bgp_tag_cache_t;
+
 struct bgp_misc_structs {
   struct bgp_peer_log *peers_log;
   u_int64_t log_seq;
@@ -223,9 +237,11 @@ struct bgp_misc_structs {
   char *peer_port_str; /* "bmp_router_port", "peer_src_ip_port", etc. */
   char *log_str; /* BGP, BMP, thread, daemon, etc. */
   int is_thread;
+  int is_readonly; /* disables locking! set to true only in a dump child process */
   int has_lglass;
   int has_blackhole;
   int skip_rib;
+  int cap_add_path_ignore;
 
 #if defined WITH_RABBITMQ
   struct p_amqp_host *msglog_amqp_host;
@@ -247,6 +263,7 @@ struct bgp_misc_structs {
   int dump_amqp_routing_key_rr;
   char *dump_kafka_topic;
   int dump_kafka_topic_rr;
+  char *dump_kafka_partition_key;
 #if defined WITH_AVRO
   avro_schema_t dump_avro_schema[MAX_AVRO_SCHEMA];
 #endif
@@ -257,6 +274,7 @@ struct bgp_misc_structs {
   int msglog_amqp_routing_key_rr;
   char *msglog_kafka_topic;
   int msglog_kafka_topic_rr;
+  char *msglog_kafka_partition_key;
 #if defined WITH_AVRO
   avro_schema_t msglog_avro_schema[MAX_AVRO_SCHEMA];
 #endif
@@ -285,9 +303,19 @@ struct bgp_misc_structs {
   int (*bgp_msg_open_router_id_check)(struct bgp_msg_data *);
 
   void *bgp_blackhole_zmq_host;
+
+  char *tag_map;
+  bgp_tag_t *tag;
+
+  int current_slot;
+  struct sockaddr_storage *tag_peer;
+  void (*bgp_table_info_delete_tag_find)(struct bgp_peer *);
+
+  struct dynname_tokens writer_id_tokens;
 };
 
 /* these includes require definition of bgp_rt_structs and bgp_peer */
+#include "bgp_logdump.h"
 #include "bgp_aspath.h"
 #include "bgp_community.h"
 #include "bgp_ecommunity.h"
@@ -321,6 +349,7 @@ struct bgp_attr {
   u_int32_t med;
   u_int32_t local_pref;
   u_int8_t origin;
+  u_int8_t bitmap;
 };
 
 struct bgp_comm_range {
@@ -373,6 +402,9 @@ extern int skinny_bgp_daemon();
 extern void skinny_bgp_daemon_online();
 extern void bgp_prepare_thread();
 extern void bgp_prepare_daemon();
+extern void bgp_daemon_msglog_prepare_sd_schemas();
+extern void bgp_tag_init_find(struct bgp_peer *, struct sockaddr *, bgp_tag_t *);
+extern int bgp_tag_find(struct id_table *, bgp_tag_t *, pm_id_t *, pm_id_t *);
 
 /* global variables */
 extern struct bgp_peer *peers;
@@ -388,6 +420,8 @@ extern u_int32_t (*bgp_route_info_modulo)(struct bgp_peer *, path_id_t *, int);
 
 extern struct bgp_rt_structs inter_domain_routing_dbs[FUNC_TYPE_MAX], *bgp_routing_db;
 extern struct bgp_misc_structs inter_domain_misc_dbs[FUNC_TYPE_MAX], *bgp_misc_db;
+extern bgp_tag_t bgp_logdump_tag;
+extern struct sockaddr_storage bgp_logdump_tag_peer;
 
 extern struct bgp_xconnects bgp_xcs_map;
 #endif 

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -26,14 +26,12 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "sflow.h"
 #include "bgp/bgp.h"
 #include "sfacctd.h"
 #include "sfv5_module.h"
 #include "ip_flow.h"
 #include "ip_frag.h"
-#include "classifier.h"
 #include "pmacct-data.h"
 #include "crc32.h"
 
@@ -83,10 +81,11 @@ void decodeLinkLayer(SFSample *sample)
 
   memcpy(sample->eth_src, ptr, 6);
   ptr += 6;
+
   sample->eth_type = (ptr[0] << 8) + ptr[1];
   ptr += 2;
 
-  if (sample->eth_type == ETHERTYPE_8021Q) {
+  if (sample->eth_type == ETHERTYPE_8021Q || sample->eth_type == ETHERTYPE_8021AD) {
     /* VLAN  - next two bytes */
     u_int32_t vlanData = (ptr[0] << 8) + ptr[1];
     u_int32_t vlan = vlanData & 0x0fff;
@@ -105,6 +104,27 @@ void decodeLinkLayer(SFSample *sample)
 
     ptr += 2;
     caplen -= 2;
+
+    /* QinQ / 802.1AD */
+    if (sample->eth_type == ETHERTYPE_8021Q) {
+      u_int32_t cvlanData, cvlan, cpriority;
+
+      if (caplen < 4) {
+	return;
+      }
+
+      cvlanData = (ptr[0] << 8) + ptr[1];
+      cvlan = cvlanData & 0x0fff;
+      cpriority = cvlanData >> 13;
+      sample->cvlan = cvlan;
+      sample->cvlan_priority = cpriority;
+
+      ptr += 2;
+      sample->eth_type = (ptr[0] << 8) + ptr[1];
+
+      ptr += 2;
+      caplen -= 4;
+    }
   }
 
   if (sample->eth_type <= NFT_MAX_8023_LEN) {
@@ -794,30 +814,6 @@ void readExtendedProcess(SFSample *sample)
   for (i = 0; i < num_processes; i++) skipBytes(sample, 4);
 }
 
-void readExtendedClass(SFSample *sample)
-{
-  u_int32_t ret;
-  char buf[MAX_PROTOCOL_LEN+1], *bufptr = buf;
-
-  if (config.classifiers_path) {
-    ret = getData32_nobswap(sample);
-    memcpy(bufptr, &ret, 4);
-    bufptr += 4;
-    ret = getData32_nobswap(sample);
-    memcpy(bufptr, &ret, 4);
-    bufptr += 4;
-    ret = getData32_nobswap(sample);
-    memcpy(bufptr, &ret, 4);
-    bufptr += 4;
-    ret = getData32_nobswap(sample);
-    memcpy(bufptr, &ret, 4);
-    bufptr += 4;
-
-    sample->class = SF_evaluate_classifiers(buf);
-  }
-  else skipBytes(sample, MAX_PROTOCOL_LEN);
-}
-
 void readExtendedClass2(SFSample *sample)
 {
   if (config.classifier_ndpi) {
@@ -1156,8 +1152,7 @@ void readv5FlowSample(SFSample *sample, int expanded, struct packet_ptrs_vector 
       case SFLFLOW_EX_MPLS_FTN:     readExtendedMplsFTN(sample); break;
       case SFLFLOW_EX_MPLS_LDP_FEC: readExtendedMplsLDP_FEC(sample); break;
       case SFLFLOW_EX_VLAN_TUNNEL:  readExtendedVlanTunnel(sample); break;
-      case SFLFLOW_EX_PROCESS:      readExtendedProcess(sample); break;
-      case SFLFLOW_EX_CLASS:	    readExtendedClass(sample); break;
+/*    case SFLFLOW_EX_PROCESS:      readExtendedProcess(sample); break; */
       case SFLFLOW_EX_CLASS2:	    readExtendedClass2(sample); break;
       case SFLFLOW_EX_TAG:	    readExtendedTag(sample); break;
       default:

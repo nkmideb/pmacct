@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -29,8 +29,6 @@
 extern struct plugins_list_entry *plugin_list;
 
 /* functions */
-/* Each signal handler contains a final signal() call that reinstalls the called
-   handler again; such behaviour deals with SysV signal handling */
 void startup_handle_falling_child()
 {
   int i, j;
@@ -108,8 +106,9 @@ void ignore_falling_child()
   int status;
 
   while ((cpid = waitpid(-1, &status, WNOHANG)) > 0) {
-    if (!WIFEXITED(status)) Log(LOG_WARNING, "WARN ( %s/%s ): Abnormal exit status detected for child PID %u\n", config.name, config.type, cpid);
-    // sql_writers.retired++;
+    if (!WIFEXITED(status)) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): Abnormal exit status detected for child PID %u\n", config.name, config.type, cpid);
+    }
   }
 }
 
@@ -183,6 +182,9 @@ void PM_sigint_handler(int signum)
   }
 
   if (config.pidfile) remove_pid_file(config.pidfile);
+
+  if (config.propagate_signals) signal_kittens(signum, TRUE);
+
   exit(0);
 }
 
@@ -191,16 +193,18 @@ void PM_sigalrm_noop_handler(int signum)
   /* noop */
 }
 
-void reload()
+void reload(int signum)
 {
   reload_log = TRUE;
   if (config.bgp_daemon_msglog_file) reload_log_bgp_thread = TRUE;
   if (config.bmp_daemon_msglog_file) reload_log_bmp_thread = TRUE;
   if (config.sfacctd_counter_file) reload_log_sf_cnt = TRUE;
   if (config.telemetry_msglog_file) reload_log_telemetry_thread = TRUE;
+
+  if (config.propagate_signals) signal_kittens(signum, TRUE);
 }
 
-void push_stats()
+void push_stats(int signum)
 {
   if (config.acct_type == ACCT_PM) {
     time_t now = time(NULL);
@@ -210,12 +214,14 @@ void push_stats()
     print_stats = TRUE;
   }
 
+  if (config.propagate_signals) signal_kittens(signum, TRUE);
 }
 
-void reload_maps()
+void reload_maps(int signum)
 {
   reload_map = FALSE;
   reload_map_bgp_thread = FALSE;
+  reload_map_bmp_thread = FALSE;
   reload_map_rpki_thread = FALSE;
   reload_map_exec_plugins = FALSE;
   reload_geoipv2_file = FALSE;
@@ -223,6 +229,7 @@ void reload_maps()
   if (config.maps_refresh) {
     reload_map = TRUE; 
     reload_map_bgp_thread = TRUE;
+    reload_map_bmp_thread = TRUE;
     reload_map_rpki_thread = TRUE;
     reload_map_exec_plugins = TRUE;
     reload_geoipv2_file = TRUE;
@@ -230,4 +237,7 @@ void reload_maps()
     if (config.acct_type == ACCT_PM) reload_map_pmacctd = TRUE;
   }
   
+  if (config.propagate_signals) {
+    signal_kittens(signum, TRUE);
+  }
 }

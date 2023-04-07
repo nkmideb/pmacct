@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -26,9 +26,34 @@
 #define ADD 0
 #define SUB 1
 
+#define DYNNAME_TOKENS_MAX 32
+#define DYNNAME_DEFAULT_WRITER_ID "$proc_name/$writer_pid"
+
+/* typedefs */
+typedef int (*dynname_token_handler) (char *, int, char *, void *);
+typedef int (*dynname_token_dict_registry_handler) (void *, char *, int);
+
+/* structs */
 struct p_broker_timers {
   time_t last_fail;
   int retry_interval;
+};
+
+struct dynname_token_dict_registry_line {
+  int id;
+  char *desc;
+  dynname_token_dict_registry_handler func;
+};
+
+struct dynname_type_dictionary_line {
+  char key[SRVBUFLEN];
+  dynname_token_handler func;
+};
+
+struct dynname_tokens {
+  const struct dynname_token_dict_registry_line *type;
+  dynname_token_handler func[DYNNAME_TOKENS_MAX];
+  void *static_arg[DYNNAME_TOKENS_MAX];
 };
 
 /* prototypes */
@@ -70,6 +95,7 @@ extern int check_bosbit(u_char *);
 extern u_int32_t decode_mpls_label(u_char *);
 extern void encode_mpls_label(char *, u_int32_t);
 extern int timeval_cmp(struct timeval *, struct timeval *);
+extern void signal_kittens(int, int);
 extern void exit_all(int);
 extern void exit_plugin(int);
 extern void exit_gracefully(int);
@@ -102,7 +128,7 @@ extern int load_labels(char *, struct pretag_label_filter *, char *);
 extern int evaluate_tags(struct pretag_filter *, pm_id_t);
 extern int evaluate_labels(struct pretag_label_filter *, pt_label_t *);
 extern char *write_sep(char *, int *);
-extern void version_daemon(char *);
+extern void version_daemon(int, char *);
 extern void set_truefalse_nonzero(int *);
 extern char *ip_proto_print(u_int8_t, char *, int);
 extern void parse_hostport(const char *, struct sockaddr *, socklen_t *);
@@ -110,14 +136,14 @@ extern bool is_prime(u_int32_t);
 extern u_int32_t next_prime(u_int32_t);
 extern char *null_terminate(char *, int);
 extern char *uint_print(void *, int, int);
-extern void reload_logs();
+extern void reload_logs(char *);
 extern int is_empty_256b(void *, int);
 extern ssize_t pm_recv(int, void *, size_t, int, unsigned int);
 extern int ft2af(u_int8_t);
 
 extern char *compose_json_str(void *);
 extern void write_and_free_json(FILE *, void *);
-extern void add_writer_name_and_pid_json(void *, char *, pid_t);
+extern void add_writer_name_and_pid_json(void *, struct dynname_tokens *);
 extern void write_file_binary(FILE *, void *, size_t);
 
 extern void compose_timestamp(char *, int, struct timeval *, int, int, int, int);
@@ -149,7 +175,7 @@ extern unsigned char *vlen_prims_copy(struct pkt_vlen_hdr_primitives *);
 extern void vlen_prims_init(struct pkt_vlen_hdr_primitives *, int);
 extern void vlen_prims_free(struct pkt_vlen_hdr_primitives *);
 extern int vlen_prims_cmp(struct pkt_vlen_hdr_primitives *, struct pkt_vlen_hdr_primitives *);
-extern void vlen_prims_get(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t, char **);
+extern int vlen_prims_get(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t, char **);
 extern void vlen_prims_debug(struct pkt_vlen_hdr_primitives *);
 extern void vlen_prims_insert(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t, int, u_char *, int);
 extern int vlen_prims_delete(struct pkt_vlen_hdr_primitives *, pm_cfgreg_t);
@@ -194,4 +220,23 @@ extern int P_broker_timers_get_retry_interval(struct p_broker_timers *);
 extern time_t P_broker_timers_get_last_fail(struct p_broker_timers *);
 
 extern primptrs_func primptrs_funcs[PRIMPTRS_FUNCS_N];
+
+extern void distribute_work(struct pm_dump_runner *, u_int64_t, int, u_int64_t);
+
+extern unsigned long pm_djb2_string_hash(unsigned char *str);
+
+extern void dynname_tokens_prepare(char *, struct dynname_tokens *, int);
+extern void dynname_tokens_free(struct dynname_tokens *);
+extern int dynname_tokens_compose(char *, int, struct dynname_tokens *, void *);
+extern int dynname_text_token_handler(char *, int, char *, void *);
+extern int dwi_proc_name_handler(char *, int, char *, void *);
+extern int dwi_writer_pid_handler(char *, int, char *, void *);
+extern int dwi_pmacct_build_handler(char *, int, char *, void *);
+
+extern int dtdr_writer_id(void *, char *, int);
+extern int dtdr_unknown(void *, char *, int);
+
+extern char *lookup_id_to_string_struct(const struct _id_to_string_struct *, u_int64_t);
+extern const char *sampling_direction_print(u_int8_t);
+extern u_int8_t sampling_direction_str2id(char *);
 #endif //UTIL_H

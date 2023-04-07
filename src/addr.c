@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -133,6 +133,45 @@ unsigned int addr_mask_to_str(char *str, int len, const struct host_addr *a, con
   memset(str, 0, len);
 
   return FALSE;
+}
+
+unsigned int apply_addr_mask(struct host_addr *a, struct host_mask *m)
+{
+  int j, ret = FALSE;
+
+  if (a->family != m->family) {
+    return FALSE;
+  }
+
+  if (a->family == AF_INET) {
+    if (m->len > 32) {
+      return FALSE;
+    }
+
+    m->mask.m4 = htonl((m->len == 32) ? 0xffffffffUL : ~(0xffffffffUL >> m->len));
+    a->address.ipv4.s_addr &= m->mask.m4;
+
+    ret = a->family;
+  }
+  else if (a->family == AF_INET6) {
+    if (m->len > 128) {
+      return FALSE;
+    }
+
+    for (j = 0; j < 16 && m->len >= 8; j++, m->len -= 8) {
+      m->mask.m6[j] = 0xffU;
+    }
+
+    if (j < 16 && m->len) {
+      m->mask.m6[j] = htonl(~(0xffU >> m->len));
+    }
+
+    for (j = 0; j < 16; j++) a->address.ipv6.s6_addr[j] &= m->mask.m6[j];
+
+    ret = a->family;
+  }
+
+  return ret;
 }
 
 /*
@@ -504,7 +543,7 @@ unsigned int raw_to_addr(struct host_addr *ha, u_char *src, u_int8_t v4v6)
 /*
  * sa_to_str() converts a supported family address into a string
  */
-unsigned int sa_to_str(char *str, int len, const struct sockaddr *sa)
+unsigned int sa_to_str(char *str, int len, const struct sockaddr *sa, int want_port)
 {
   struct sockaddr_in *sa4 = (struct sockaddr_in *)sa;
   struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)sa;
@@ -515,7 +554,7 @@ unsigned int sa_to_str(char *str, int len, const struct sockaddr *sa)
     if (sa->sa_family == AF_INET) {
       inet_ntop(AF_INET, &sa4->sin_addr.s_addr, str, INET6_ADDRSTRLEN);
 
-      if (len >= (strlen(str) + PORT_STRLEN + 1) && sa4->sin_port) {
+      if (len >= (strlen(str) + PORT_STRLEN + 1) && sa4->sin_port && want_port) {
 	off = strlen(str);
 	snprintf(str + off, len - off, "%s", sep);
 
@@ -529,7 +568,7 @@ unsigned int sa_to_str(char *str, int len, const struct sockaddr *sa)
     if (sa->sa_family == AF_INET6) {
       inet_ntop(AF_INET6, &sa6->sin6_addr, str, INET6_ADDRSTRLEN);
 
-      if (len >= (strlen(str) + PORT_STRLEN + 1) && sa6->sin6_port) {
+      if (len >= (strlen(str) + PORT_STRLEN + 1) && sa6->sin6_port && want_port) {
         off = strlen(str);
         snprintf(str + off, len - off, "%s", sep);
 

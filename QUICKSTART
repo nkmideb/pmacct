@@ -1,5 +1,5 @@
 pmacct [IP traffic accounting : BGP : BMP : RPKI : IGP : Streaming Telemetry]
-pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 
 
 TABLE OF CONTENTS:
@@ -13,7 +13,7 @@ VII.	Running the pmacct IMT client (pmacct)
 VIII.	Running the RabbitMQ/AMQP plugin
 IX.	Running the Kafka plugin
 X.	Internal buffering and queueing
-XI.	Quickstart guide to packet classification
+XI.	Quickstart guide to packet/flow classification
 XII.	Quickstart guide to setup a NetFlow/IPFIX agent/probe 
 XIII.	Quickstart guide to setup a sFlow agent/probe 
 XIV.	Quickstart guide to setup the BGP daemon
@@ -76,8 +76,10 @@ pmacct distribution:
 memory		data is stored in a memory table and can be fetched via the
 		pmacct command-line client tool, 'pmacct'. This plugin also
 		implements a push model and allows easily to inject data into
-		3rd party tools. The plugin is recommended for prototyping and
-		smaller-scale environments and is compiled in by default.
+		3rd party tools. The plugin is recommended for prototyping
+		and proof-of-concept (without mass traffic generation) and
+		smaller-scale / home production environments and is compiled
+		in by default.
 mysql		a working MySQL/MariaDB installation can be used for data
 		storage. This plugin can be compiled using the --enable-mysql
 		switch. 
@@ -1228,12 +1230,12 @@ Q21 of FAQS describes how to estimate the amount of flows/samples per second of 
 deployment.
 
 
-XI. Quickstart guide to packet classification
+XI. Quickstart guide to packet/flow classification
 Packet classification is a feature available for pmacctd (libpcap-based daemon),
-uacctd (NFLOG-based daemon), NetFlow v9/IPFIX IE 315 (dataLinkFrameSection) and
-the sFlow v5 raw header sample. The current approach is to leverage the popular
-free, open-source nDPI library. To enable the feature please follow these
-steps:
+uacctd (NFLOG-based daemon), nfacctd (NetFlow daemon) via NetFlow v9/IPFIX IE #315
+(dataLinkFrameSection) and sfacctd (sFlow daemon) via sFlow v5 raw header sample
+and the current approach is to leverage the popular free, open-source nDPI library.
+To enable the feature please follow these steps:
 
 1) Download pmacct from its webpage (http://www.pmacct.net/) or from its GitHub
    repository (https://github.com/pmacct/pmacct).
@@ -1241,8 +1243,8 @@ steps:
 2) Download nDPI from its GitHub repository (https://github.com/ntop/nDPI). The
    nDPI API tends to change frequently in a non-backward compatible fashion.
    This means that not every version of pmacct will work with any version of
-   nDPI. pmacct 1.7.5 works against nDPI 3.0-stable, pmacct 1.7.6 works against
-   nDPI 3.2-stable.  
+   nDPI. pmacct 1.7.6 works against nDPI 3.2-stable. pmacct 1.7.7 works against
+   nDPI 3.4-stable. pmacct 1.7.8 works against nDPI 4.0-stable and 4.2-stable.
 
 3) Configure for compiling, compile and install the downloaded nDPI library, ie.
    inside the nDPI directory:
@@ -1301,6 +1303,15 @@ steps:
 
    shell> pmacctd -f /path/to/pmacctd.conf
 
+Flow classification is a feature available for nfacctd (NetFlow daemon) and relies
+on NetFlow v9/IPFIX IEs #94, #95 and #96. Where IE #95 (applicationId) is part of
+flow data and can be looked up against Options data where IE #96 (applicationName) 
+and IE #94 (applicationDescription) are supplied - specifically applicationName is
+the one used for the 'class' primitive value. To enable the feature, if the NetFlow/
+IPFIX exporter does follow Cisco NBAR2 / RFC6759 implementation (and pmacct nfprobe
+plugin does!), simply add the 'class' primitive to the existing 'aggregate'
+aggregation method.
+
 
 XII. Quickstart guide to setup a NetFlow/IPFIX agent/probe
 pmacct is able to export traffic data through both NetFlow and sFlow protocols. This
@@ -1343,28 +1354,49 @@ b) build NetFlow probe configuration, using pmacctd:
 
    The bgp_daemon_port can be changed from the standard BGP port (179/TCP) in order to
    co-exist with other BGP routing software which might be running on the same host.
-   Furthermore, they can safely peer each other by using 127.0.0.1 as bgp_daemon_ip. 
+   Depending on the BGP implementation used, it is possible to peer each other this way
+   using 127.0.0.1 as bgp_daemon_ip. It may however be necessary to use a different
+   listening IP address for pmacctd BGP and the other BGP software (see below).
 
-   NOTE: Bird Internet Routing Daemon seems to dislike peerings on the same IP address
-   it is configured on, even though the remote peer listens on a different TCP port;
-   if Bird listens on 127.0.0.1 then setting up a 127.0.0.2 address on the system and
-   binding pmacctd to it allows the BGP session to come up fine in a 127.0.0.1 <->
-   127.0.0.2 fashion.
- 
    In pmacctd, bgp_agent_map does the trick of mapping 0.0.0.0 to the IP address of
    the BGP peer (ie. 127.0.0.1: 'bgp_ip=127.0.0.1 ip=0.0.0.0'); this setup, while
-   generic, was tested working in conjunction with Quagga and BIRD.
+   generic, was tested working in conjunction with Quagga, FRR and BIRD.
 
-   Following a relevant fragment of the Quagga configuration:
+   Example fragment of the FRR configuration:
 
    router bgp Y 
     bgp router-id X.X.X.X
-    neighbor 127.0.0.1 remote-as Y 
+    bgp ebgp-requires-policy
+    bgp log-neighbor-changes
+    neighbor 127.0.0.1 remote-as Y
     neighbor 127.0.0.1 port 17917
-    neighbor 127.0.0.1 update-source X.X.X.X
+    neighbor 127.0.0.1 update-source 127.0.0.2
+   !
+    address-family ipv4 unicast
+     neighbor 127.0.0.1 activate
+     neighbor 127.0.0.1 route-map IMPORT-pmacct-4 in
+     neighbor 127.0.0.1 route-map EXPORT-pmacct-4 out
+   !
+    address-family ipv6 unicast
+     neighbor 127.0.0.1 activate
+     neighbor 127.0.0.1 route-map IMPORT-pmacct-6 in
+     neighbor 127.0.0.1 route-map EXPORT-pmacct-6 out
+   !
+   route-map IMPORT-pmacct-4 deny 10
+   route-map EXPORT-pmacct-4 permit 10
+   route-map IMPORT-pmacct-6 deny 10
+   route-map EXPORT-pmacct-6 permit 10
    !
 
-   Following a relevant fragment of the BIRD configuration:
+   NOTE: FRR supports peering with a different implementation on the same system as
+   of February 2022 (> 8.1.0), with the following caveats:
+   * FRR's 'bgpd_options' directive must be configured to listen on a different IP
+     address than pmacctd's bgp_daemon_ip.
+   * FRR cannot initiate BGP sessions with update-source 127.0.0.1 or ::1. Setting
+     up a 127.0.0.2 address on the system and binding FRR's bgpd to it allows the
+     BGP session to come up fine.
+
+   Example fragment of the BIRD configuration:
 
    protocol bgp pmacctd46 {
       description "pmacctd";
@@ -1399,14 +1431,16 @@ b) build NetFlow probe configuration, using pmacctd:
       };
    }
 
-   NOTE: if configuring a BGP neighbor over localhost via Quagga CLI the following
-   message is returned: "% Can not configure the local system as neighbor". This
-   is not returned when configuring the neighborship directly in the bgpd config
-   file.
+   NOTE: Bird Internet Routing Daemon seems to dislike peerings on the same IP address
+   it is configured on, even though the remote peer listens on a different TCP port;
+   if Bird listens on 127.0.0.1 then setting up a 127.0.0.2 address on the system and
+   binding pmacctd to it allows the BGP session to come up fine in a 127.0.0.1 <->
+   127.0.0.2 fashion.
 
-   2) encode flow classification information in NetFlow v9 like Cisco does with its
-   NBAR/NetFlow v9 integration. This can be done by introducing the 'class' primitive
-   to the afore mentioned 'aggregate' and add the extra configuration directive:
+   2) encode flow classification information in NetFlow v9 / IPFIX like Cisco does
+   with its NBAR2 implementation / RFC6759. This can be done by introducing the
+   'class' primitive to the afore mentioned 'aggregate' and add the extra config
+   directive:
 
    aggregate: class, src_host, dst_host, src_port, dst_port, proto, tos
    snaplen: 700
@@ -1578,6 +1612,18 @@ the kernel into a suspicion of TCP SYN Flood. While not recommending to
 disable TCP SYN flood protection, if slugginess is observed when taking up
 the BGP sessions and kernel logs indicate a possible SYN flooding, maybe it
 is good idea to tune and customize default kernel parameters.
+
+NOTE: currently if a BGP session is abruptly terminated by the remote peer,
+pmacct does rely on the underlying operating system to detect the condition
+(TCP keepalives) and close the socket. While this is going to change by
+detecting the condition inside the BGP daemon as a workaround TCP keepalive
+timers can be tuned to react in a reasonable amount of time. The example
+below is based on Linux and will disconnect a hung session in about two
+minutes:
+ 
+shell> sysctl -w net.ipv4.tcp_keepalive_time=60
+shell> sysctl -w net.ipv4.tcp_keepalive_intvl=10
+shell> sysctl -w net.ipv4.tcp_keepalive_probes=2
 
 XIVa. Limiting AS-PATH and BGP community attributes length
 AS-PATH and BGP communities can get easily long when represented as strings.
@@ -2018,7 +2064,7 @@ Origination Authorizations (ROAs). ROA information can be currently
 acquired in one of the two following ways:
 
 1) it can be imported using the rpki_roas_file config directive from a
-   file in the RIPE Validator format, ie.:
+   file in the RIPE Validator or OpenBSD Validator formats, ie.:
 
 {
   "roas" : [ {
@@ -2081,13 +2127,16 @@ Message and Large BGP Communities among the others; IPv4, IPv6 transports for
 BGP sessions are supported. When storing data via SQL, BGP primitives can be
 freely mix-and-matched with other primitives (ie. L2/L3/L4) when customizing
 the SQL table (sql_optimize_clauses: true). Environments making use of BGP
-Multi-Path should make use of ADD-PATH to advertise known paths in which case
-the correct BGP info is linked to traffic data using BGP next-hop (or IP next-
-hop if use_ip_next_hop is set to true) as selector among the paths available
-(on the assumption that ADD-PATH is used for route diversity; all checked
-implementations seem to tend to not advertise paths with the same next-hop).
-TCP MD5 signature for BGP messages is also supported. For a review of all knobs
-and features see the CONFIG-KEYS document. 
+Multi-Path should leverage ADD-PATH to advertise the multiple known paths;
+when correlating traffic flows to BGP, the correct BGP info is picked among
+the ones available using BGP next-hop (or for certain cases where traffic is
+sampled egress, IP next-hop if use_ip_next_hop is set to true) as selector;
+this does imply that BGP next-hop must be available in traffic data (ie.
+ADD-PATH selection is not compatible with NetFlow v5 which does not carry it)
+and BGP next-hop-self should not be set (otherwise all or multiple next-hops
+will just look like the same, hindering the decision process). TCP MD5
+signature for BGP messages is also supported. For a review of all knobs and
+features see the CONFIG-KEYS document.
 
 
 XV. Quickstart guide to setup a NetFlow/IPFIX/sFlow replicator
@@ -2930,7 +2979,7 @@ options>". A memory leak is confirmed if the amount of "definitely lost" bytes
 keeps increasing over time.
 
 d) In the two cases of nfacctd/sfacctd or nfprobe/sfprobe not showing signs of
-input/output data: 1) check with tcpdump, ie. "tcpdump -i <interface> -n port
+input/output data: 1) check with tcpdump, ie. "tcpdump -i <interface> -n
 <sfacctd/nfacctd listening port>" (for uacctd use -i nflog:<nflog group>), that
 packets are emitted/received. Optionally Wireshark (or its cli tool tshark) can
 be used, in conjunction with decoders ('cflow' for NetFlow/IPFIX and 'sflow' for
@@ -2942,10 +2991,12 @@ operations, the filtering happens after the raw socket (the one used by tcpdump)
 is served; you can also check with 3rd party equivalent tools or netcat, "nc -l
 -u -p <port>", that the same behaviour is obtained as with pmacct; finally, if
 running on a SELinux enabled system, consider that it could be interfering too;
-3) when not using ZeroMQ for internal buffering (plugin_pipe_zmq set to true)
+3) check the process list to confirm whether there is some stuck / forgotten
+running process which may be consuming data in place of a newly started one; 
+4) when not using ZeroMQ for internal buffering (plugin_pipe_zmq set to true)
 and especially in case of copy/paste of configs or if using a config from a
 production system in lab, disable/double-check values for internal buffering:
-if set too high they will likely retain data internally to the daemon; 4) if
+if set too high they will likely retain data internally to the daemon; 5) if
 multiple interfaces are configured on a system, try to disable rp_filter. See
 http://tldp.org/HOWTO/Adv-Routing-HOWTO/lartc.kernel.rpf.html for more info
 on RP filtering. The value of rp_filter files in /proc must be set to zero
@@ -2953,12 +3004,12 @@ on RP filtering. The value of rp_filter files in /proc must be set to zero
 RP filtering. Also, if working on a cloud instance, consider often times these
 are not configured by default to pass traffic through. These appear popular
 issues when replicating flow data with tee_transparent feature enabled (that
-is, packet spoofing); 5) in case aggregate_filter is in use: the feature expects
+is, packet spoofing); 6) in case aggregate_filter is in use: the feature expects
 a libpcap-style filter as value. BPF filters are sensible to both VLAN tags and
 MPLS labels: if, for example, the traffic is VLAN tagged and the value of
 aggregate_filter is 'src net X.X.X.X/Y', there will be no match for VLAN-tagged
 traffic from src net X.X.X.X/Y; the filter should be re-written as 'vlan and src
-net X.X.X.X/Y'; 6) in case of NetFlow v9/IPFIX collection, two protocols that
+net X.X.X.X/Y'; 7) in case of NetFlow v9/IPFIX collection, two protocols that
 are template-based, the issue may be with templates not being received by
 nfacctd (in which case by enabling debug you may see "Discarded NetFlow v9/IPFIX
 packet (R: unknown template [ .. ]" messages in your logs); you can confirm
@@ -2981,34 +3032,36 @@ about buffering provided slightly later in this document.
 
 f) Replay packets can be needed, for example, to troubleshoot the behaviour
 of one of the pmacct daemons. A capture in libpcap format, suitable for
-replay, can be produced with tcpdump, ie. for NetFlow/IPFIX/sFlow via the
-"tcpdump -i <interface> -n -s 0 -w <output file> port <sfacctd/nfacctd
-listening port>" (for uacctd use -i nflog:<nflog group>) command-line; for
-traces over extended periods of time, ie. to troubleshoot specific bogus
-packets triggering crashes, the -G tcpdump option can be specified to rotate
--w output_file each specified seconds interval and, as tcpdump man page, does
-mention "savefiles will have the name specified by -w which should include a
-time format as defined by strftime(3). If no time format is specified, each
-new file will overwrite the previous.". Output file(s) can be replayed by
-using the pcap_savefile (-I) and, optionally, the pcap_savefile_wait (-W)
-directives, ie.: "nfacctd -I <pcap savefile> <..>". For more advanced use-
-cases, ie. loop indefinitely through the pcap file and run it with a speed
-multiplicator in order to stress test the daemon, the tcpreplay tool can be
-used for the purpose. In this case, before replaying NetFlow/IPFIX/sFlow,
-L2/L3 of captured packets must be adjusted to reflect the lab environment;
-this can be done with the tcprewrite tool of the tcpreplay package, ie.:
-"tcprewrite --enet-smac=<src MAC address> --enet-dmac= <dst MAC address> -S
-<src IP address rewrite> -D <dst IP address rewrite> --fixcsum --infile=<input
-file, ie. output from tcpdump> --outfile=<output file>". Then the output file
-from tcprewrite can be supplied to tcpreplay for the actual replay to the
-pmacct daemon, ie.: "tcpreplay -x <speed multiplicator> -i <output interface>
-<input file>". 
+replay, can be produced with tcpdump. For example to produce a trace for
+NetFlow/IPFIX/sFlow this is the command-line: "tcpdump -i <interface> -n -s 0
+-w <output file> port <sfacctd/nfacctd listening port>"; for ULOG/NFLOG on
+Linux the interface should be in the format "-i nflog:<nflog group>" instead.
+For traces over extended periods of time, ie. to troubleshoot specific bogus
+packets triggering crashes or capture NetFlow v9/IPFIX templates, optionally
+the -G tcpdump option can be specified to rotate the -w output_file each
+specified seconds interval (read more on tcpdump man page). Once the trace
+has been created, trace file(s) can be replayed by pmacct daemons using the
+pcap_savefile (-I) and, optionally, the pcap_savefile_wait (-W) directives,
+ie.: "nfacctd -I <pcap savefile> <..>".
+For more advanced use-cases, ie. loop indefinitely through the pcap file and
+run it with a speed multiplicator in order to stress test the daemon, the
+tcpreplay tool can be used. In this case, before replaying NetFlow/IPFIX/sFlow,
+L2/L3 of captured packets may need to be adjusted in order to reflect the lab/
+replay environment; this can be done with the tcprewrite tool of the tcpreplay
+package, ie.: "tcprewrite --enet-smac=<src MAC address> --enet-dmac= <dst MAC
+address> -S <src IP address rewrite> -D <dst IP address rewrite> --fixcsum
+--infile=<input file, ie. output from tcpdump> --outfile=<output file>". Then
+the output file from tcprewrite can be supplied to tcpreplay for the actual
+replay to the pmacct daemon, ie.: "tcpreplay -x <speed multiplicator>
+-i <output interface> <input file>".
 
-g) Buffering is often an element to tune. While buffering internal to pmacct
-(configured with plugin_buffer_size / plugin_pipe_size or plugin_pipe_zmq)
-returns warning messages in case of data loss, buffering between pmacct and
-the kernel (configured with nfacctd_pipe_size and its equivalents) may be more
-tricky to detect and sometimes issues can only be inferred by symptoms (like
+g) Buffering is often an element to tune in order to make sure that output
+is complete (packet loss may lead to incomplete results but also configuring
+too large buffers). While buffering internal to pmacct (configured with
+plugin_buffer_size / plugin_pipe_size or plugin_pipe_zmq) returns warning
+messages in case of data loss, buffering between pmacct and the kernel
+(configured with nfacctd_pipe_size and its equivalents) may be more tricky
+to detect and sometimes issues can only be inferred by symptoms (like
 sequence number checks for NetFlow v9/IPFIX). For nfacctd and sfacctd daemons,
 two commands useful to check this kind of buffering on Linux systems are:
 1) "cat /proc/net/udp" or "cat /proc/net/udp6" ensuring that "drops" value
@@ -3017,7 +3070,9 @@ errors are not increasing (since this command returns system-wide counters,
 the counter-check would be: stop the pmacct daemon running and, granted the
 counter was increasing, verify it does not increase anymore). For pmacctd,
 an UNIX signal can be sent to the daemon so that the amount of dropped packets
-is reported in the log output (ie. kill -USR1 <pmacctd core PID>).
+is reported in the log output (ie. kill -USR1 <pmacctd core PID>). Finally,
+if troubleshooting incomplete output, please review tips about inconsistent
+output slightly earlier in this document.
 
 h) BMP, the BGP Monitoring Protocol, has got drafting traction at IETF. New
 protocol features drive the need for inter-op testing. The BMP play tool
@@ -3025,16 +3080,23 @@ protocol features drive the need for inter-op testing. The BMP play tool
 and replay raw BMP packets in order to reproduce issues. An example of how
 this can be done, here:
 
-shell 1> bmp_play.py -m record -p 1790 -f bmp.dump
+Step 1: export BMP data from an exporter to a host/port where a bmp_play
+script is listening to. bmp_play will then save raw BMP data to a file:
 
+shell> bmp_play.py -m record -p 1791 -f bmp.dump
+
+Step 2: the file containing raw BMP data can be replayed at will with the
+same bmp_play script to a pmbmpd daemon:
+ 
 shell 1> bmp_play.py -m play -p 1790 -f bmp.dump -d 127.0.0.1
 
 shell 2> pmbmpd -l 1790 -d -o bmp.log
 
-Alternatively, since version 1.7.5, pmbmpd supports pcap_savefile (-I) to
+Additionally, since version 1.7.5, pmbmpd supports pcap_savefile (-I) to
 replay a pcap trace that includes BMP packets; packets functional to the
 house-keeping of the TCP session are safely ignored and pcap_filter helps
-on replay to trash unrelevant (non BMP) packets.
+on replay to trash unrelevant (non BMP) packets; yet this method is less
+preferred to the capture of raw data via bmp_play.
  
 i) packet classification using the nDPI library is among the new features of
 pmacct 1.7. Following are some tips on how to help by providing meaningful

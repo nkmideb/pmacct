@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -61,17 +61,28 @@ void eth_handler(const struct pcap_pkthdr *h, register struct packet_ptrs *pptrs
   }
 
   /* originally contributed by Rich Gade */
-  if (etype == ETHERTYPE_8021Q) {
+  if (etype == ETHERTYPE_8021Q || etype == ETHERTYPE_8021AD) {
     if (caplen < IEEE8021Q_TAGLEN) {
       pptrs->iph_ptr = NULL;
       return;
     }
-    memcpy(&e8021Q, pptrs->packet_ptr+nl+2, 2);
-    if (!cursor) pptrs->vlan_ptr = pptrs->packet_ptr + nl; 
+
+    memcpy(&e8021Q, (pptrs->packet_ptr + nl + 2), 2);
+
+    if (!cursor) {
+      pptrs->vlan_ptr = (pptrs->packet_ptr + nl); 
+    }
+    else {
+      if (pptrs->vlan_ptr) {
+	pptrs->cvlan_ptr = (pptrs->packet_ptr + nl);
+      }
+    }
+
     etype = ntohs(e8021Q);
     nl += IEEE8021Q_TAGLEN;
     caplen -= IEEE8021Q_TAGLEN;
     cursor++;
+
     goto recurse;
   }
 
@@ -127,6 +138,13 @@ void eth_handler(const struct pcap_pkthdr *h, register struct packet_ptrs *pptrs
     etype = mpls_handler(pptrs->packet_ptr + nl, &caplen, &nl, pptrs);
     cursor = 1;
     goto recurse;
+  }
+
+  if (config.aggregate_unknown_etype) {
+    pptrs->l3_proto = etype;
+    pptrs->l3_handler = unknown_etype_handler;
+    pptrs->iph_ptr = pptrs->packet_ptr + nl;
+    return;
   }
 
   pptrs->l3_proto = 0;
@@ -423,17 +441,28 @@ void sll_handler(const struct pcap_pkthdr *h, register struct packet_ptrs *pptrs
   }
 
   /* originally contributed by Rich Gade for eth_handler() */
-  if (etype == ETHERTYPE_8021Q) {
+  if (etype == ETHERTYPE_8021Q || etype == ETHERTYPE_8021AD) {
     if (caplen < IEEE8021Q_TAGLEN) {
       pptrs->iph_ptr = NULL;
       return;
     }
-    memcpy(&e8021Q, pptrs->packet_ptr+nl+2, 2);
-    if (!cursor) pptrs->vlan_ptr = pptrs->packet_ptr + nl;
+
+    memcpy(&e8021Q, (pptrs->packet_ptr + nl + 2), 2);
+
+    if (!cursor) {
+      pptrs->vlan_ptr = (pptrs->packet_ptr + nl);
+    }
+    else {
+      if (pptrs->vlan_ptr) {
+	pptrs->cvlan_ptr = (pptrs->packet_ptr + nl);
+      }
+    }
+
     etype = ntohs(e8021Q);
     nl += IEEE8021Q_TAGLEN;
     caplen -= IEEE8021Q_TAGLEN;
     cursor++;
+
     goto recurse;
   }
 

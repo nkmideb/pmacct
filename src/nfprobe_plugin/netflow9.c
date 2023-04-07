@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -434,21 +434,17 @@ flow_to_flowset_mpls_label_top_handler(char *flowset, const struct FLOW *flow, i
   return 0;
 }
 
-static int
-flow_to_flowset_class_handler(char *flowset, const struct FLOW *flow, int idx, int size)
-{
-  memcpy(flowset, &flow->class, size);
-
-  return 0;
-}
-
 #if defined (WITH_NDPI)
 static int
 flow_to_flowset_ndpi_class_handler(char *flowset, const struct FLOW *flow, int idx, int size)
 {
-  u_int32_t tmp32 = flow->ndpi_class.app_protocol;
+  u_int8_t ie95_classId = 0x16; /* nDPI */
+  u_int32_t ie95_selectId = htonl(flow->ndpi_class.app_protocol);
 
-  memcpy(flowset, &tmp32, size);
+  if (size == 5) {
+    memcpy(flowset, &ie95_classId, 1);
+    memcpy((flowset + 1), &ie95_selectId, 4);
+  }
 
   return 0;
 }
@@ -1074,27 +1070,16 @@ nf9_init_template(void)
           v4_int_template_out.r[rcount].length = 1;
           rcount++;
         }
-        if (config.nfprobe_what_to_count & COUNT_CLASS) {
-          v4_template.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-          v4_template.r[rcount].length = htons(4);
-          v4_int_template.r[rcount].handler = flow_to_flowset_class_handler;
-          v4_int_template.r[rcount].length = 4;
-          v4_template_out.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-          v4_template_out.r[rcount].length = htons(4);
-          v4_int_template_out.r[rcount].handler = flow_to_flowset_class_handler;
-          v4_int_template_out.r[rcount].length = 4;
-          rcount++;
-        }
 #if defined (WITH_NDPI)
 	if (config.nfprobe_what_to_count_2 & COUNT_NDPI_CLASS) { 
 	  v4_template.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-	  v4_template.r[rcount].length = htons(4);
+	  v4_template.r[rcount].length = htons(5);
 	  v4_int_template.r[rcount].handler = flow_to_flowset_ndpi_class_handler;
-	  v4_int_template.r[rcount].length = 4;
+	  v4_int_template.r[rcount].length = 5;
 	  v4_template_out.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-	  v4_template_out.r[rcount].length = htons(4);
+	  v4_template_out.r[rcount].length = htons(5);
 	  v4_int_template_out.r[rcount].handler = flow_to_flowset_ndpi_class_handler;
-	  v4_int_template_out.r[rcount].length = 4;
+	  v4_int_template_out.r[rcount].length = 5;
 	  rcount++;
 	}
 #endif
@@ -1487,27 +1472,16 @@ nf9_init_template(void)
           v6_int_template_out.r[rcount].length = 1;
           rcount++;
         }
-        if (config.nfprobe_what_to_count & COUNT_CLASS) { 
-          v6_template.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-          v6_template.r[rcount].length = htons(4);
-          v6_int_template.r[rcount].handler = flow_to_flowset_class_handler;
-          v6_int_template.r[rcount].length = 4;
-          v6_template_out.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-          v6_template_out.r[rcount].length = htons(4);
-          v6_int_template_out.r[rcount].handler = flow_to_flowset_class_handler;
-          v6_int_template_out.r[rcount].length = 4;
-          rcount++;
-        }
 #if defined (WITH_NDPI)
 	if (config.nfprobe_what_to_count_2 & COUNT_NDPI_CLASS) { 
 	  v6_template.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-	  v6_template.r[rcount].length = htons(4);
+	  v6_template.r[rcount].length = htons(5);
 	  v6_int_template.r[rcount].handler = flow_to_flowset_ndpi_class_handler;
-	  v6_int_template.r[rcount].length = 4;
+	  v6_int_template.r[rcount].length = 5;
 	  v6_template_out.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-	  v6_template_out.r[rcount].length = htons(4);
+	  v6_template_out.r[rcount].length = htons(5);
 	  v6_int_template_out.r[rcount].handler = flow_to_flowset_ndpi_class_handler;
-	  v6_int_template_out.r[rcount].length = 4;
+	  v6_int_template_out.r[rcount].length = 5;
 	  rcount++;
 	}
 #endif
@@ -1623,8 +1597,8 @@ nf9_init_options_template(void)
         class_option_int_template.r[rcount].length = 4;
         rcount++;
         class_option_template.r[rcount].type = htons(NF9_FLOW_APPLICATION_ID);
-        class_option_template.r[rcount].length = htons(4);
-        class_option_int_template.r[rcount].length = 4;
+        class_option_template.r[rcount].length = htons(5);
+        class_option_int_template.r[rcount].length = 5;
         rcount++;
         class_option_template.r[rcount].type = htons(NF9_FLOW_APPLICATION_NAME);
         class_option_template.r[rcount].length = htons(MAX_PROTOCOL_LEN);
@@ -2059,9 +2033,21 @@ nf_class_option_to_flowset(u_int idx, u_char *packet, u_int len, const struct ti
           break;
         }
 
-        /* NF9_FLOW_APPLICATION_ID */
-        memcpy(ftoft_ptr_0, &class[idx].id, 4);
-        ftoft_ptr_0 += 4;
+        /* NF9_FLOW_APPLICATION_ID (ClassID) */
+        {
+	  u_int8_t ie95_classId = 0x16; /* nDPI */
+
+          memcpy(ftoft_ptr_0, &ie95_classId, 1);
+          ftoft_ptr_0 += 1;
+        }
+
+        /* NF9_FLOW_APPLICATION_ID (SelectID) */
+        {
+	  u_int32_t ie95_selectId = htonl(class[idx].id);
+
+	  memcpy(ftoft_ptr_0, &ie95_selectId, 4);
+          ftoft_ptr_0 += 4;
+	}
 
         /* NF9_FLOW_APPLICATION_NAME */
         strlcpy(ftoft_ptr_0, class[idx].protocol, MAX_PROTOCOL_LEN);
@@ -2253,11 +2239,8 @@ send_netflow_v9(struct FLOW **flows, int num_flows, int nfsock, void *dtls,
 			  send_options = TRUE;
 			  send_sampling_option = TRUE;
 			}
-			if (((config.nfprobe_what_to_count & COUNT_CLASS)
 #if defined (WITH_NDPI) 
-			    || (config.nfprobe_what_to_count_2 & COUNT_NDPI_CLASS)
-#endif
-			    ) && num_class > 0) {
+			if ((config.nfprobe_what_to_count_2 & COUNT_NDPI_CLASS) && num_class > 0) {
                           memcpy(packet + offset, &class_option_template, class_option_template.tot_len);
                           offset += class_option_template.tot_len;
                           flows++;
@@ -2266,6 +2249,7 @@ send_netflow_v9(struct FLOW **flows, int num_flows, int nfsock, void *dtls,
 			  send_options = TRUE;
                           send_class_option = TRUE;
 			}
+#endif
                         if (config.nfprobe_source_ip) {
                           memcpy(packet + offset, &exporter_option_template, exporter_option_template.tot_len);
                           offset += exporter_option_template.tot_len;

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp/bgp.h"
 #include "telemetry.h"
 #if defined WITH_RABBITMQ
@@ -49,8 +48,8 @@ void telemetry_process_data(telemetry_peer *peer, struct telemetry_data *t_data,
     char event_type[] = "log";
 
     if (!telemetry_validate_input_output_decoders(data_decoder, config.telemetry_msglog_output)) {
-      telemetry_log_msg(peer, t_data, peer->buf.base, peer->msglen, data_decoder,
-			telemetry_log_seq_get(&tms->log_seq), event_type,
+      telemetry_log_msg(peer, t_data, &telemetry_logdump_tag, peer->buf.base, peer->msglen,
+			data_decoder, telemetry_log_seq_get(&tms->log_seq), event_type,
 			config.telemetry_msglog_output);
     }
   }
@@ -140,7 +139,7 @@ int telemetry_recv_json(telemetry_peer *peer, u_int32_t len, int *flags)
 
   (*flags) = FALSE;
 
-  if (!zmq_input && !kafka_input) {
+  if (!zmq_input && !kafka_input && !unyte_udp_notif_input) {
     ret = telemetry_recv_generic(peer, len);
   }
 #if defined WITH_ZMQ
@@ -245,7 +244,11 @@ int telemetry_recv_cisco(telemetry_peer *peer, int *flags, int *data_decoder, u_
     break;
   case TELEMETRY_CISCO_JSON:
     ret = telemetry_recv_json(peer, len, flags);
-    (*data_decoder) = TELEMETRY_DATA_DECODER_JSON;
+    if (config.tmp_telemetry_decode_cisco_v1_json_string) {
+      (*data_decoder) = TELEMETRY_DATA_DECODER_JSON_STRING;
+    } else {
+      (*data_decoder) = TELEMETRY_DATA_DECODER_JSON;
+    }
     break;
   case TELEMETRY_CISCO_GPB_COMPACT:
     ret = telemetry_recv_generic(peer, len);

@@ -2,7 +2,7 @@ SUPPORTED CONFIGURATION KEYS
 Both configuration directives and commandline switches are listed below. 
 A configuration consists of key/value pairs, separated by the ':' char.
 Starting a line with the '!' symbol, makes the whole line to be ignored
-by the interpreter, making it a comment. Please also refer to QUICKSTART 
+by the interpreter, making it a comment. Please also refer to QUICKSTART
 document and the 'examples/' sub-tree for some examples.
 
 Directives are sometimes grouped, like sql_table and print_output_file:
@@ -47,21 +47,21 @@ VALUES:		[ true | false ]
 DESC:		Daemonizes the process (default: false).
 
 KEY:		aggregate (-c)
-VALUES:		[ src_mac, dst_mac, vlan, cos, etype, src_host, dst_host, src_net, dst_net,
-		 src_mask, dst_mask, src_as, dst_as, src_port, dst_port, tos, proto, none,
-		 sum_mac, sum_host, sum_net, sum_as, sum_port, flows, tag, tag2, label,
-		 class, tcpflags, in_iface, out_iface, std_comm, ext_comm, lrg_comm,
+VALUES:		[ src_mac, dst_mac, vlan, in_vlan, out_vlan, cos, etype, src_host, dst_host,
+		 src_net, dst_net, src_mask, dst_mask, src_as, dst_as, src_port, dst_port,
+		 tos, proto, none, sum_mac, sum_host, sum_net, sum_as, sum_port, flows, tag,
+		 tag2, label, class, tcpflags, in_iface, out_iface, std_comm, ext_comm, lrg_comm,
 		 as_path, peer_src_ip, peer_dst_ip, peer_src_as, peer_dst_as, local_pref,
 		 med, dst_roa, src_std_comm, src_ext_comm, src_lrg_comm, src_as_path,
 		 src_local_pref, src_med, src_roa, mpls_vpn_rd, mpls_pw_id, mpls_label_top,
-		 mpls_label_bottom, mpls_stack_depth, sampling_rate, sampling_direction,
+		 mpls_label_bottom, mpls_label_stack, sampling_rate, sampling_direction,
 		 src_host_country, dst_host_country, src_host_pocode, dst_host_pocode,
 		 src_host_coords, dst_host_coords, nat_event, fw_event, post_nat_src_host,
 		 post_nat_dst_host, post_nat_src_port, post_nat_dst_port, tunnel_src_mac,
 		 tunnel_dst_mac, tunnel_src_host, tunnel_dst_host, tunnel_proto, tunnel_tos,
-		 tunnel_src_port, tunnel_dst_port, vxlan, timestamp_start, timestamp_end,
-		 timestamp_arrival, timestamp_export, export_proto_seqno,
-		 export_proto_version, export_proto_sysid ]
+		 tunnel_src_port, tunnel_dst_port, tunnel_tcpflags, fwd_status, vxlan,
+		 timestamp_start, timestamp_end, timestamp_arrival, timestamp_export,
+		 export_proto_seqno, export_proto_version, export_proto_sysid ]
 FOREWORDS:	Individual IP packets are uniquely identified by their header field values (a
 		rather large set of primitives!). Same applies to uni-directional IP flows, as
 		they have at least enough information to discriminate where packets are coming
@@ -106,7 +106,7 @@ NOTES:		* List of the aggregation primitives available to each specific pmacct d
 		  value, stripped of EXP code-points (and BoS flag). Visibiliy in EXP values
 		  can be achieved by defining a custom primitive to extract the full 3 bytes,
 		  ie. 'name=mplsFullTopLabel field_type=70 len=3 semantics=raw' for NetFlow/
-		  IPFIX.
+		  IPFIX. On the contrary mpls_label_stack does extract the full 3 bytes.
 		* timestamp_start, timestamp_end and timestamp_arrival let pmacct act as a
 		  traffic logger up to the msec level (if reported by the capturing method).
 		  timestamp_start records NetFlow/IPFIX flow start time or observation;
@@ -141,6 +141,12 @@ NOTES:		* List of the aggregation primitives available to each specific pmacct d
 		  class primitive instead allows to leverage traditional classification using
 		  NetFlow v9/IPFIX IE 94, 95 and 96 (applicationDescription, applicationId
 		  and applicationName).
+		* vlan / in_vlan / out_vlan: in NetFlow / IPFIX and sFlow, where there is
+		  indication (explicit or implicit, ie. expressing sample direction) of
+		  ingress / egress sampling, 'vlan' checks both cases reporting the VLAN ID
+		  of the first case checked reporting a non-zero ID (ingress > egress); more
+		  intuitively, in_vlan reports ingress VLAN ID if any and out_vlan reports
+		  egress VLAN ID if any.
 DEFAULT:	src_host
 
 KEY:		aggregate_primitives [GLOBAL, MAP]
@@ -174,6 +180,14 @@ DESC:		Per-plugin filtering applied against the original packet or flow. Aggrega
 		'pmacctd_force_frag_handling' directive.
 DEFAULT:	none
 
+KEY:		aggregate_unknown_etype [GLOBAL]
+VALUES:		[ true | false ]
+DESC:		By default, Ethernet frames with unknown EtherTypes for which pmacct has not
+		implemented decoding support are ignored by the aggregation engine. Enabling this
+		option allows such frames to be aggregated by the available Ethernet L2 header
+		fields ('src_mac', 'dst_mac', 'vlan', 'cos', 'etype').
+DEFAULT:	false
+
 KEY:		dtls_path [GLOBAL]
 DESC:		Full path to a directory containing files needed to establish a successful DTLS
 		session (key, certificate and CA file); a key.pem file can be generated with the
@@ -183,6 +197,28 @@ DESC:		Full path to a directory containing files needed to establish a successfu
 		command-line; the ca-certificates.crt CA file can be copied from (ie. on Debian
 		or Ubuntu) "/etc/ssl/certs/ca-certificates.crt".
 DEFAULT:	none
+
+KEY:		writer_id_string
+DESC:		A "writer_id" field is added when sending data onto a Kafka or RabbitMQ broker,
+		this is meant to add contextual information about the collector producing data
+		(ie. $proc_name) or the specific batch of data (ie. PID of the writer process,
+		$writer_pid). Additional static information and separators can be supplied as
+		part of the string. Some variables are supported:
+
+		$proc_name	The name of the process producing data. This maps to the plugin
+				name in case of 'kafka' and 'amqp' plugins and core_proc_name
+				when the write is made from the Core Process, ie. BGP, BMP and
+				Streaming Telemetry cases
+
+		$writer_pid	The PID of the process producing data
+
+		$pmacct_build	The build version of the collector producing data
+
+		Note: The '_' character is part of the variables alphabet not hence it isn't a
+		valid separator between any two variables and between any variable and static
+		text. It can only used as part of variables, like the ones defined above, or
+		static text. 
+DEFAULT:	$proc_name/$writer_pid
 
 KEY:		pcap_filter [GLOBAL, PMACCTD_ONLY, ONLY_PMBMPD]
 DESC:		This filter is global and applied to all incoming packets. It's passed to libpcap
@@ -196,6 +232,17 @@ DESC:		If set, specifies a specific packet socket protocol value to limit packet
 		against a version of libpcap that supports pcap_set_protocol().
 DEFAULT:	none
 
+KEY:		pcap_arista_trailer_offset [GLOBAL, PMACCTD_ONLY]
+DESC:		Arista does set a trailer structure to convey extra info (ie. output interface, etc.) when
+		mirroring packets. This knob sets the byte offset from the end of the packet to indicate
+		where the trailer starts.
+DEFAULT:	none
+
+KEY:		pcap_arista_trailer_flag_value [GLOBAL, PMACCTD_ONLY]
+DESC:		When 'pcap_arista_trailer_offset' is set, specify the expected value in the arista trailer
+		flag field that indicates the output interface is present (this varies by chipset).
+DEFAULT:	1
+
 KEY:		snaplen (-L) [GLOBAL, NO_NFACCTD, NO_SFACCTD]
 DESC:		Specifies the maximum number of bytes to capture for each packet. This directive has
 		key importance to both classification and connection tracking engines. In fact, some
@@ -204,35 +251,36 @@ DESC:		Specifies the maximum number of bytes to capture for each packet. This di
 		But it must be also noted that capturing larger packet portion require more resources.
 		The right value need to be traded-off. In case classification is enabled, values under
 		200 bytes are often meaningless. 500-750 bytes are enough even for text based
-		protocols. Default snaplen values are ok if classification is disabled.
-DEFAULT:	128 bytes; 64 bytes if compiled with --disable-ipv6
+		protocols. Default snaplen value is OK if classification is disabled.
+DEFAULT:	128 bytes
 
 KEY:		plugins (-P) [GLOBAL]
 VALUES:		[ memory | print | mysql | pgsql | sqlite3 | nfprobe | sfprobe | tee | amqp | kafka ]
 DESC:		Plugins to be enabled. memory, print, nfprobe, sfprobe and tee plugins are always
-		included in pmacct executables as they do not contain dependencies on external
-		libraries. Database (ie. RDBMS, noSQL) and messaging ones (ie. amqp, kafka) do have
-		external dependencies and hence are available only if explicitely configured and
-		compiled.
-		memory plugin uses a memory table as backend; then, a client tool, 'pmacct', can fetch
-		the memory table content; the memory plugin is good for prototype solutions and/or
-		small environments. mysql, pgsql and sqlite3 plugins output respectively to MySQL (or
-		MariaDB with the MySQL-compatible C API), PostgreSQL and SQLite 3.x (or BerkeleyDB 5.x
-		with the SQLite API compiled-in) tables to store data. print plugin prints output data
-		to flat-files or stdout in JSON, CSV or tab-spaced formats, or encodes it using the
-		Apache Avro serialization system. amqp and kafka plugins allow to output data to
-		RabbitMQ and Kafka brokers respectively. All these plugins, SQL, no-SQL and messaging
-		are good for production solutions and/or larger scenarios.
-		nfprobe acts as a NetFlow/IPFIX agent and exports collected data via NetFlow v5/
-		v9 and IPFIX datagrams to a remote collector. sfprobe acts as a sFlow agent and 
-		exports collected data via sFlow v5 datagrams to a remote collector. Both nfprobe
-		and sfprobe plugins apply only to pmacctd and uacctd daemons. tee acts as a replicator
-		for NetFlow/IPFIX/sFlow data (also transparent); it applies to nfacctd and sfacctd
-		daemons only. Plugins can be either anonymous or named; configuration directives can
-		be either global or bound to a specific plugins, if named. An anonymous plugin is
-		declared as 'plugins: mysql' in the config whereas a named plugin is declared as
-		'plugins: mysql[name]'. Then, directives can be bound specifically to such named
-		plugin as: 'directive[name]: value'.
+		compiled in pmacct executables as they do not have external dependencies. Database
+		(ie. RDBMS, noSQL) and messaging ones (ie. amqp, kafka) do have external dependencies
+		and hence are available only if explicitely configured and compiled (see QUICKSTART).
+		'memory' plugin uses a memory table as backend and a client tool, 'pmacct', can fetch
+		the memory table content; the memory plugin is only good to prototype solutions, lab
+		environment without mass traffic generation and small/home production environments.
+		mysql, pgsql and sqlite3 plugins do output respectively to MySQL (or MariaDB via the
+		MySQL-compatible C API), PostgreSQL and SQLite 3.x (or BerkeleyDB 5.x via the SQLite
+		API compiled-in) databases to store data. 'print' plugin prints output data to flat-
+		files or stdout in JSON, Apache Avro, CSV or tab-spaced encodings. 'amqp' and 'kafka'
+		plugins allow to output data to RabbitMQ and Kafka brokers respectively. All these
+		plugins - to output to stdout, files, RDBMS and messaging brokers - are suitable for
+		production solutions and/or larger scenarios.
+		'nfprobe' plugin is a NetFlow/IPFIX agent and exports collected data via NetFlow v5/
+		v9 and IPFIX datagrams to a remote collector. 'sfprobe' plugin is a sFlow agent and
+		exports collected data via sFlow v5 datagrams to a remote collector. Both 'nfprobe'
+		and 'sfprobe' plugins can be run only via pmacctd and uacctd daemons (in other words
+		no collect NetFlow v5 / re-export IPFIX and similar trans-codings are supported).
+		The 'tee' plugin is a replicator of NetFlow/IPFIX/sFlow data (also transparent); it
+		can be run only via nfacctd and sfacctd.
+		Plugins can be either anonymous or named; configuration directives can be global or
+		bound to a specific plugins when named. An anonymous plugin is declared as 'plugins:
+		mysql' in the config whereas a named plugin is declared as 'plugins: mysql[name]'.
+		Then directives can be bound to a specific named plugin as: 'directive[name]: value'.
 DEFAULT:	memory
 
 KEY:		[ nfacctd_pipe_size | sfacctd_pipe_size | pmacctd_pipe_size ] [GLOBAL, NO_UACCTD]
@@ -343,11 +391,14 @@ DESC:		Allows to select some standard buffering profiles. Following are the reco
 			large   : from 100-125K to 250K (1MB)
 			xlarge  : from 250K (10MB)
 
-		A symptom the selected profile is undersized is missing data warnings appear in
-		the logs; a symptom it is oversized instead is latency in data being purged out.
-		The amount of flows/samples per second can be estimated as described in Q21 in
-		the FAQS document. Should no profile fit the sizing, the buffering value can be
-		customised using the plugin_buffer_size directive. 
+		A symptom that the selected profile may be undersized is the missing data warnings
+		appearing in the logs; a symptom it is oversized instead is the latency in data
+		being purged out: in fact the buffer has to fill up in order to be released to the
+		plugin. The amount of flows/samples per second can be estimated as described in Q21
+		in the FAQS document; 'large' and 'xlarge' (and possibly also 'medium') profiles
+		may be counter-productive in case of a 'tee' plugin: excessive burstiness may cause
+		UDP drops due to small default kernel buffers. Should no profile fit the sizing,
+		the buffering value can be customised using the plugin_buffer_size directive. 
 DEFAULT:	micro 
 
 KEY:		plugin_pipe_zmq_hwm
@@ -366,6 +417,11 @@ DESC:		Daemons gracefully shut down (core process and all plugins) if either the
 		and regardless there may be more plugins still active.
 DEFAULT:	false
 
+KEY:		propagate_signals [GLOBAL]
+VALUES:		[ true | false ]
+DESC:		When a signal is sent to the Core Process, propagate it to all active plugins;
+		this may come handy in scenarios where pmacct is run inside a (Docker) container.
+DEFAULT:	false
 
 KEY:		files_umask 
 DESC:		Defines the mask for newly created files (log, pid, etc.) and their related directory
@@ -405,9 +461,16 @@ KEY:		pcap_savefile (-I) [GLOBAL, NO_UACCTD, NO_PMBGPD]
 DESC:		File in libpcap savefile format to read data from (as an alternative to live data
 		collection). As soon as the daemon finished processing the file, it exits (unless in
 		pmacctd the 'pcap_savefile_wait' config directive is specified). The directive is
-		mutually exclusive with pcap_interface (-i) for pmacctd, with [ns]facctd_ip (-L)
-		and [ns]facctd_port (-l) for nfacctd and sfacctd respectively and bmp_daemon_ip
-		for pmbmpd.
+		mutually exclusive with reading live traffic (ie. pcap_interface (-i) for pmacctd,
+		[ns]facctd_ip (-L) and [ns]facctd_port (-l) for nfacctd and sfacctd respectively,
+		bmp_daemon_ip for pmbmpd). If using a traffic daemon (ie. nfacctd) with a BMP thread
+		(ie. bmp_daemon: true) and wanting to feed both with a savefile, only one file can
+		be supplied (that is, only a single pcap_savefile can be specified in the config):
+		if having multiple files, ie. one with traffic data and one with BMP data, these
+		can be merged using, for example, Wireshark which offers options to prepend, merge
+		chronologically and append data. Note: reading libpcap savefiles does use the
+		cap_next_ex() call which seems not to be highly portable, ie. a capture produced on
+		a Linux does not always read on a MacOS.  
 DEFAULT:	none
 
 KEY:            pcap_savefile_wait (-W) [GLOBAL, NO_UACCTD, NO_PMBGPD]
@@ -432,13 +495,14 @@ DESC:           When reading from a pcap_savefile, replay content for the specif
 		the first time due to the template not being sent yet.
 DEFAULT:        1
 
-KEY:		[ pcap_direction | uacctd_direction ] [GLOBAL, ONLY_PMACCTD]
+KEY:		[ pcap_direction | uacctd_direction ] [GLOBAL, ONLY_PMACCTD, ONLY_UACCTD]
 VALUES:		[ "in", "out" ]
 DESC:		Defines the traffic capturing direction with two possible values, "in" and "out". In
-		pmacctd this is used to determine which primitive to populate, whether in_iface or
-		out_iface with the pcap_ifindex value. In addition, this allows to tag data basing
-		on direction in pre_tag_map. In uacctd the only functionality is the latter of the
-		two. 
+		pmacctd this is used to 1) determine which primitive to populate, whether in_iface or
+		out_iface with the pcap_ifindex value and 2) tag / filter data basing on direction in
+		pre_tag_map. Not all platforms do support pcap_set_direction() and a quick test is to
+		check if tcpdump, ie. 'tcpdump -i <interface> -Q in', does work as intended. In uacctd
+		the only functionality is the latter of the two use-cases.
 DEFAULT:	none
 
 KEY:		pcap_ifindex [GLOBAL, PMACCTD_ONLY]
@@ -668,7 +732,9 @@ DEFAULT:	See amqp_persistent_msg
 
 KEY:		amqp_frame_max
 DESC:		Defines the maximum size, in bytes, of an AMQP frame on the wire to request of the broker
-		for the connection. 4096 is the minimum size, 2^31-1 is the maximum; see also amqp_host.
+		for the connection. 4096 is the minimum size, 2^31-1 is the maximum; it may be needed to
+		up the value from its default especially when making use of amqp_multi_values which will
+		produce larger batched messages. See also amqp_host.
 DEFAULT:	131072
 
 KEY:		[ bgp_daemon_msglog_amqp_frame_max | bgp_table_dump_amqp_frame_max |
@@ -863,13 +929,37 @@ DESC:           See kafka_partition; see also bgp_daemon_msglog_kafka_broker_hos
 DEFAULT:        See kafka_partition
 
 KEY:            [ bgp_daemon_msglog_kafka_partition_key |
-		  bgp_table_dump_kafka_partition_key |
-                  bmp_daemon_msglog_kafka_partition_key | bmp_dump_kafka_partition_key |
-                  sfacctd_counter_kafka_partition_key |
-		  telemetry_daemon_msglog_kafka_partition_key |
-                  telemetry_dump_kafka_partition_key ] [GLOBAL]
-DESC:           See kafka_partition_key; see also bgp_daemon_msglog_kafka_broker_host.
-DEFAULT:        See kafka_partition_key
+		  bgp_table_dump_kafka_partition_key ] [GLOBAL]
+DESC:           Defines the Kafka broker topic partition key. A string of printable characters
+		is expected as value. Dynamic names are supported through the use of variables,
+		listed below:
+
+		$peer_src_ip	The IP address of the BGP peer exporting data
+
+		$peer_tcp_port	The TCP port of the BGP session. Useful in case of BGP x-connects
+DEFAULT:	none
+
+KEY:		[ bmp_daemon_msglog_kafka_partition_key |
+		  bmp_dump_kafka_partition_key ] [GLOBAL]
+DESC:           Defines the Kafka broker topic partition key. A string of printable characters
+		is expected as value. Dynamic names are supported through the use of variables,
+		listed below:
+
+		$bmp_router		The IP address of the router exporting data via BMP
+
+		$bmp_router_port	The TCP port of the BMP session
+DEFAULT:	none
+
+KEY:		[ telemetry_daemon_msglog_kafka_partition_key |
+		  telemetry_dump_kafka_partition_key ] [GLOBAL]
+DESC:           Defines the Kafka broker topic partition key. A string of printable characters
+		is expected as value. Dynamic names are supported through the use of variables,
+		listed below:
+
+		$telemetry_node		The IP address of the node exporting Streaming Telemetry
+
+		$telemetry_node_port	The TCP/UDP port of the Streaming Telemetry session
+DEFAULT:        none
 
 KEY:            [ bgp_daemon_msglog_kafka_retry | bmp_daemon_msglog_kafka_retry |
 		  sfacctd_counter_kafka_retry | telemetry_daemon_msglog_kafka_retry ] [GLOBAL]
@@ -893,7 +983,7 @@ DEFAULT:	none
 
 KEY:		networks_file (-n)
 DESC:		Full pathname to a file containing a list of networks - and optionally ASN information
-		and BGP next-hop (peer_dst_ip) Purpose of the feature is to act as a resolver when
+		and BGP next-hop (peer_dst_ip). Purpose of the directive is to act as a resolver when
 		network, next-hop and/or peer/origin ASN information is not available through other
 		means (ie. BGP, IGP, telemetry protocol) or for the purpose of overriding such
 		information with custom/self-defined one.
@@ -960,10 +1050,26 @@ DESC:		Networks Lookup Table (which is the memory structure where the 'networks_
 DEFAULT:	IPv4: 99991; IPv6: 32771	
 
 KEY:		ports_file
-DESC:		Full pathname to a file containing a list of (known/interesting/meaningful) ports (one
-		for each line, read more about the file syntax into examples/ tree). The directive allows
-		to rewrite as zero port numbers not matching any port defined in the list. Indeed, this
-		makes sense only if aggregating on either 'src_port' or 'dst_port' primitives.
+DESC:		Full pathname to a file containing a list of (known/interesting/meaningful) TCP/UDP ports
+		(one per line, read more about the file syntax into examples/ tree). The directive zeroes
+		port numbers not matching those defined in the list. Not being a filter but an aggregator,
+		this directive makes sense only if aggregating on 'src_port' and/or 'dst_port' primitives.
+DEFAULT:	none
+
+KEY:		protos_file
+DESC:		Full pathname to a file containing a list of (known/interesting/meaningful) IP protocols
+		(one per line). Both protocol names, ie. "tcp", and protocol numbers, ie. 1 (for icmp),
+		are accepted. The directive uses IANA reserved protocol value 255 to bucket as 'others'
+		those IP protocols not matching the ones defined in the list. Not being a filter but an
+		aggregator, this directive makes sense only if aggregating on the 'proto' primitive.
+DEFAULT:	none
+
+KEY:		tos_file
+DESC:		Full pathname to a file containing a list of (meaningful) IP ToS values (one per line);
+		if tos_encode_as_dscp is set to true then DSCP values are expected as part of the file.
+		The directive uses value 255 to bucket as 'others' those ToS/DSCP values not matching
+		the ones defined in the list. Not being a filter but an aggregator, this directive makes
+		sense only if aggregating on the 'tos' primitive.
 DEFAULT:	none
 
 KEY:		sql_db
@@ -1352,10 +1458,11 @@ DESC:		In SQL plugin, sql_multi_values enables the use of multi-values INSERT st
 		of the directive is intended to be the size (in bytes) of the multi-values buffer. The directive
 		applies only to MySQL and SQLite 3.x plugins. Inserting many rows at the same time is much
 		faster (many times faster in some cases) than using separate single-row INSERT statements.
-		It's adviceable to check the size of this pmacct buffer against the size of the corresponding
+		It is adviceable to check the size of this pmacct buffer against the size of the corresponding
 		MySQL buffer (max_allowed_packet). In AMQP and Kafka plugins, [amqp|kafka]_multi_values allow
 		the same with JSON serialization (for Apache Avro see avro_buffer_size); in this case data is
-		encoded in JSON objects newline-separated (preferred to JSON arrays for performance).  
+		encoded in JSON objects newline-separated (preferred to JSON arrays for performance); in AMQP,
+		make sure to set amqp_frame_max to a size that can accomodate the collection of JSON objects.
 DEFAULT:        0
 
 KEY:		[ sql_trigger_exec | print_trigger_exec | amqp_trigger_exec | kafka_trigger_exec ]
@@ -1366,7 +1473,8 @@ DESC:		Defines the executable to be launched at fixed time intervals to post-pro
 		A number of environment variables are set in order to allow the trigger to take actions and 
 		are listed in docs/TRIGGER_VARS. Non-SQL plugins feature a simpler implementation: triggers
 		can only be fired each time data is written to the backend (ie. print_refresh_time) and no
-		environment variables are passed over to the executable.
+		environment variables are passed over to the executable; useful also to upload data to cloud
+		storage that supports upload via API end-points. 
 DEFAULT:	none
 
 KEY:		sql_trigger_time
@@ -1413,15 +1521,15 @@ DESC:		Allows to process aggregates (via a comma-separated list of conditionals 
 
 		KEY: maxp
 		DESC: check. Aggregates on the queue are evaluated one-by-one; each object is marked valid
-		      only if the number of packets is '<' maxp value. SQL plugins only.
+		      only if the number of packets is '<' maxp value. All plugins.
 
 		KEY: maxf
 		DESC: check. Aggregates on the queue are evaluated one-by-one; each object is marked valid
-		      only if the number of flows is '<' maxf value. SQL plugins only.
+		      only if the number of flows is '<' maxf value. All plugins.
 
 		KEY: maxb
 		DESC: check. Aggregates on the queue are evaluated one-by-one; each object is marked valid
-		      only if the bytes counter is '<' maxb value. SQL plugins only. 
+		      only if the bytes counter is '<' maxb value. All plugins. 
 
 		KEY: maxbpp
 		DESC: check. Aggregates on the queue are evaluated one-by-one; each object is marked valid
@@ -1532,6 +1640,41 @@ DESC:           All timestamps (ie. timestamp_start, timestamp_end, timestamp_ar
                 SQLite3:        DATETIME ==> INT(8)
 DEFAULT:        false
 
+KEY:		tcpflags_encode_as_array
+VALUES:		[ true | false ]
+DESC:		The 'tcpflags' field is encoded by default as a short integer where the bits related to
+		individual TCP flags are activated. Setting this knob to true, makes it being encoded as an
+		array for JSON and Apache Avro encodings, ie. in JSON "tcp_flags": [ "URG", "ACK", "PSH",
+		"RST", "SYN", "FIN" ] and in Avro "name": "tcp_flags", "type": { "type": "array", "items": {
+		"type": "string" } }. This knob has no effects for other encodings (ie. CSV, formatted) and
+		backends not supporting complex types (ie. SQL plugins).
+DEFAULT:        false
+
+KEY:		fwd_status_encode_as_string
+VALUES:		[ true | false ]
+DESC:		The 'fwd_status' is encoded by default as a short integer. Setting this knob to true, makes
+		it being encoded in human-readable format like described by RFC-7270 Section 4.12 when JSON
+		or Avro formats are selected for output. This knob has no effects for other encodings (ie.
+		CSV, formatted) and backends not supporting complex types (ie. SQL plugins).
+DEFAULT:	false
+
+KEY:		mpls_label_stack_encode_as_array
+VALUES:		[ true | false ]
+DESC:		The 'mpls_label_stack' is encoded by default as a string, including a comma-separated list
+		of integers (label values). Setting this knob to true, makes it being encoded as an array
+		for JSON and Apache Avro encodings, ie. in JSON "mpls_label_stack": [ "0-label0", "1-label1",
+		"2-label2", "3-label3", "4-label4", "5-label5" ] and in Avro "name": "mpls_label_stack",
+		"type": { "type": "array", "items": { "type": "string" } }. This knob has no effects for
+		other encodings (ie. CSV, formatted) and backends not supporting complex types (ie. SQL
+		plugins).
+DEFAULT:	false
+
+KEY:		tos_encode_as_dscp
+VALUES:		[ true | false ]
+		The 'tos' field does honour the full 8 bits. This knob conveniently allows to honour only
+		the 6 bits used by DSCP.
+DEFAULT:	false
+
 KEY:		[ print_markers | amqp_markers | kafka_markers ]
 VALUES:		[ true | false ]
 DESC:		Enables the use of start/end markers each time data is purged to the backend. Both start
@@ -1631,13 +1774,13 @@ DESC:		The URL to a Confluent Avro Schema Registry. The value is passed to libse
 		for "schema.registry.url". A sample of the expected value being https://localhost. This is
 		a pointer to the REST API https://docs.confluent.io/current/schema-registry/docs/api.html 
 		The schema name is auto generated: if the topic is static, the schema name is createad as
-		"<kafka_topic>-value" (ie. if kafka_topic is set to 'foobar' then the schema name will be
-		"foobar-value"); if the topic is dynamic instead, the schema name is created as "pmacct_
-		<plugin type>_<plugin name>" (ie. if plugin name is 'foobar' then the schema name will be
-		"pmacct_kafka_foobar"). To confirm that the schema is registered, the following CL can be
-		used: "curl -X GET https://<Schema Registry host>/subjects | jq . | grep <schema name>".
-		Until reaching a stable 'aggregate' aggregation method, it is recommended to set Schema
-		Registry compatibility type to 'none' as the schema may change.
+		<kafka_topic> (ie. if kafka_topic is set to 'foobar' then the schema name will be "foobar");
+		if the topic is dynamic instead, the schema name is created as "pmacct_<plugin type>_<plugin
+		name>" (ie. if plugin name is 'foobar' then the schema name will be "pmacct-kafka_foobar").
+		To confirm that the schema is registered, the following CL can be used: "curl -X GET
+		https://<Schema Registry host>/subjects | jq . | grep <schema name>". Until reaching a
+		stable 'aggregate' aggregation method, it is recommended to set Schema Registry
+		compatibility type to 'none' as the schema may change.
 DEFAULT:	none
 
 KEY:            [ print_num_protos | sql_num_protos | amqp_num_protos | kafka_num_protos ]
@@ -1670,9 +1813,9 @@ DEFAULT:        false
 
 KEY:		[ nfacctd_port | sfacctd_port ] (-l) [GLOBAL, NO_PMACCTD, NO_UACCTD]
 DESC:		Defines the UDP port where to bind nfacctd (nfacctd_port) and sfacctd (sfacctd_port) daemons.
-                SO_REUSEPORT feature can be leveraged on Linux: it allows multiple daemons to bind the same
-                local address and port in order to load-balance processing of incoming packets; if doing so
-		with incoming NetFlow v9/IPFIX template-based protocols, nfacctd_templates_receiver and
+                On systems where SO_REUSEPORT feature is available: it allows multiple daemons to bind the
+		same local address and port in order to load-balance processing of incoming packets; if doing
+		so with incoming NetFlow v9/IPFIX template-based protocols, nfacctd_templates_receiver and
 		nfacctd_templates_port should be used. At the end of this document, reference (1) to a
 		URL to a presentation of the SO_REUSEPORT feature. To enable SO_REUSEPORT on a Linux system
 		supporting it 'sysctl net.core.allow_reuseport=1'.
@@ -1682,6 +1825,30 @@ KEY:		[ nfacctd_ip | sfacctd_ip ] (-L) [GLOBAL, NO_PMACCTD, NO_UACCTD]
 DESC:		Defines the IPv4/IPv6 address where to bind the nfacctd (nfacctd_ip) and sfacctd (sfacctd_ip)
 		daemons.
 DEFAULT:	all interfaces
+
+KEY:            [ nfacctd_interface | sfacctd_interface ] [GLOBAL]
+DESC:           Defines the interface for the nfacctd / sfacctd daemon to listen on making it possible to
+		receive data in VRFs on Linux. If having to listen on an IPv6 address inside the VRF, this
+		has to be specified via the relevant config directive, ie. nfacctd_ip / sfacctd_ip, as not
+		doing so prevents the daemon to correctly receive data.
+DEFAULT:        none
+
+KEY:		[ nfacctd_ipv6_only | sfacctd_ipv6_only ] [GLOBAL, NO_PMACCTD, NO_UACCTD]
+VALUES:         [ true | false ]
+DESC:		When listening on all interfaces (default setting for nfacctd_ip and sfacctd_ip) and IPv6 is
+		enabled, it is possible to connect with both IPv4 (IPv6 IPv4-mapped) and IPv6. Setting this
+		knob to true disables the IPv4 (IPv6 IPv4-mapped) part.
+DEFAULT:	false
+
+KEY:		[ nfacctd_rp_ebpf_prog | sfacctd_rp_ebpf_prog ] [GLOBAL, NO_PMACCTD, NO_UACCTD]
+DESC:		If SO_REUSEPORT is supported by the Operating System (read more about this feature at the
+		config key [ns]facctd_port) and eBPF support is configured when compiling (--enable-ebpf),
+		this allows to load a custom load-balancer. To load-share, daemons have to be part of the
+		same cluster_name and each be configured with a distinct cluster_id. An example of such
+		eBPF program is available here: https://github.com/insa-unyte/ebpf-loadbalancer . Note:
+		Linux kernel 4.x does not yet support eBPF locking so daemons have currently to be (re-)
+		started with a short time gap to avoid race conditions.
+DEFAULT:	none
 
 KEY:		[ nfacctd_kafka_broker_host | sfacctd_kafka_broker_host ] [GLOBAL, NO_PMACCTD, NO_UACCTD]
 DESC:		Defines one or multiple, comma-separated, Kafka brokers to receive NetFlow/IPFIX and sFlow
@@ -1762,8 +1929,9 @@ DESC:		Full pathname to a file to store JSON-serialized templates for NetFlow v9
 		steady state, templates received from the network are stored in this file. Warning: if,
 		at startup time, data records are encoded with a template structure different than the
 		one that was stored in the file, effectiveness of this feature is (intuitively) greatly
-		reduced. This file will be created if it does not exist. This feautre requires compiling
-		against Jansson library (--enable-jansson when configuring pmacct for compiling).
+		reduced. This file will be created if it does not exist. Certain numeric values may be
+		encoded in network byte order. This feature requires compiling against Jansson library
+		(--enable-jansson when configuring pmacct for compiling).
 DEFAULT:        none
 
 KEY:		nfacctd_templates_receiver [GLOBAL, NFACCTD_ONLY]
@@ -1862,11 +2030,6 @@ DESC:		When IP prefix aggregation (ie. nfacctd_net) is set to 'netflow', 'sflow'
 		from NetFlow/sFlow IP next hop field if BGP next-hop is not available.
 DEFAULT:        false
 
-KEY:            decode_arista_trailer [GLOBAL, PMACCTD_ONLY]
-VALUES:         [ true | false ]
-DESC:           Decode output interfaces data present on trailer of libpcap packets passed by Arista.
-DEFAULT:        false
-
 KEY:		[ nfacctd_mcast_groups | sfacctd_mcast_groups ] [GLOBAL, NO_PMACCTD, NO_UACCTD]
 DESC:		Defines one or more IPv4/IPv6 multicast groups to be joined by the daemon. If more groups are
 		supplied, they are expected comma separated. A maximum of 20 multicast groups may be joined by
@@ -1891,29 +2054,30 @@ DESC:		Mainly a workaround to implementations not encoding NetFlow v9/IPIFX opti
 DEFAULT:	false
 
 KEY:		pre_tag_map [MAP]
-DESC:		Full pathname to a file containing tag mappings. Tags can be internal-only (ie. for filtering
-		purposes, see pre_tag_filter configuration directive) or exposed to users (ie. if 'tag', 'tag2'
-		and/or 'label' primitives are part of the aggregation method). Take a look to the examples/
-		sub-tree for all supported keys and detailed examples (pretag.map.example). Pre-Tagging is
-		evaluated in the Core Process and each plugin can be defined a local pre_tag_map. Result of
-		evaluation of pre_tag_map overrides any tags passed via NetFlow/sFlow by a pmacct nfprobe/
-		sfprobe plugin. Number of map entries (by default 384) can be modified via maps_entries.
-		Content can be reloaded at runtime by sending the daemon a SIGUSR2 signal (ie. "killall -USR2
-		nfacctd").  
+DESC:		Full pathname to a file containing specific tags for data. For all daemons, tags (be that
+		numerical 'tag' or stringy 'label') can be exposed in output data; traffic daemons (ie.
+		pmacctd, nfacctd, sfacctd, etc.) need 'tag', 'tag2' or 'label' primitives to be included
+		in the 'aggregate' aggregation method. Again (only) in traffic daemons, all of which do
+		feature a plugin-based architecture, tags can be used for filtering purposes (see the
+		pre_tag_filter, pre_tag_label_filter config directives). Take a look to the examples/
+		sub-tree for all supported keys and detailed examples (pretag.map.example). In traffic
+		daemons the evaluation of a pre_tag_map does override any tags passed via NetFlow/sFlow
+		by a pmacct nfprobe/sfprobe plugin. The maximum number of entries (by default 384) can
+		be modified via maps_entries. Content can be reloaded at runtime by sending the daemon
+		a SIGUSR2 signal (ie. "killall -USR2 nfacctd").
 DEFAULT:	none
 
 KEY:		maps_entries
-DESC:		Defines the maximum number of entries a map (ie. pre_tag_map and all directives with the
-		'MAP' flag in this document) can contain. The default value is suitable for most scenarios,
-		though tuning it could be required either to save on memory or to allow for more entries.
-		Refer to the specific map directives documentation in this file to see which are affected by
-		this setting.
+DESC:		Defines the maximum number of entries a map can contain (ie. pre_tag_map and all directives
+		with the 'MAP' flag in this document). The default value is suitable for most scenarios,
+		although tuning it could be required either to save on memory or to allow for more entries.
 DEFAULT:	384
 
 KEY:            maps_row_len
-DESC:		Defines the maximum length of map (ie. pre_tag_map and all directives with the 'MAP' flag in
-		this document) rows. The default value is suitable for most scenario, though tuning it could
-		be required either to save on memory or to allow for more entries.
+DESC:		Defines the maximum length of map entries (ie. pre_tag_map and all directives with the 'MAP'
+		flag in this document). The default value is suitable for most scenarios, although tuning it
+		could be wanted either to save on memory or to allow for longer entries (ie. for complex bpf
+		filters).
 DEFAULT:	256
 
 KEY:		maps_refresh [GLOBAL]
@@ -1923,36 +2087,46 @@ DESC:		When enabled, this directive allows to reload map files (ie. pre_tag_map 
 		it may result particularly useful to reload pre_tag_map or networks_file entries in order
 		to reflect some change in the network. After having modified the map files, a SIGUSR2 has
 		to be sent (e.g.: in the simplest case "killall -USR2 pmacctd") to the daemon to notify the
-		change. If such signal is sent to the daemon and this directive is not enabled, the signal
-		is silently discarded. The Core Process is in charge of processing the Pre-Tagging map;
-		plugins are devoted to Networks and Ports maps instead. Then, because signals can be sent
-		either to the whole daemon (killall) or to just a specific process (kill), this mechanism
-		also offers the advantage to elicit local reloads.
+		change. If a signal is sent to the daemon and this directive is set to 'false', the signal
+		is silently discarded. Since signals can be sent either to the whole daemon (killall) or to
+		just a specific process (kill), this mechanism also offers the advantage to elicit local
+		reloads.
 DEFAULT:        true
 
 KEY:		maps_index [GLOBAL]
 VALUES:		[ true | false ]
-DESC:		Enables indexing of maps (ie. pre_tag_map and all directives with the 'MAP' flag in this
-		document) to increase lookup speeds on large maps and/or sustained lookup rates. Indexes
-		are automatically defined basing on structure and content of the map, up to a maximum of
-		8. Indexing of pre_tag_map, bgp_peer_src_as_map, flow_to_rd_map is supported. Only a sub-
-		set of pre_tag_map fields are supported, including: ip, bgp_nexthop, vlan, cvlan, src_mac,
-		mpls_vpn_rd, mpls_pw_id, src_as, dst_as, peer_src_as, peer_dst_as, input, output. Only IP
-		addresses, ie. no IP prefixes, are supported as part of the 'ip' field. Also, negations
-		are not supported (ie. 'in=-216' match all but input interface 216). bgp_agent_map and
-		sampling_map implement a separate caching mechanism and hence do not leverage this
-		feature. Duplicates in the key part of the map entry, key being defined as all fields
-		except set_* ones, are not supported and may result in a "out of index space" message.
+DESC:		Enables indexing of maps (ie. pre_tag_map) to increase lookup speeds on large maps and/or
+		sustained lookup rates. Indexes are automatically defined basing on structure and content
+		of the map, up to a maximum of 8 (one index is required per each combination of lookup
+		keys in the map). Indexing of pre_tag_map, bgp_peer_src_as_map, flow_to_rd_map is
+		supported. Only a sub-set of pre_tag_map keys are supported, including: ip, bgp_nexthop,
+		vlan, cvlan, src_mac, dst_mac, src_net, dst_net, mpls_vpn_rd, mpls_pw_id, src_as, dst_as,
+		peer_src_as, peer_dst_as, input, output. For keys accepting IP addresses as value (ie. ip,
+		src_net and dst_net) specific IP addresses, ie. /32 for v4 and /128 for v6, are supported
+		throughout. Also, negations are not supported (ie. 'in=-216' match all but input interface
+		216). bgp_agent_map and sampling_map implement a separate caching mechanism and hence do
+		not leverage this feature.
 DEFAULT:        false
+NOTES:		* Initial support for networks has been introduced for src_net and dst_net keys: in any
+		  entry, only one key can include a network because matrixing of networks would degrade
+		  performances of the current implementation. A construction like the following would
+		  be perfectly valid, ie.:
+
+		  label=src_A	src_net=X/24	jeq=dst_net
+		  label=src_B	src_net=Y/25	jeq=dst_net
+		  label=src_C	src_net=Z/26	jeq=dst_net
+		  label=dst_A	dst_net=X/24	label=dst_net
+		  label=dst_B	dst_net=Y/25
+		  label=dst_C	dst_net=Z/26
 
 KEY:            pre_tag_filter, pre_tag2_filter [NO_GLOBAL]
 VALUES:         [ 0-2^64-1 ]
-DESC:		Expects one or more tags (when multiple tags are supplied, they need to be comma separated
-		and a logical OR is used in the evaluation phase) as value and allows to filter aggregates
-		basing upon their tag (or tag2) value: in case of a match, the aggregate is filtered in, ie.
-		it is delivered to the plugin it is attached to. This directive has to be attached to a
-		plugin (that is, it cannot be global) and is suitable, for example, to split tagged data
-		among the active plugins. This directive also allows to specify a value '0' to match untagged
+DESC:		Expects one or more tags as value (when multiple tags are supplied, they need to be comma
+		separated and a logical OR is used in the evaluation phase) and allows to filter aggregates
+		basing upon their tag (or tag2) value: in case of a match, data is allwoed in, ie. it is
+		delivered to the plugin the filter is attached to. This directive has to be attached to a
+		plugin (that is, it cannot be global) and is suitable, for example, to split data among the
+		active plugins. This directive also allows to specify a value '0' to match untagged
 		data, thus allowing to split tagged traffic from untagged one. It also allows negations by
 		pre-pending a minus sign to the tag value (ie. '-6' would send everything but traffic tagged
 		as '6' to the plugin it is attached to, hence achieving a filter out behaviour) and ranges
@@ -1961,20 +2135,34 @@ DESC:		Expects one or more tags (when multiple tags are supplied, they need to b
 DEFAULT:	none
 
 KEY:            pre_tag_label_filter [NO_GLOBAL]
-DESC:		Expects one or more labels (when multiple labels are supplied, they need to be comma
-		separated and a logical OR is used in the evaluation phase) as value and allows to filter in
-		aggregates basing upon their label value(s): only in case of match data is delivered to the
-		plugin. This directive has to be attached to a plugin (that is, it cannot be global). Null
-		label values (ie. unlabelled data) can be matched using the 'null' keyword. Negations are
-		allowed by pre-pending a minus sign to the label value. The use of this directive makes
-		sense if coupled with 'pre_tag_map'.
+DESC:		Expects one or more labels as value (when multiple labels are supplied, they need to be
+		comma separated and a logical OR is performed when evaluating at runtime) and allows to
+		filter in data basing upon label value(s): in case of match, data is delivered to the
+		plugin. This directive has to be attached to a plugin (that is, it cannot be global).
+		Null label values (ie. unlabelled data) can be matched using the special 'null' keyword.
+		Negations are allowed by pre-pending a minus sign to the label value. The use of this
+		directive is meant coupled with a 'pre_tag_map'; it is also currenly not compatible
+		with the use of pre_tag_label_encode_as_map except for the basic use-case of filtering
+		null vs non-null labels.
 DEFAULT:	none
+
+KEY:		pre_tag_label_encode_as_map
+VALUES:		[ true | false ]
+DESC:		The 'label' field is encoded by default as an unique comma-separated string, ie. in JSON
+		"label": "value1,value2,value3". Setting this knob to true, makes it being encoded as a
+		map for JSON and Apache Avro encodings, ie. in JSON "label": { "key1": "value1", "key2":
+		"value2" }. For keys and values to be correctly mapped, the '%' delimiter is used when
+		composing a pre_tag_map, ie. "set_label=key1%value1,key2%value2 ip=0.0.0.0/0". This knob
+		has no effects for other encodings (ie. CSV, formatted) and backends not supporting
+		complex types (ie. SQL plugins).
+DEFAULT:	false
 
 KEY:            [ post_tag | post_tag2 ] 
 VALUES:         [ 1-2^64-1 ]
 DESC:           Expects a tag as value. Post-Tagging is evaluated in the plugins. The tag is used as 'tag'
 		(post_tag) or 'tag2' (post_tag2) primitive value. Use of these directives hence makes sense
-		if tag and/or tag2 primitives are part of the plugin aggregation method.
+		if tag and/or tag2 primitives are part of the plugin aggregation method. post_tag does
+		override any value computed by pre_tag_map.
 DEFAULT:	none
 
 KEY:		sampling_rate
@@ -1983,8 +2171,8 @@ DESC:		Enables packet sampling. It expects a number which is the mean ratio of p
 		(1 out of N). The currently implemented sampling algorithm is a simple randomic one. If using 
 		any SQL plugin, look also to the powerful 'sql_preprocess' layer and the more advanced sampling
 		choices it offers: they will allow to deal with advanced sampling scenarios (e.g. probabilistic
-		methods). Finally, note that this 'sampling_rate' directive can be renormalized by using the 
-		'usrf' action of the 'sql_preprocess' layer.
+		methods). Finally, this 'sampling_rate' directive can be renormalized by renormalize feature,
+		ie. pmacctd_renormalize, or by using the 'usrf' action of the 'sql_preprocess' layer.
 DEFAULT:	none
 
 KEY:            sampling_map [GLOBAL, NO_PMACCTD, NO_UACCTD, MAP]
@@ -2062,11 +2250,14 @@ DESC:		Automatically renormalizes bytes/packet counters value basing on availabl
 		estimated rate is then used for renormalization purposes.
 DEFAULT:        false
 
-KEY:		pmacctd_nonroot [GLOBAL]
+KEY:		[ sfacctd_nonroot | nfacctd_nonroot | pmacctd_nonroot ] [GLOBAL]
 VALUES:		[ true | false ]
-DESC:		Allow to run pmacctd from a user with non root privileges. This can be desirable on systems
-		supporting a tool like setcap, ie. 'setcap "cap_net_raw,cap_net_admin=ep" /path/to/pmacctd',
-		to assign specific system capabilities to unprivileged users.
+DESC:		Allow to run daemons from a user with non root privileges. This can be desirable on systems
+		supporting a tool like setcap to assign specific system capabilities to unprivileged users.
+		A couple of examples: allow nfacctd to bind to BGP port: "setcap 'cap_net_bind_service=+ep'
+		/path/to/nfacctd ; allow a sfacctd replicator to forward packets transparently (spoofing):
+		"setcap 'cap_net_raw=+ep' /path/to/nfacctd ; allow pmacctd to bind and use libpcap:
+		"setcap 'cap_net_raw,cap_net_admin=+ep' /path/to/pmacctd".
 DEFAULT:	false
 
 KEY:            sfacctd_counter_file [GLOBAL, SFACCTD_ONLY]
@@ -2097,9 +2288,9 @@ DESC:		Defines the locking style for the SQL table. MySQL supports "table" and "
 		ie. no risk for deadlocks and transaction-friendly; "row", the plugin will lock only the rows
 		it needs to UPDATE/DELETE. It results in better overral performances but has some noticeable
 		drawbacks in dealing with transactions and making the UPDATE-then-INSERT mechanism work
-		smoothly; "none" disables locking: while this method can help in some cases, ie. when grants
-		over the whole database (requirement for "table" locking in MySQL) is not available, it is not
-		recommended since serialization allows to contain database load.
+		smoothly; "none" disables locking: while generally not recommended, this may suit some
+		advanced use-cases or be needed when a locking mechanism is not available (ie. Infinidb/
+		Columnstore in MariaDB).
 DEFAULT:        table
 
 KEY:		nfprobe_timeouts
@@ -2225,8 +2416,8 @@ VALUES:		[ true | false ]
 DESC:		Disables caching and summarisation of flows. By default a NetFlow/IPFIX agent would attempt
 		to build uni-directional flows by caching individual packets and waiting for an expiration
 		condition (see nfprobe_timeouts). This knob prevents that to happen and, if paired with a
-		(external) packet sampling strategy, it makes a NetFlow/IPFIX agent to match sFlow export
-		responsiveness. 
+		packet sampling strategy (external or ie. pmacctd_ext_sampling_rate), it makes a NetFlow/
+		IPFIX agent to match sFlow export responsiveness. 
 DEFAULT:	false
 
 KEY:		nfprobe_tstamp_usec
@@ -2271,9 +2462,8 @@ DESC:		Enables the BGP daemon thread. Neighbors are not defined explicitely but 
 		OPEN message the local daemon presents itself as belonging to the same AS number as the
 		remote peer, unless bgp_daemon_as is set, and supporting the same (or a subset of the) BGP
 		capabilities; capabilities currently supported are MP-BGP, 4-bytes ASNs, ADD-PATH.
-		Per-peer RIBs are maintained. In case of ADD-PATH capability, the correct BGP info is
-		linked to traffic data using BGP next-hop (or IP next-hop if use_ip_next_hop is set to
-		true) as selector among the paths available.
+		Per-peer RIBs are maintained. For some ADD-PATH capability notes, please check the
+		"BGP daemon implementation concluding notes" section of the QUICKSTART document.
 DEFAULT:	false
 
 KEY:		bmp_daemon [GLOBAL]
@@ -2295,6 +2485,18 @@ DESC:		Binds the BGP/BMP daemon to a specific interface. Expects as value an IP 
 		is highly adviced.
 DEFAULT:	0.0.0.0
 
+KEY:            [ bgp_daemon_ipv6_only | bmp_daemon_ipv6_only ] [GLOBAL, NO_PMACCTD, NO_UACCTD]
+VALUES:         [ true | false ]
+DESC:           When listening on all interfaces (default setting for nfacctd_ip and sfacctd_ip) and IPv6 is
+                enabled, it is possible to connect with both IPv4 (IPv6 IPv4-mapped) and IPv6. Setting this
+                knob to true disables the IPv4 (IPv6 IPv4-mapped) part.
+DEFAULT:        false
+
+KEY:            [ bgp_daemon_interface | bmp_daemon_interface ] [GLOBAL]
+DESC:           Defines the interface for the BGP / BMP daemon to listen on. This makes it possible to have
+		the session happen entirely in one VRF by specifying the VRF device name here.
+DEFAULT:        none
+
 KEY:            bgp_daemon_id [GLOBAL]
 DESC:		Defines the BGP Router-ID to the supplied value. Expected value is an IPv4 address. If this
 		feature is not used or an invalid IP address is supplied, ie. IPv6, the bgp_daemon_ip value
@@ -2311,14 +2513,32 @@ DEFAULT:        none
 
 KEY:		[ bgp_daemon_port | bmp_daemon_port ] [GLOBAL] 
 DESC:		Makes the BGP/BMP daemon listen to a port different from the standard port. Default port for
-		BGP is 179/tcp; default port for BMP is 1790. If supported and if enabled on the system, the
-		SO_REUSEPORT feature can be leveraged on Linux: it allows multiple daemons to bind the same
-		local address and port in order to load-balance processing of incoming packets. This is best
-		combined with a list of allowed IP addresses, ie. bgp_daemon_allow_file, to explicitely wire
-		peers to collectors. At the end of this document, reference (1) to a URL to a presentation
-		of the SO_REUSEPORT feature. To enable SO_REUSEPORT on a Linux system supporting it 'sysctl
-		net.core.allow_reuseport=1'.
+		BGP is 179/tcp; default port for BMP is 1790. On systems where SO_REUSEPORT feature is
+		available: it allows multiple daemons to bind the same local address and port in order to
+		load-balance processing of incoming packets. This is best combined with a list of allowed
+		IP addresses, ie. bgp_daemon_allow_file, to explicitely wire peers to collectors. At the
+		end of this document, reference (1) to a URL to a presentation of the SO_REUSEPORT feature.
+		To enable SO_REUSEPORT on a Linux system supporting it 'sysctl net.core.allow_reuseport=1'.
 DEFAULT:	bgp_daemon_port: 179; bmp_daemon_port: 1790
+
+KEY:		[ bgp_daemon_rp_ebpf_prog | bmp_daemon_rp_ebpf_prog ] [GLOBAL]
+DESC:		If SO_REUSEPORT is supported by the Operating System (read more about this feature at the
+		config key b[mg]p_daemon_port) and eBPF support is configured when compiling (--enable-ebpf),
+		this allows to load a custom load-balancer. To load-share, daemons have to be part of the
+		same cluster_name and each be configured with a distinct cluster_id. An example of such
+		eBPF program is available here: https://github.com/insa-unyte/ebpf-loadbalancer . Note:
+		Linux kernel 4.x does not yet support eBPF locking so daemons have currently to be (re-)
+		started with a short time gap to avoid race conditions.
+DEFAULT:	none
+
+KEY:		[ bgp_daemon_tag_map | bmp_daemon_tag_map | telemetry_daemon_tag_map ] [GLOBAL] [MAP]
+DESC:		Full pathname to a file containing specific tags for data. Equivalent to pre_tag_map but
+		for BGP, BMP and Streaming Telemetry threads / daemons.
+		Take a look to the examples/pretag.map.example for syntax. Currently only 'ip' is
+		supported as MATCH and set_tag, set_label as SET. The maximum number of entries (by
+		default 384) can be modified via maps_entries. Content can be reloaded at runtime by
+		sending the daemon a SIGUSR2 signal (ie. "killall -USR2 pmbgpd").
+DEFAULT:	none
 
 KEY:		[ bgp_daemon_ipprec | bmp_daemon_ipprec ] [GLOBAL]
 DESC:		Marks self-originated BGP/BMP messages with the supplied IP precedence value.
@@ -2328,9 +2548,9 @@ KEY:		[ bgp_daemon_max_peers | bmp_daemon_max_peers ] [GLOBAL]
 DESC:		Sets the maximum number of neighbors the BGP/BMP daemon can peer to. Upon reaching of the
 		limit, no more BGP/BMP sessions can be established. BGP/BMP neighbors don't need to be
 		defined explicitely one-by-one rather an upper boundary to the number of neighbors applies.
-		pmacctd, uacctd daemons are limited to only two BGP peers (in a primary/backup fashion, see
-		bgp_agent_map); such hardcoded limit is imposed as the only scenarios supported in conjunction
-		with the BGP daemon are as NetFlow/sFlow probes on-board software routers and firewalls.
+		pmacctd, uacctd daemons are limited to only two BGP peers: such hardcoded limit is imposed
+		as the only scenarios supported in conjunction with the BGP daemon are as NetFlow/sFlow
+		probes on-board software routers and firewalls.
 DEFAULT:	10
 
 KEY:		[ bgp_daemon_batch_interval | bmp_daemon_batch_interval ] [GLOBAL]
@@ -2383,10 +2603,10 @@ DESC:           The URL to a Confluent Avro Schema Registry. The value is passed
                 for "schema.registry.url". A sample of the expected value being https://localhost. This is
                 a pointer to the REST API https://docs.confluent.io/current/schema-registry/docs/api.html
                 The schema name is auto generated: if the topic is static, the schema name is createad as
-                "<kafka_topic>-<bgp/bmp suffix>-value" (ie. if Kafka topic is set to 'foobar' then the
-		schema name will be "foobar-bgp-msglog-value", "foobar-bmp-msglog-rm-value", etc.). Dynamic
-		topics are not supported. To confirm that the schema is registered, the following CL can
-		be used: "curl -X GET https://<Schema Registry host>/subjects | jq . | grep <schema name>".
+                "<kafka_topic>-<bgp/bmp suffix>" (ie. if Kafka topic is set to 'foobar' then the schema
+		name will be "foobar-bgp_msglog", "foobar-bmp_msglog_rm", etc.). Dynamic topics are not
+		supported. To confirm that the schema is registered, the following CL can be used: "curl
+		-X GET https://<Schema Registry host>/subjects | jq . | grep <schema name>".
 DEFAULT:        none
 
 KEY:		[ bgp_daemon_msglog_output | bmp_daemon_msglog_output ] [GLOBAL]
@@ -2394,6 +2614,14 @@ VALUES:         [ json | avro | avro_json ]
 DESC:		Defines output format for the streamed logging of BGP messages and BMP messages and
 		events. JSON, binary-encoded Avro and JSON-encoded Avro formats are supported.
 DEFAULT:	json
+
+KEY:		bgp_daemon_add_path_ignore [GLOBAL]
+VALUES:		[ true | false ]
+DESC:		By default pmacct does reply to the BGP Open of the peers enabling all shared supported
+		capabilities. There are cases where BGP ADD-PATH may want to be ignored, ie. because in
+		traffic flows BGP next-hop is not available (NetFlow v5, sFlow from switches, etc.) and
+		hence the BGP next-hop guided ADD-PATH path-id selection gets not possible.
+DEFAULT:	false
 
 KEY:		bgp_aspath_radius [GLOBAL]
 DESC:		Cuts down AS-PATHs to the specified number of ASN hops. If the same ASN is repeated multiple
@@ -2523,9 +2751,8 @@ DESC:		Full pathname to a file to map source 1a) IP address of NetFlow/IPFIX age
 		BGP peering with RRs, hub-and-spoke topologies, single-homed networks - but also BGP
 		sessions traversing NAT.
 		pmacctd and uacctd daemons are required to use this map with at most two "catch-all"
-		entries working in a primary/backup fashion (see for more info bgp_agent.map.example
-		in the examples section): this is because these daemons do not have a NetFlow/sFlow
-		source address to match to.
+		entries: this is because these daemons do not have a NetFlow/sFlow source address to
+		match to.
 		Number of map entries (by default 384) can be modified via maps_entries. Content can be
 		reloaded at runtime by sending the daemon a SIGUSR2 signal (ie. "killall -USR2 nfacctd").
 DEFAULT:	none
@@ -2697,14 +2924,26 @@ DESC:           Defines output format for the dump of BGP tables and BMP events.
 		Avro and JSON-encoded Avro formats are supported.
 DEFAULT:	json
 
-KEY:		[ bgp_table_dump_refresh_time | bmp_dump_refresh_time | telemetry_dump_latest_file ]
+KEY:		[ bgp_table_dump_refresh_time | bmp_dump_refresh_time | telemetry_dump_refresh_time ]
 		[GLOBAL]
 VALUES:		[ 60 .. 86400 ]
 DESC:		Time interval, in seconds, between two consecutive executions of the dump of BGP
-		tables/BMP events/Streaming Telemetry data to files.
+		tables / BMP events / Streaming Telemetry data to files.
 DEFAULT:	0
 
-KEY:            [ bgp_table_dump_latest_file | bmp_dump_latest_file | telemetry_dump_refresh_time ]
+KEY:		[ bgp_table_dump_time_slots | bmp_dump_time_slots | telemetry_dump_time_slots ]
+		[GLOBAL]
+VALUES:		[ 1 .. 86400 ]
+DESC:		Enables spreading the load deriving by BGP, BMP and Streaming Telemetry dumps over
+		bgp_table_dump_refresh_time / bmp_dump_refresh_time time / telemetry_dump_refresh_time
+		intervals. Refresh time interval is divided into time slots and BGP / BMP / telemetry
+		nodes are assigned to these slots. By default this knob is set to 1, then all the
+		content of the dumps is sent at once. The slot for each node is determined using
+		its IP address. The number of slots must be a divisor of the refresh
+		time.
+DEFAULT:	1
+
+KEY:            [ bgp_table_dump_latest_file | bmp_dump_latest_file | telemetry_dump_latest_file ]
 		[GLOBAL]
 DESC:           Defines the full pathname to pointer(s) to latest file(s). Dynamic names are supported
                 through the use of variables, which are computed at the moment when data is purged to the
@@ -2719,8 +2958,8 @@ DESC:		Enables the BGP Looking Glass server allowing to perform queries, ie. loo
 		addresses/prefixes or get the list of BGP peers, against available BGP RIBs. The
 		server is asyncronous and uses ZeroMQ as transport layer to serve incoming queries.
 		Sample C/Python LG clients are available in 'examples/lg'. Sample LG server config
-		is available in QUICKSTART. Request/Reply Looking Glass formats are documented in
-		'docs/LOOKING_GLASS_FORMAT'.
+		is available in QUICKSTART . Request/Reply Looking Glass formats are documented
+		in 'docs/LOOKING_GLASS_FORMAT'.
 DEFAULT:	false
 
 KEY:            bgp_daemon_lg_ip [GLOBAL]
@@ -2760,7 +2999,7 @@ DESC:		Enables BGP proxying. Full pathname to a file to cross-connect BGP peers 
 		at runtime by sending the daemon a SIGUSR2 signal (ie. "killall -USR2 nfacctd").
 DEFAULT:	none
 
-KEY:            [ bmp_daemon_parse_proxy_header ]
+KEY:            bmp_daemon_parse_proxy_header
 VALUES:         [ true | false ]
 DESC:           Defines whether to parse the first packet of a connection looking for a
                 Proxy Protocol header containing client information (IP addresses and TCP ports).
@@ -2779,10 +3018,18 @@ DESC:           Defines whether to parse the first packet of a connection lookin
                         server bmp-dev <PMBMPD IP Address>:5000 send-proxy-v2
 DEFAULT:        false
 
+KEY:		[ bgp_table_dump_workers | bmp_dump_workers | telemetry_dump_workers ]
+DESC:		Sets the amount of parallel worker threads to set up for dump events. By default 1
+		(no parallelization), it may be set to a fraction of the available CPU threads.
+		The unit of parallelization is the exporter (BGP, BMP or telemetry exporter), ie.
+		in a scenario where there are 4 workers and 4 exporters each worker is assigned one
+		exporter data to dump.
+DEFAULT:	1
+
 KEY:		rpki_roas_file [MAP, GLOBAL]
 DESC:		Full pathname to a file containing RPKI ROA data. Data encoding is JSON and format
-		is according to RIPE Validator format. ROA data can be obtained for example from
-		https://rpki.gin.ntt.net/api/export.json . An example of the format:
+		supported are RIPE Validator OpenBSD Validator ones. ROA data can be obtained for
+		example from https://rpki.gin.ntt.net/api/export.json . An example of the format:
 
 		{
 		  "roas" : [ {
@@ -2955,7 +3202,10 @@ DEFAULT:	32
 
 KEY:            tee_kafka_config_file
 DESC:           Full pathname to a file containing directives to configure librdkafka when emitting
-		replicated datagrams to a Kafka broker. See kafka_config_file for more info.
+		replicated datagrams to a Kafka broker. See kafka_config_file for more info. Other
+		aspects like the Kafka broker IP address / port and topic name are to be configured
+		via an entry in the tee_receivers map (see examples/tee_receivers.lst) using the
+		kafka_broker and kafka_topic keys.
 DEFAULT:        none
 
 KEY:		thread_stack
@@ -2981,17 +3231,48 @@ DEFAULT:        false
 KEY:		telemetry_daemon_port_tcp [GLOBAL]
 DESC:		Makes the Streaming Telemetry daemon, pmtelemetryd, or the Streaming Telemetry thread
 		listen on the specified TCP port. (see telemetry/README.telemetry for gRPC support).
+		If SO_REUSEPORT is supported by the Operating System, you can read more about it at
+		the config key telemetry_daemon_port_udp.
 DEFAULT:	none
 
 KEY:            telemetry_daemon_port_udp [GLOBAL]
 DESC:           Makes the Streaming Telemetry daemon, pmtelemetryd, or the Streaming Telemetry thread
-		listen on the specified UDP port. 
+		listen on the specified UDP port. On systems where SO_REUSEPORT feature is available:
+		it allows multiple daemons to bind the same local address and port in order to load-
+		balance processing of incoming packets. This is best combined with a list of allowed
+		IP addresses, ie. bgp_daemon_allow_file, to explicitely wire peers to collectors. At the
+		end of this document, reference (1) to a URL to a presentation of the SO_REUSEPORT feature.
+		To enable SO_REUSEPORT on a Linux system supporting it 'sysctl net.core.allow_reuseport=1'. 
 DEFAULT:        none
 
 KEY:		telemetry_daemon_ip [GLOBAL]
 DESC:		Binds the Streaming Telemetry daemon to a specific interface. Expects as value an IPv4/
 		IPv6 address.
 DEFAULT:        0.0.0.0
+
+KEY:            telemetry_daemon_interface [GLOBAL]
+DESC:           Defines the interface for the Streaming Telemetry daemon to listen on. This makes it
+		possible to have the session happen entirely in one VRF by specifying the VRF device
+		name here.
+DEFAULT:        none
+
+KEY:		telemetry_daemon_ipv6_only [GLOBAL]
+VALUES:		[ true | false ]
+DESC:           When listening on all interfaces (default setting for telemetry_daemon_ip) and IPv6 
+		is enabled, it is possible to connect with both IPv4 (IPv6 IPv4-mapped) and IPv6.
+		Setting this knob to true disables the IPv4 (IPv6 IPv4-mapped) part.
+DEFAULT:	false
+
+KEY:		telemetry_daemon_rp_ebpf_prog [GLOBAL]
+DESC:		If SO_REUSEPORT is supported by the Operating System (read more about this feature at the
+		config key telemetry_daemon_port_udp) and eBPF support is configured when compiling
+		(--enable-ebpf), this allows to load a custom load-balancer. To load-share, daemons
+		have to be part of the same cluster_name and each be configured with a distinct
+		cluster_id. An example of such eBPF program is available here:
+		https://github.com/insa-unyte/ebpf-loadbalancer Note: Linux kernel 4.x does not yet
+		support eBPF locking so daemons have currently to be (re-) started with a short time
+		gap to avoid race conditions.
+DEFAULT:	none
 
 KEY:		telemetry_daemon_decoder [GLOBAL]
 VALUES:		[ json | gpb | cisco_v0 | cisco_v1 ]
@@ -3057,6 +3338,38 @@ DESC:           Name of the Kafka topic to consume JSON-encoded Streaming Teleme
 		variables are supported for dynamic naming of the topic. See kafka_topic for more
 		info.
 DEFAULT:        none
+
+KEY:		telemetry_daemon_udp_notif_ip [GLOBAL]
+DESC:		Defines the IP address to listen to for UDP-Notif, a proposed standard at IETF
+		for UDP-based Transport for Configured Subscriptions. Expects as value an IPv4/
+                IPv6 address. UDP-Notif collection relies on the Unyte UDP-Notif C collector
+		library developed by INSA Lyon and publicly available on GitHub at this URL:
+		https://github.com/insa-unyte/udp-notif-c-collector
+DEFAULT:	none
+
+KEY:		telemetry_daemon_udp_notif_port [GLOBAL]
+DESC:		Defines the UDP port to bind to for UDP-Notif.
+DEFAULT:	none
+
+KEY:		telemetry_daemon_udp_notif_interface [GLOBAL]
+DESC:		Defines the interface for the Streaming Telemetry daemon to listen on for UDP-Notif.
+		This makes it possible to have the session happen entirely in one VRF by specifying
+		the VRF device name here.
+DEFAULT:	none
+
+KEY:		telemetry_daemon_udp_notif_ipv6_only [GLOBAL]
+VALUES:		[ true | false ]
+DESC:		When listening on all interfaces (default setting for telemetry_daemon_udp_notif_ip)
+		and IPv6 is enabled, it is possible to connect with both IPv4 (IPv6 IPv4-mapped) and
+		IPv6. Setting this knob to true disables the IPv4 (IPv6 IPv4-mapped) part.
+DEFAULT:	false
+
+KEY:		telemetry_daemon_udp_notif_nmsgs [GLOBAL]
+DESC:		Defines the buffer of messages to receive at once for UDP-Notif. The default, 1,
+		is excellent for lab environments, PoC scenarios and no-latency processing. The
+		Unyte UDP-Notif C collector recommended default is 10: for production scenarios
+		this number may need to be raised for increased processing efficiency.
+DEFAULT:	1
 
 KEY:            telemetry_daemon_msglog_output [GLOBAL]
 VALUES:         [ json ]
@@ -3127,24 +3440,28 @@ DESC:		Defines the Redis database to select. The database is a positive integer 
 DEFAULT:	0
 
 KEY:		cluster_name
-DESC:		Defines the name of the cluster; it will become the prefix of every key stored in
-		the Redis database. It enables forming a cluster with the other daemons pointed to
-		the same <redis_host, cluster_name>. Cluster name is expected to be a string, ie.
-		"test", "pmacct", etc. 
+DESC:		Defines the name of the cluster and is expected to be a string, ie. "test", "pmacct",
+		etc.; this is relevant in two contexts: 1) it enables forming a cluster with other
+		daemons pointed to the same <redis_host, cluster_name>; 2) it makes daemons binding
+		to the same TCP/UDP port to be part of the same load-sharing SO_REUSEPORT group (see
+		*_rp_ebpf_prog config keys for more info).
 DEFAULT:	none
 
 KEY:		cluster_id
-DESC:		Defines the ID of the node inside the <redis_host, cluster_name> cluster. Each daemon
-		must be assigned a unique ID and responsibility for respecting this property is left
-		to the user. Clsuter ID is expected to be a positive integer.
+DESC:		Defines the ID of the node inside the <redis_host, cluster_name> cluster and is
+		expected to be a positive integer. Each daemon must be assigned a unique ID and
+		responsibility for respecting this property is left to the user.
 DEFAULT:	0
 
 KEY:		tmp_asa_bi_flow
 VALUES:		[ true | false ]
-DESC:		Bi-flows use two counters to report counters, ie. bytes and packets, in forward and
-		reverse directions. This hack (ab)uses the packets field in order to store the extra
-		bytes counter. The patch specifically targets NetFlow v9/IPFIX field types #231 and
-		#232 and has been tested against a Cisco ASA export.
+DESC:		Bi-flows use two sets of counters to report bytes and packets, in initiator and
+		responder directions. This makes a total of four counters (2 for packets, 2 for
+		bytes) whereas pmacct does support two only (1 for packets, 1 for bytes). This
+		hack (ab)uses the packets field in order to store the extra bytes counter, more
+		specifically the bytes counter is used for the Initiator bytes and the packets
+		counter is used for the Responder bytes. The patch specifically targets NetFlow
+		v9/IPFIX field types #231 and #232 and has been tested against Cisco ASA exports.
 DEFAULT:	false
 
 KEY:		tmp_bgp_lookup_compare_ports
@@ -3164,6 +3481,27 @@ DESC:		If set to true, a Route Refresh capability is presented at BGP OPEN messa
 		peers (if, indeed, it was originally set by the peer). When receiving a route refresh
 		message, that is simply ignored. This does not intend to be a feature but a hack to
 		counter certain vendor bugs.
+DEFAULT:	false
+
+KEY:		tmp_bgp_daemon_origin_type_int
+VALUES:		[ true | false ]
+DESC:		If set to true, the BGP attribute "origin" is encoded on output as an integer value;
+		this was the legacy behaviour now replaced by a string encoding since version 1.7.3.
+		This may help existing deployments <= 1.7.3 to upgrade smoothly.
+DEFAULT:	false
+
+KEY:		tmp_telemetry_daemon_udp_notif_legacy
+VALUES:		[ true | false ]
+DESC:		If set to true, make use of the legacy UDP publish channel protocol as described in
+		draft-ietf-netconf-udp-pub-channel-05.
+DEFAULT:	false
+
+KEY:		tmp_telemetry_decode_cisco_v1_json_string
+VALUES:		[ true | false ]
+DESC:		If set to true, the "telemetry_data" received from the router will not be parsed by
+		the JSON library and will be passed as a string for post-processing. Only relevant
+		when telemetry_daemon_decoder is set to 'cisco_v1' and meant as a short-term remedy
+		for 64-bit integer values that cannot be properly parsed by Jansson JSON library.
 DEFAULT:	false
 
 REFERENCES:

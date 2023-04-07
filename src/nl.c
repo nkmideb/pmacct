@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "pmacct-data.h"
 #include "pmacct-dlt.h"
 #include "pretag_handlers.h"
@@ -68,7 +67,7 @@ void pm_pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *bu
     pptrs.blp_table = cb_data->blp_table;
     pptrs.bmed_table = cb_data->bmed_table;
     pptrs.bta_table = cb_data->bta_table;
-    pptrs.flow_type = PM_FTYPE_TRAFFIC;
+    pptrs.flow_type.traffic_type = PM_FTYPE_TRAFFIC;
 
     assert(cb_data);
 
@@ -83,7 +82,7 @@ void pm_pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *bu
       memcpy(&tpptrs->pkthdr, &pptrs.pkthdr, sizeof(struct pcap_pkthdr));
 
       tpptrs->packet_ptr = (u_char *) buf;
-      tpptrs->flow_type = PM_FTYPE_TRAFFIC;
+      tpptrs->flow_type.traffic_type = PM_FTYPE_TRAFFIC;
     }
 
     /* direction */
@@ -132,12 +131,12 @@ void pm_pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *bu
     }
     else pptrs.ifindex_out = 0;
 
-    if (config.decode_arista_trailer) {
-      memcpy(&ifacePresent, buf + pkthdr->len - 8, 4);
-        if (ifacePresent == 1) {
-          memcpy(&iface32, buf + pkthdr->len - 4, 4);
-          pptrs.ifindex_out = iface32;
-        }
+    if (config.pcap_arista_trailer_offset) {
+      memcpy(&ifacePresent, buf + pkthdr->len - config.pcap_arista_trailer_offset, 4);
+      if (ifacePresent == config.pcap_arista_trailer_flag_value) {
+        memcpy(&iface32, buf + pkthdr->len - (config.pcap_arista_trailer_offset - 4), 4);
+        pptrs.ifindex_out = iface32;
+      }
     }
 
     (*device->data->handler)(pkthdr, &pptrs);
@@ -192,7 +191,7 @@ void pm_pcap_cb(u_char *user, const struct pcap_pkthdr *pkthdr, const u_char *bu
   }
 
   if (reload_log) {
-    reload_logs();
+    reload_logs(PMACCTD_USAGE_HEADER);
     reload_log = FALSE;
   }
 
@@ -293,10 +292,7 @@ int ip_handler(register struct packet_ptrs *pptrs)
       }
     }
     else {
-      if (pptrs->l4_proto != IPPROTO_ICMP) {
-        pptrs->tlh_ptr = dummy_tlhdr;
-      }
-
+      pptrs->tlh_ptr = dummy_tlhdr;
       if (off < caplen) pptrs->payload_ptr = ptr;
     }
 
@@ -354,6 +350,11 @@ int ip_handler(register struct packet_ptrs *pptrs)
   }
 
   quit:
+
+  if (ret) {
+    pptrs->flow_type.traffic_type = PM_FTYPE_IPV4;
+  }
+ 
   return ret;
 }
 
@@ -370,7 +371,7 @@ int ip6_handler(register struct packet_ptrs *pptrs)
 
   /* length checks */
   if (off+IP6HdrSz > caplen) return FALSE; /* IP packet truncated */
-  if (plen == 0 && ((struct ip6_hdr *)pptrs->iph_ptr)->ip6_nxt != IPPROTO_NONE) {
+  if (plen == 0 && ((struct ip6_hdr *)pptrs->iph_ptr)->ip6_nxt == IPPROTO_HOPOPTS) {
     Log(LOG_INFO, "INFO ( %s/core ): NULL IPv6 payload length. Jumbo packets are currently not supported.\n", config.name);
     return FALSE;
   }
@@ -474,10 +475,7 @@ int ip6_handler(register struct packet_ptrs *pptrs)
       }
     }
     else {
-      if (pptrs->l4_proto != IPPROTO_ICMPV6) {
-        pptrs->tlh_ptr = dummy_tlhdr;
-      }
-
+      pptrs->tlh_ptr = dummy_tlhdr;
       if (off < caplen) pptrs->payload_ptr = ptr;
     }
 
@@ -514,6 +512,17 @@ int ip6_handler(register struct packet_ptrs *pptrs)
   }
 
   quit:
+
+  if (ret) {
+    pptrs->flow_type.traffic_type = PM_FTYPE_IPV6;
+  }
+
+  return ret;
+}
+
+int unknown_etype_handler(register struct packet_ptrs *pptrs)
+{
+  /* NO-OP - just return TRUE so packet is counted */
   return TRUE;
 }
 
@@ -532,7 +541,7 @@ int PM_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
     pptrs->have_tag2 = FALSE;
   }
 
-  /* Giving a first try with index(es) */
+  /* If we have any index defined, let's use it */
   if (config.maps_index && pretag_index_have_one(t)) {
     struct id_entry *index_results[ID_TABLE_INDEX_RESULTS];
     u_int32_t iterator;
@@ -545,7 +554,7 @@ int PM_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
       if (!(ret & PRETAG_MAP_RCODE_JEQ)) return ret;
     }
 
-    /* if we have at least one index we trust we did a good job */
+    /* done */
     return ret;
   }
 
@@ -611,7 +620,6 @@ void compute_once()
   MyTCPHdrSz = TCPFlagOff+1;
   PptrsSz = sizeof(struct packet_ptrs);
   UDPHdrSz = 8;
-  CSSz = sizeof(struct class_st);
   IpFlowCmnSz = sizeof(struct ip_flow_common);
   HostAddrSz = sizeof(struct host_addr);
   IP6HdrSz = sizeof(struct ip6_hdr);
@@ -774,10 +782,10 @@ void set_index_pkt_ptrs(struct packet_ptrs *pptrs)
 void PM_evaluate_flow_type(struct packet_ptrs *pptrs)
 {
   if (pptrs->l3_proto == ETHERTYPE_IP) {
-    pptrs->flow_type = PM_FTYPE_IPV4;
+    pptrs->flow_type.traffic_type = PM_FTYPE_IPV4;
   }
   else if (pptrs->l3_proto == ETHERTYPE_IPV6) {
-    pptrs->flow_type = PM_FTYPE_IPV6;
+    pptrs->flow_type.traffic_type = PM_FTYPE_IPV6;
   }
 }
 

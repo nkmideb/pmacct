@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,12 +21,14 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp.h"
 #include "bgp_xcs.h"
 #include "rpki/rpki.h"
 #include "bgp_blackhole.h"
 #include "thread_pool.h"
+#if defined WITH_EBPF
+#include "ebpf/ebpf_rp_balancer.h"
+#endif
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
 #endif
@@ -55,6 +57,8 @@ struct bgp_comm_range peer_src_as_asrange;
 u_int32_t (*bgp_route_info_modulo)(struct bgp_peer *, path_id_t *, int);
 struct bgp_rt_structs inter_domain_routing_dbs[FUNC_TYPE_MAX], *bgp_routing_db;
 struct bgp_misc_structs inter_domain_misc_dbs[FUNC_TYPE_MAX], *bgp_misc_db;
+bgp_tag_t bgp_logdump_tag;
+struct sockaddr_storage bgp_logdump_tag_peer;
 struct bgp_xconnects bgp_xcs_map;
 
 /* Functions */
@@ -92,9 +96,6 @@ int skinny_bgp_daemon()
 void skinny_bgp_daemon_online()
 {
   int ret, rc, peers_idx, allowed, yes=1;
-#if (defined IPV6_BINDV6ONLY)
-  int no=0;
-#endif
   int peers_idx_rr = 0, peers_xconnect_idx_rr = 0, max_peers_idx = 0;
   struct plugin_requests req;
   struct host_addr addr;
@@ -111,6 +112,9 @@ void skinny_bgp_daemon_online()
   struct timeval dump_refresh_timeout, *drt_ptr;
   struct bgp_peer_batch bp_batch;
   socklen_t slen, clen = sizeof(client);
+
+  struct id_table bgp_logdump_tag_table;
+  int bgp_logdump_tag_map_allocated;
 
   sigset_t signal_set;
 
@@ -328,18 +332,27 @@ void skinny_bgp_daemon_online()
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IP_TOS (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
   }
 
-#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
-  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *)&yes, (socklen_t) sizeof(yes));
-  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
-#else
-  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, (socklen_t) sizeof(yes));
-  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+#if (defined HAVE_SO_REUSEPORT)
+  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEPORT, (char *)&yes, (socklen_t) sizeof(yes));
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEPORT (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
 #endif
 
-#if (defined IPV6_BINDV6ONLY)
-  rc = setsockopt(config.bgp_sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
-  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IPV6_BINDV6ONLY (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+  rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, (socklen_t) sizeof(yes));
+  if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+
+#if (defined HAVE_SO_BINDTODEVICE)
+  if (config.bgp_daemon_interface)  {
+    rc = setsockopt(config.bgp_sock, SOL_SOCKET, SO_BINDTODEVICE, config.bgp_daemon_interface, (socklen_t) strlen(config.bgp_daemon_interface));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+  }
 #endif
+
+  if (config.bgp_daemon_ipv6_only) {
+    int yes=1;
+
+    rc = setsockopt(config.bgp_sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &yes, (socklen_t) sizeof(yes));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IPV6_V6ONLY (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
+  }
 
   if (config.bgp_daemon_pipe_size) {
     socklen_t l = sizeof(config.bgp_daemon_pipe_size);
@@ -369,6 +382,12 @@ void skinny_bgp_daemon_online()
     Log(LOG_ERR, "ERROR ( %s/%s ): listen() failed (errno: %d).\n", config.name, bgp_misc_db->log_str, errno);
     exit_gracefully(1);
   }
+
+#if defined WITH_EBPF
+    if (config.bgp_daemon_rp_ebpf_prog) {
+      attach_ebpf_reuseport_balancer(config.bgp_sock, config.bgp_daemon_rp_ebpf_prog, config.cluster_name, "bgp", config.cluster_id, TRUE);
+    }
+#endif
 
   /* Preparing for syncronous I/O multiplexing */
   select_fd = 0;
@@ -410,6 +429,10 @@ void skinny_bgp_daemon_online()
     config.bgp_daemon_batch_interval = 0;
   }
   else bgp_batch_init(&bp_batch, config.bgp_daemon_batch, config.bgp_daemon_batch_interval);
+
+  /* bgp_link_misc_structs() will re-apply. But we need to anticipate
+     this definition in order to build the Avro schemas correctly */
+  bgp_misc_db->tag_map = config.bgp_daemon_tag_map;
 
   if (bgp_misc_db->msglog_backend_methods) {
 #ifdef WITH_JANSSON
@@ -459,17 +482,7 @@ void skinny_bgp_daemon_online()
 	  exit_gracefully(1);
 	}
 
-	bgp_daemon_msglog_kafka_host.sd_schema[0] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
-										        bgp_misc_db->msglog_avro_schema[0], "bgp", "msglog",
-										        config.bgp_daemon_msglog_kafka_avro_schema_registry);
-
-	bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGINIT] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
-										        bgp_misc_db->msglog_avro_schema[BGP_LOG_TYPE_LOGINIT], "bgp", "loginit",
-										        config.bgp_daemon_msglog_kafka_avro_schema_registry);
-
-	bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGCLOSE] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
-										        bgp_misc_db->msglog_avro_schema[BGP_LOG_TYPE_LOGCLOSE], "bgp", "logclose",
-										        config.bgp_daemon_msglog_kafka_avro_schema_registry);
+	bgp_daemon_msglog_prepare_sd_schemas();
 #endif
       }
     }
@@ -477,8 +490,14 @@ void skinny_bgp_daemon_online()
   }
 
   if (bgp_misc_db->dump_backend_methods) {
+    if (!config.bgp_table_dump_workers) {
+      config.bgp_table_dump_workers = 1;
+    }
+
 #ifdef WITH_JANSSON
-    if (!config.bgp_table_dump_output) config.bgp_table_dump_output = PRINT_OUTPUT_JSON;
+    if (!config.bgp_table_dump_output) {
+      config.bgp_table_dump_output = PRINT_OUTPUT_JSON;
+    }
 #else
     Log(LOG_WARNING, "WARN ( %s/%s ): bgp_table_dump_output set to json but will produce no output (missing --enable-jansson).\n", config.name, bgp_misc_db->log_str);
 #endif
@@ -517,6 +536,16 @@ void skinny_bgp_daemon_online()
     char dump_roundoff[] = "m";
     time_t tmp_time;
 
+    if (!config.bgp_table_dump_time_slots) {
+      config.bgp_table_dump_time_slots = 1;
+    }
+    
+    bgp_misc_db->current_slot = 0;
+
+    if (config.bgp_table_dump_refresh_time % config.bgp_table_dump_time_slots != 0) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): 'bgp_table_dump_time_slots' is not a divisor of 'bgp_table_dump_refresh_time', please fix.\n", config.name, bgp_misc_db->log_str);
+    }
+
     if (config.bgp_table_dump_refresh_time) {
       gettimeofday(&bgp_misc_db->log_tstamp, NULL);
       dump_refresh_deadline = bgp_misc_db->log_tstamp.tv_sec;
@@ -532,9 +561,6 @@ void skinny_bgp_daemon_online()
       bgp_misc_db->dump_backend_methods = FALSE;
       Log(LOG_WARNING, "WARN ( %s/%s ): Invalid 'bgp_table_dump_refresh_time'.\n", config.name, bgp_misc_db->log_str);
     }
-
-    if (config.bgp_table_dump_amqp_routing_key) bgp_table_dump_init_amqp_host();
-    if (config.bgp_table_dump_kafka_topic) bgp_table_dump_init_kafka_host();
   }
 
 #ifdef WITH_AVRO
@@ -553,10 +579,29 @@ void skinny_bgp_daemon_online()
 #endif
   }
 
+  if (!config.writer_id_string) {
+    config.writer_id_string = DYNNAME_DEFAULT_WRITER_ID;
+  }
+
+  dynname_tokens_prepare(config.writer_id_string, &bgp_misc_db->writer_id_tokens, DYN_STR_WRITER_ID);
+
   select_fd = bkp_select_fd = (config.bgp_sock + 1);
   recalc_fds = FALSE;
 
   bgp_link_misc_structs(bgp_misc_db);
+
+  if (config.bgp_daemon_tag_map) {
+    memset(&bgp_logdump_tag, 0, sizeof(bgp_logdump_tag));
+    memset(&bgp_logdump_tag_table, 0, sizeof(bgp_logdump_tag_table));
+    memset(&req, 0, sizeof(req));
+    bgp_logdump_tag_map_allocated = FALSE;
+
+    load_pre_tag_map(ACCT_PMBGP, config.bgp_daemon_tag_map, &bgp_logdump_tag_table, &req,
+		     &bgp_logdump_tag_map_allocated, config.maps_entries, config.maps_row_len);
+
+    /* making some bindings */
+    bgp_logdump_tag.tag_table = (unsigned char *) &bgp_logdump_tag_table;
+  }
 
   sigemptyset(&signal_set);
   sigaddset(&signal_set, SIGCHLD);
@@ -637,6 +682,11 @@ void skinny_bgp_daemon_online()
 	load_id_file(MAP_BGP_XCS, config.bgp_xconnect_map, NULL, &req, &bgp_xcs_allocated);
       }
 
+      if (config.bgp_daemon_tag_map) {
+	load_pre_tag_map(ACCT_PMBGP, config.bgp_daemon_tag_map, &bgp_logdump_tag_table, &req,
+			 &bgp_logdump_tag_map_allocated, config.maps_entries, config.maps_row_len);
+      }
+
       reload_map_bgp_thread = FALSE;
     }
 
@@ -654,7 +704,7 @@ void skinny_bgp_daemon_online()
     }
 
     if (reload_log && !bgp_misc_db->is_thread) {
-      reload_logs();
+      reload_logs(PMBGPD_USAGE_HEADER);
       reload_log = FALSE;
     }
 
@@ -669,20 +719,22 @@ void skinny_bgp_daemon_online()
 	  bgp_peer_log_seq_init(&bgp_misc_db->log_seq);
       }
 
+
+      int refreshTimePerSlot = config.bgp_table_dump_refresh_time / config.bgp_table_dump_time_slots;
       if (bgp_misc_db->dump_backend_methods) {
 	while (bgp_misc_db->log_tstamp.tv_sec > dump_refresh_deadline) {
 	  bgp_misc_db->dump.tstamp.tv_sec = dump_refresh_deadline;
 	  bgp_misc_db->dump.tstamp.tv_usec = 0;
 	  compose_timestamp(bgp_misc_db->dump.tstamp_str, SRVBUFLEN, &bgp_misc_db->dump.tstamp, FALSE,
 			    config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
-	  bgp_misc_db->dump.period = config.bgp_table_dump_refresh_time;
+	  bgp_misc_db->dump.period = refreshTimePerSlot;
 
 	  if (bgp_peer_log_seq_has_ro_bit(&bgp_misc_db->log_seq))
 	    bgp_peer_log_seq_init(&bgp_misc_db->log_seq);
 
-	  bgp_handle_dump_event();
+	  bgp_handle_dump_event(max_peers_idx);
 
-	  dump_refresh_deadline += config.bgp_table_dump_refresh_time;
+	  dump_refresh_deadline += refreshTimePerSlot;
 	}
       }
 
@@ -703,6 +755,12 @@ void skinny_bgp_daemon_online()
 
         if (last_fail && ((last_fail + P_broker_timers_get_retry_interval(&bgp_daemon_msglog_kafka_host.btimers)) <= bgp_misc_db->log_tstamp.tv_sec))
           bgp_daemon_msglog_init_kafka_host();
+
+	if (config.bgp_daemon_msglog_kafka_avro_schema_registry) {
+#ifdef WITH_SERDES
+	  bgp_daemon_msglog_prepare_sd_schemas();
+#endif
+	}
       }
 #endif
     }
@@ -730,7 +788,7 @@ void skinny_bgp_daemon_online()
       if (!allowed) {
 	char disallowed_str[INET6_ADDRSTRLEN];
 
-	sa_to_str(disallowed_str, sizeof(disallowed_str), (struct sockaddr *) &client);
+	sa_to_str(disallowed_str, sizeof(disallowed_str), (struct sockaddr *) &client, TRUE);
 	Log(LOG_INFO, "INFO ( %s/%s ): [%s] peer '%s' not allowed. close()\n", config.name, bgp_misc_db->log_str, config.bgp_daemon_allow_file, disallowed_str);
 
         close(fd);
@@ -800,8 +858,16 @@ void skinny_bgp_daemon_online()
 	bgp_peer_cache_insert(peers_port_cache, bucket, peer);
       }
 
+      /* Being bgp_daemon_tag_map limited to 'ip' key lookups, this is
+	 finely placed here. Should further lookups be possible, this
+	 may be very possibly moved inside the loop */
+      if (config.bgp_daemon_tag_map) {
+	bgp_tag_init_find(peer, (struct sockaddr *) &bgp_logdump_tag_peer, &bgp_logdump_tag);
+	bgp_tag_find((struct id_table *)bgp_logdump_tag.tag_table, &bgp_logdump_tag, &bgp_logdump_tag.tag, NULL);
+      }
+
       if (bgp_misc_db->msglog_backend_methods)
-	bgp_peer_log_init(peer, config.bgp_daemon_msglog_output, FUNC_TYPE_BGP);
+	bgp_peer_log_init(peer, &bgp_logdump_tag, config.bgp_daemon_msglog_output, FUNC_TYPE_BGP);
 
       /* Check: more than one TCP connection from a peer (IP address) */
       for (peers_check_idx = 0, peers_num = 0; peers_check_idx < config.bgp_daemon_max_peers; peers_check_idx++) { 
@@ -1006,6 +1072,11 @@ void skinny_bgp_daemon_online()
 	  peer->last_keepalive = now;
 	} 
 
+	if (config.bgp_daemon_tag_map) {
+	  bgp_tag_init_find(peer, (struct sockaddr *) &bgp_logdump_tag_peer, &bgp_logdump_tag);
+	  bgp_tag_find((struct id_table *)bgp_logdump_tag.tag_table, &bgp_logdump_tag, &bgp_logdump_tag.tag, NULL);
+	}
+
 	ret = bgp_parse_msg(peer, now, TRUE);
 	if (ret) {
 	  FD_CLR(recv_fd, &bkp_read_descs);
@@ -1078,4 +1149,99 @@ void bgp_prepare_daemon()
 
   bgp_misc_db->log_str = malloc(strlen("core") + 1);
   strcpy(bgp_misc_db->log_str, "core");
+}
+
+void bgp_daemon_msglog_prepare_sd_schemas()
+{
+#ifdef WITH_SERDES
+  time_t last_fail = P_broker_timers_get_last_fail(&bgp_daemon_msglog_kafka_host.sd_schema_timers);
+
+  if ((last_fail + P_broker_timers_get_retry_interval(&bgp_daemon_msglog_kafka_host.sd_schema_timers)) <= bgp_misc_db->log_tstamp.tv_sec) {
+    if (!bgp_daemon_msglog_kafka_host.sd_schema[0]) {
+      bgp_daemon_msglog_kafka_host.sd_schema[0] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
+												     bgp_misc_db->msglog_avro_schema[0],
+												     "bgp", "msglog",
+												     config.bgp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bgp_daemon_msglog_kafka_host.sd_schema[0]) goto exit_lane;
+    }
+
+    if (!bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGINIT]) {
+      bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGINIT] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
+												     bgp_misc_db->msglog_avro_schema[BGP_LOG_TYPE_LOGINIT],
+												     "bgp", "loginit",
+												     config.bgp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGINIT]) goto exit_lane;
+    }
+
+    if (!bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGCLOSE]) {
+      bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGCLOSE] = compose_avro_schema_registry_name_2(config.bgp_daemon_msglog_kafka_topic, FALSE,
+												     bgp_misc_db->msglog_avro_schema[BGP_LOG_TYPE_LOGCLOSE],
+												     "bgp", "logclose",
+												     config.bgp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bgp_daemon_msglog_kafka_host.sd_schema[BGP_LOG_TYPE_LOGCLOSE]) goto exit_lane;
+    }
+  }
+
+  return;
+
+  exit_lane:
+  P_broker_timers_set_last_fail(&bgp_daemon_msglog_kafka_host.sd_schema_timers, time(NULL));
+#endif
+}
+
+void bgp_tag_init_find(struct bgp_peer *peer, struct sockaddr *sa, bgp_tag_t *pptrs)
+{
+  addr_to_sa(sa, &peer->addr, peer->tcp_port);
+  pptrs->f_agent = (u_char *) sa;
+}
+
+int bgp_tag_find(struct id_table *t, bgp_tag_t *pptrs, pm_id_t *tag, pm_id_t *tag2)
+{
+  struct sockaddr *sa = NULL;
+  int x, begin = 0, end = 0;
+  pm_id_t ret = 0;
+
+  if (!t) return 0;
+
+  sa = (struct sockaddr *) pptrs->f_agent;
+
+  /* The id_table is shared between by IPv4 and IPv6 NetFlow agents.
+     IPv4 ones are in the lower part (0..x), IPv6 ones are in the upper
+     part (x+1..end)
+  */
+
+  pretag_init_vars(pptrs, t);
+  if (tag) *tag = 0;
+  if (tag2) *tag2 = 0;
+  if (pptrs) {
+    pptrs->have_tag = FALSE;
+    pptrs->have_tag2 = FALSE;
+  }
+
+  /* XXX: tackle indexing */
+
+  if (sa->sa_family == AF_INET) {
+    begin = 0;
+    end = t->ipv4_num;
+  }
+  else if (sa->sa_family == AF_INET6) {
+    begin = t->num-t->ipv6_num;
+    end = t->num;
+  }
+
+  for (x = begin; x < end; x++) {
+    if (host_addr_mask_sa_cmp(&t->e[x].key.agent_ip.a, &t->e[x].key.agent_mask, sa) == 0) {
+      ret = pretag_entry_process(&t->e[x], pptrs, tag, tag2);
+
+      if (!ret || ret > TRUE) {
+        if (ret & PRETAG_MAP_RCODE_JEQ) {
+          x = t->e[x].jeq.ptr->pos;
+          x--; // yes, it will be automagically incremented by the for() cycle
+        }
+        else break;
+      }
+    }
+  }
+
+  return ret;
 }

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,13 +21,15 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp/bgp.h"
 #include "bmp.h"
 #include "rpki/rpki.h"
 #include "thread_pool.h"
 #include "ip_flow.h"
 #include "ip_frag.h"
+#if defined WITH_EBPF
+#include "ebpf/ebpf_rp_balancer.h"
+#endif
 #if defined WITH_RABBITMQ
 #include "amqp_common.h"
 #endif
@@ -40,6 +42,8 @@
 
 /* variables to be exported away */
 thread_pool_t *bmp_pool;
+bgp_tag_t bmp_logdump_tag;
+struct sockaddr_storage bmp_logdump_tag_peer;
 
 /* Functions */
 void bmp_daemon_wrapper()
@@ -88,6 +92,11 @@ int skinny_bmp_daemon()
   struct packet_ptrs recv_pptrs;
   unsigned char *bmp_packet;
   int sf_ret, pcap_savefile_round = 1;
+
+  /* bmp_daemon_tag_map stuff */
+  struct plugin_requests req;
+  struct id_table bmp_logdump_tag_table;
+  int bmp_logdump_tag_map_allocated;
 
   /* initial cleanups */
   reload_map_bmp_thread = FALSE;
@@ -247,22 +256,27 @@ int skinny_bmp_daemon()
       if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IP_TOS (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
     }
 
-#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
-    rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *)&yes, (socklen_t) sizeof(yes));
-    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
-#else
-    rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
+#if (defined HAVE_SO_REUSEPORT)
+    rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_REUSEPORT, (char *)&yes, (socklen_t) sizeof(yes));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEPORT (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
+#endif
+
+#if (defined HAVE_SO_BINDTODEVICE)
+  if (config.bmp_daemon_interface)  {
+    rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_BINDTODEVICE, config.bmp_daemon_interface, (socklen_t) strlen(config.bmp_daemon_interface));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
+  }
+#endif
+
+    rc = setsockopt(config.bmp_sock, SOL_SOCKET, SO_REUSEADDR, (char *)&yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for SO_REUSEADDR (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
-#endif
 
-#if (defined IPV6_BINDV6ONLY)
-    {
-      int no=0;
+    if (config.bmp_daemon_ipv6_only) {
+      int yes=1;
 
-      rc = setsockopt(config.bmp_sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
-      if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IPV6_BINDV6ONLY (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
+      rc = setsockopt(config.bmp_sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &yes, (socklen_t) sizeof(yes));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/%s ): setsockopt() failed for IPV6_V6ONLY (errno: %d).\n", config.name, bmp_misc_db->log_str, errno);
     }
-#endif
 
     if (config.bmp_daemon_pipe_size) {
       socklen_t l = sizeof(config.bmp_daemon_pipe_size);
@@ -303,6 +317,12 @@ int skinny_bmp_daemon()
       Log(LOG_INFO, "INFO ( %s/%s ): waiting for BMP data on %s:%u\n", config.name, bmp_misc_db->log_str, srv_string, srv_port);
     }
 
+#if defined WITH_EBPF
+    if (config.bmp_daemon_rp_ebpf_prog) {
+      attach_ebpf_reuseport_balancer(config.bmp_sock, config.bmp_daemon_rp_ebpf_prog, config.cluster_name, "bmp", config.cluster_id, TRUE);
+    }
+#endif
+
     /* Preparing ACL, if any */
     if (config.bmp_daemon_allow_file) load_allow_file(config.bmp_daemon_allow_file, &allow);
   }
@@ -339,6 +359,10 @@ int skinny_bmp_daemon()
     config.bmp_daemon_batch_interval = 0;
   }
   else bgp_batch_init(&bp_batch, config.bmp_daemon_batch, config.bmp_daemon_batch_interval);
+
+  /* bmp_link_misc_structs() will re-apply. But we need to anticipate
+     this definition in order to build the Avro schemas correctly */
+  bmp_misc_db->tag_map = config.bmp_daemon_tag_map;
 
   if (bmp_misc_db->msglog_backend_methods) {
 #ifdef WITH_JANSSON
@@ -414,50 +438,7 @@ int skinny_bmp_daemon()
 	  exit_gracefully(1);
         }
 	
-        bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_ROUTE_MONITOR] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_MSG_ROUTE_MONITOR],
-												     "bmp", "msglog_rm",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
-
-        bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_STATS] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_MSG_STATS],
-												     "bmp", "stats",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
-
-        bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_PEER_UP] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_MSG_PEER_UP],
-												     "bmp", "peer_up",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
-
-        bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_PEER_DOWN] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_MSG_PEER_DOWN],
-												     "bmp", "peer_down",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
-
-        bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_INIT] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_MSG_INIT],
-												     "bmp", "init",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
-
-        bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_TERM] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_MSG_TERM],
-												     "bmp", "term",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
-
-        bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_TMP_RPAT] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_MSG_TMP_RPAT],
-												     "bmp", "rpat",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
-
-	bmp_daemon_msglog_kafka_host.sd_schema[BMP_LOG_TYPE_LOGINIT] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_LOG_TYPE_LOGINIT],
-												     "bmp", "loginit",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
-
-	bmp_daemon_msglog_kafka_host.sd_schema[BMP_LOG_TYPE_LOGCLOSE] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
-												     bmp_misc_db->msglog_avro_schema[BMP_LOG_TYPE_LOGCLOSE],
-												     "bmp", "logclose",
-												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+	bmp_daemon_msglog_prepare_sd_schemas();
 #endif
       }
     }
@@ -465,8 +446,14 @@ int skinny_bmp_daemon()
   }
 
   if (bmp_misc_db->dump_backend_methods) {
+    if (!config.bmp_dump_workers) {
+      config.bmp_dump_workers = 1;
+    }
+
 #ifdef WITH_JANSSON
-    if (!config.bmp_dump_output) config.bmp_dump_output = PRINT_OUTPUT_JSON;
+    if (!config.bmp_dump_output) {
+      config.bmp_dump_output = PRINT_OUTPUT_JSON;
+    }
 #else
     Log(LOG_WARNING, "WARN ( %s/%s ): bmp_table_dump_output set to json but will produce no output (missing --enable-jansson).\n", config.name, bmp_misc_db->log_str);
 #endif
@@ -531,6 +518,16 @@ int skinny_bmp_daemon()
     char dump_roundoff[] = "m";
     time_t tmp_time;
 
+    if (!config.bmp_dump_time_slots) {
+      config.bmp_dump_time_slots = 1;
+    }
+
+    bmp_misc_db->current_slot = 0;
+    
+    if (config.bmp_dump_refresh_time % config.bmp_dump_time_slots != 0) {
+      Log(LOG_WARNING, "WARN ( %s/%s ): 'bmp_dump_time_slots' is not a divisor of 'bmp_dump_refresh_time', please fix.\n", config.name, bmp_misc_db->log_str);
+    }
+
     if (config.bmp_dump_refresh_time) {
       gettimeofday(&bmp_misc_db->log_tstamp, NULL);
       dump_refresh_deadline = bmp_misc_db->log_tstamp.tv_sec;
@@ -546,9 +543,6 @@ int skinny_bmp_daemon()
       bmp_misc_db->dump_backend_methods = FALSE;
       Log(LOG_WARNING, "WARN ( %s/%s ): Invalid 'bmp_dump_refresh_time'.\n", config.name, bmp_misc_db->log_str);
     }
-
-    if (config.bmp_dump_amqp_routing_key) bmp_dump_init_amqp_host();
-    if (config.bmp_dump_kafka_topic) bmp_dump_init_kafka_host();
   }
 
 #ifdef WITH_AVRO
@@ -567,10 +561,29 @@ int skinny_bmp_daemon()
 #endif
   }
 
+  if (!config.writer_id_string) {
+    config.writer_id_string = DYNNAME_DEFAULT_WRITER_ID;
+  }
+
+  dynname_tokens_prepare(config.writer_id_string, &bmp_misc_db->writer_id_tokens, DYN_STR_WRITER_ID);
+
   select_fd = bkp_select_fd = (config.bmp_sock + 1);
   recalc_fds = FALSE;
 
   bmp_link_misc_structs(bmp_misc_db);
+
+  if (config.bmp_daemon_tag_map) {
+    memset(&bmp_logdump_tag, 0, sizeof(bmp_logdump_tag));
+    memset(&bmp_logdump_tag_table, 0, sizeof(bmp_logdump_tag_table));
+    memset(&req, 0, sizeof(req));
+    bmp_logdump_tag_map_allocated = FALSE;
+
+    load_pre_tag_map(ACCT_PMBMP, config.bmp_daemon_tag_map, &bmp_logdump_tag_table, &req,
+                     &bmp_logdump_tag_map_allocated, config.maps_entries, config.maps_row_len);
+
+    /* making some bindings */
+    bmp_logdump_tag.tag_table = (unsigned char *) &bmp_logdump_tag_table;
+  }
 
   sigemptyset(&signal_set);
   sigaddset(&signal_set, SIGCHLD);
@@ -624,6 +637,11 @@ int skinny_bmp_daemon()
     if (reload_map_bmp_thread) {
       if (config.bmp_daemon_allow_file) load_allow_file(config.bmp_daemon_allow_file, &allow);
 
+      if (config.bmp_daemon_tag_map) {
+	load_pre_tag_map(ACCT_PMBMP, config.bmp_daemon_tag_map, &bmp_logdump_tag_table, &req,
+			 &bmp_logdump_tag_map_allocated, config.maps_entries, config.maps_row_len);
+      }
+
       reload_map_bmp_thread = FALSE;
     }
 
@@ -641,7 +659,7 @@ int skinny_bmp_daemon()
     }
 
     if (reload_log && !bmp_misc_db->is_thread) {
-      reload_logs();
+      reload_logs(PMBMPD_USAGE_HEADER);
       reload_log = FALSE;
     }
 
@@ -656,20 +674,22 @@ int skinny_bmp_daemon()
 	  bgp_peer_log_seq_init(&bmp_misc_db->log_seq);
       }
 
+
+      int refreshTimePerSlot = config.bmp_dump_refresh_time / config.bmp_dump_time_slots;
       if (bmp_misc_db->dump_backend_methods) {
         while (bmp_misc_db->log_tstamp.tv_sec > dump_refresh_deadline) {
           bmp_misc_db->dump.tstamp.tv_sec = dump_refresh_deadline;
           bmp_misc_db->dump.tstamp.tv_usec = 0;
           compose_timestamp(bmp_misc_db->dump.tstamp_str, SRVBUFLEN, &bmp_misc_db->dump.tstamp, FALSE,
 			    config.timestamps_since_epoch, config.timestamps_rfc3339, config.timestamps_utc);
-	  bmp_misc_db->dump.period = config.bmp_dump_refresh_time;
+	  bmp_misc_db->dump.period = refreshTimePerSlot;
 
 	  if (bgp_peer_log_seq_has_ro_bit(&bmp_misc_db->log_seq))
 	    bgp_peer_log_seq_init(&bmp_misc_db->log_seq);
 
-          bmp_handle_dump_event();
+          bmp_handle_dump_event(max_peers_idx);
 
-          dump_refresh_deadline += config.bmp_dump_refresh_time;
+          dump_refresh_deadline += refreshTimePerSlot;
         }
       }
 
@@ -690,6 +710,12 @@ int skinny_bmp_daemon()
 
         if (last_fail && ((last_fail + P_broker_timers_get_retry_interval(&bmp_daemon_msglog_kafka_host.btimers)) <= bmp_misc_db->log_tstamp.tv_sec))
           bmp_daemon_msglog_init_kafka_host();
+
+	if (config.bmp_daemon_msglog_kafka_avro_schema_registry) {
+#ifdef WITH_SERDES
+	  bmp_daemon_msglog_prepare_sd_schemas();
+#endif
+	}
       }
 #endif
     }
@@ -752,7 +778,7 @@ int skinny_bmp_daemon()
       if (!allowed) {
 	char disallowed_str[INET6_ADDRSTRLEN];
 
-	sa_to_str(disallowed_str, sizeof(disallowed_str), (struct sockaddr *) &client);
+	sa_to_str(disallowed_str, sizeof(disallowed_str), (struct sockaddr *) &client, TRUE);
 	Log(LOG_INFO, "INFO ( %s/%s ): [%s] peer '%s' not allowed. close()\n", config.name, bmp_misc_db->log_str, config.bmp_daemon_allow_file, disallowed_str);
 
 	close(fd);
@@ -819,11 +845,20 @@ int skinny_bmp_daemon()
       addr_to_str(peer->addr_str, &peer->addr);
       memcpy(&peer->id, &peer->addr, sizeof(struct host_addr)); /* XXX: some inet_ntoa()'s could be around against peer->id */
 
-      if (bmp_misc_db->msglog_backend_methods)
-        bgp_peer_log_init(peer, config.bmp_daemon_msglog_output, FUNC_TYPE_BMP);
+      if (!config.bmp_daemon_parse_proxy_header) {
+	if (config.bmp_daemon_tag_map) {
+	  bgp_tag_init_find(peer, (struct sockaddr *) &bmp_logdump_tag_peer, &bmp_logdump_tag);
+	  bgp_tag_find((struct id_table *)bmp_logdump_tag.tag_table, &bmp_logdump_tag, &bmp_logdump_tag.tag, NULL);
+	}
 
-      if (bmp_misc_db->dump_backend_methods)
-	bmp_dump_init_peer(peer);
+        if (bmp_misc_db->msglog_backend_methods) {
+          bgp_peer_log_init(peer, &bmp_logdump_tag, config.bmp_daemon_msglog_output, FUNC_TYPE_BMP);
+	}
+
+        if (bmp_misc_db->dump_backend_methods) {
+	  bmp_dump_init_peer(peer);
+	}
+      }
 
       /* Check: multiple TCP connections per peer */
       for (peers_check_idx = 0, peers_num = 0; peers_check_idx < config.bmp_daemon_max_peers; peers_check_idx++) {
@@ -864,12 +899,25 @@ int skinny_bmp_daemon()
     if (!peer) goto select_again;
 
     /* If first message after connect, check for proxy protocol header */
-    if (config.bmp_daemon_parse_proxy_header == TRUE && peer->parsed_proxy_header == 0) {
+    if (config.bmp_daemon_parse_proxy_header && !peer->parsed_proxy_header) {
       ret = parse_proxy_header(peer->fd, &peer->addr, &peer->tcp_port);
       if (ret < 0) {
         goto select_again; /* partial header */
       }
       addr_to_str(peer->addr_str, &peer->addr);
+
+      if (config.bmp_daemon_tag_map) {
+	bgp_tag_init_find(peer, (struct sockaddr *) &bmp_logdump_tag_peer, &bmp_logdump_tag);
+	bgp_tag_find((struct id_table *)bmp_logdump_tag.tag_table, &bmp_logdump_tag, &bmp_logdump_tag.tag, NULL);
+      }
+
+      if (bmp_misc_db->msglog_backend_methods) {
+        bgp_peer_log_init(peer, &bmp_logdump_tag, config.bmp_daemon_msglog_output, FUNC_TYPE_BMP);
+      }
+
+      if (bmp_misc_db->dump_backend_methods) {
+        bmp_dump_init_peer(peer);
+      }
     }
     peer->parsed_proxy_header = TRUE;
 
@@ -959,6 +1007,11 @@ int skinny_bmp_daemon()
       peer->msglen = len;
     }
 
+    if (config.bmp_daemon_tag_map) {
+      bgp_tag_init_find(peer, (struct sockaddr *) &bmp_logdump_tag_peer, &bmp_logdump_tag);
+      bgp_tag_find((struct id_table *)bmp_logdump_tag.tag_table, &bmp_logdump_tag, &bmp_logdump_tag.tag, NULL);
+    }
+
     do_term = FALSE;
     bmp_process_packet(peer->buf.base, peer->msglen, bmpp, &do_term);
 
@@ -1004,4 +1057,90 @@ void bmp_prepare_daemon()
 
   bmp_misc_db->log_str = malloc(strlen("core") + 1);
   strcpy(bmp_misc_db->log_str, "core");
+}
+
+void bmp_daemon_msglog_prepare_sd_schemas()
+{
+#ifdef WITH_SERDES
+  time_t last_fail = P_broker_timers_get_last_fail(&bmp_daemon_msglog_kafka_host.sd_schema_timers);
+
+  if ((last_fail + P_broker_timers_get_retry_interval(&bmp_daemon_msglog_kafka_host.sd_schema_timers)) <= bmp_misc_db->log_tstamp.tv_sec) {
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_ROUTE_MONITOR]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_ROUTE_MONITOR] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_MSG_ROUTE_MONITOR],
+												     "bmp", "msglog_rm",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_ROUTE_MONITOR]) goto exit_lane;
+    }
+
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_STATS]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_STATS] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_MSG_STATS],
+												     "bmp", "stats",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_STATS]) goto exit_lane;
+    }
+
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_PEER_UP]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_PEER_UP]= compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_MSG_PEER_UP],
+												     "bmp", "peer_up",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_PEER_UP]) goto exit_lane;
+    }
+
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_PEER_DOWN]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_PEER_DOWN] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_MSG_PEER_DOWN],
+												     "bmp", "peer_down",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_PEER_DOWN]) goto exit_lane;
+    }
+
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_INIT]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_INIT] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_MSG_INIT],
+												     "bmp", "init",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_INIT]) goto exit_lane;
+    }
+
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_TERM]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_TERM] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_MSG_TERM],
+												     "bmp", "term",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_TERM]) goto exit_lane;
+    }
+
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_TMP_RPAT]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_TMP_RPAT] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_MSG_TMP_RPAT],
+												     "bmp", "rpat",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_MSG_TMP_RPAT]) goto exit_lane;
+    }
+
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_LOG_TYPE_LOGINIT]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_LOG_TYPE_LOGINIT] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_LOG_TYPE_LOGINIT],
+												     "bmp", "loginit",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_LOG_TYPE_LOGINIT]) goto exit_lane;
+    }
+
+    if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_LOG_TYPE_LOGCLOSE]) {
+      bmp_daemon_msglog_kafka_host.sd_schema[BMP_LOG_TYPE_LOGCLOSE] = compose_avro_schema_registry_name_2(config.bmp_daemon_msglog_kafka_topic, FALSE,
+												     bmp_misc_db->msglog_avro_schema[BMP_LOG_TYPE_LOGCLOSE],
+												     "bmp", "logclose",
+												     config.bmp_daemon_msglog_kafka_avro_schema_registry);
+      if (!bmp_daemon_msglog_kafka_host.sd_schema[BMP_LOG_TYPE_LOGCLOSE]) goto exit_lane;
+    }
+  }
+
+  return;
+
+  exit_lane:
+  P_broker_timers_set_last_fail(&bmp_daemon_msglog_kafka_host.sd_schema_timers, time(NULL));
+#endif
 }

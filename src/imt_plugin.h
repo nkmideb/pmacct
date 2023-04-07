@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -37,7 +37,8 @@ struct acc {
   pm_counter_t packet_counter;
   pm_counter_t flow_counter;
   u_int8_t flow_type; 
-  u_int32_t tcp_flags; 
+  u_int8_t tcp_flags;
+  u_int8_t tunnel_tcp_flags;
   unsigned int signature;
   u_int8_t reset_flag;
   struct timeval rstamp;	/* classifiers: reset timestamp */
@@ -100,6 +101,9 @@ struct reply_buffer {
 struct stripped_class {
   pm_class_t id;
   char protocol[MAX_PROTOCOL_LEN];
+#if defined (WITH_NDPI)
+  ndpi_protocol_category_t category;
+#endif
 };
 
 struct imt_custom_primitive_entry {

@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "nfacctd.h"
 #include "pretag_handlers.h"
 #include "pretag-data.h"
@@ -58,20 +57,23 @@ int (*find_id_func)(struct id_table *, struct packet_ptrs *, pm_id_t *, pm_id_t 
 void load_id_file(int acct_type, char *filename, struct id_table *t, struct plugin_requests *req, int *map_allocated)
 {
   struct id_table tmp;
-  struct id_entry *ptr, *ptr2;
+  struct id_entry *ptr;
   FILE *file;
   char *buf = NULL;
-  int v4_num = 0, x, tot_lines = 0, err, index, label_solved, sz;
-  int ignoring, map_entries, map_row_len;
+  int v4_num = 0, x, tot_lines = 0, err, errs = 0, index, label_solved;
+  int ignoring, report = TRUE, map_entries, map_row_len;
   struct stat st;
   int v6_num = 0;
+  u_int64_t sz;
 
   if (!filename || !map_allocated) return;
 
   if (acct_type == ACCT_NF || acct_type == ACCT_SF || acct_type == ACCT_PM ||
       acct_type == MAP_BGP_PEER_AS_SRC || acct_type == MAP_BGP_TO_XFLOW_AGENT ||
       acct_type == MAP_BGP_SRC_LOCAL_PREF || acct_type == MAP_BGP_SRC_MED ||
-      acct_type == MAP_FLOW_TO_RD || acct_type == MAP_SAMPLING) {
+      acct_type == MAP_FLOW_TO_RD || acct_type == MAP_SAMPLING ||
+      acct_type == ACCT_PMBGP || acct_type == ACCT_PMBMP ||
+      acct_type == ACCT_PMTELE) {
     req->key_value_table = (void *) &tmp;
   }
 
@@ -108,7 +110,7 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
       goto handle_error;
     }
 
-    sz = sizeof(struct id_entry)*map_entries;
+    sz = sizeof(struct id_entry) * map_entries;
 
     if (t) {
       if (*map_allocated == 0) {
@@ -127,11 +129,16 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
         if (config.maps_index && pretag_index_have_one(t)) {
 	  pretag_index_destroy(t);
 	}
+
 	for (index = 0; index < t->num; index++) {
 	  pcap_freecode(&t->e[index].key.filter);
 	  pretag_free_label(&t->e[index].label);
 	  if (t->e[index].jeq.label) free(t->e[index].jeq.label); 
+	  if (t->e[index].entry_label) free(t->e[index].entry_label);
 	}
+
+	cdada_map_destroy(t->label_map_v4);
+	cdada_map_destroy(t->label_map_v6);
 
         memset(t, 0, sizeof(struct id_table));
         t->e = ptr ;
@@ -361,7 +368,24 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
                   }
                   key = NULL; value = NULL;
                 }
+		else if (acct_type == ACCT_PMBGP || acct_type == ACCT_PMBMP || acct_type == ACCT_PMTELE) {
+                  for (dindex = 0; strcmp(tag_map_nonflow_dictionary[dindex].key, ""); dindex++) {
+                    if (!strcmp(tag_map_nonflow_dictionary[dindex].key, key)) {
+                      err = (*tag_map_nonflow_dictionary[dindex].func)(filename, &tmp.e[tmp.num], value, req, acct_type);
+                      break;
+                    }
+                    else err = E_NOTFOUND; /* key not found */
+		  }
+                  if (err) {
+                    if (err == E_NOTFOUND) Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] unknown key '%s'. Ignored.\n", 
+						config.name, config.type, filename, tot_lines, key);
+                    else Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] Line ignored.\n", config.name, config.type, filename, tot_lines);
+                    break;
+                  }
+                  key = NULL; value = NULL;
+		}
 		else {
+		  /* ACCT_NF, ACCT_SF, ACCT_PM, etc. */
 		  if (tee_plugins) {
                     for (dindex = 0; strcmp(tag_map_tee_dictionary[dindex].key, ""); dindex++) {
                       if (!strcmp(tag_map_tee_dictionary[dindex].key, key)) {
@@ -392,7 +416,8 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
             }
 	    if (!ignoring) {
               /* verifying errors and required fields */
-	      if (acct_type == ACCT_NF || acct_type == ACCT_SF) {
+	      if (acct_type == ACCT_NF || acct_type == ACCT_SF || acct_type == ACCT_PMBGP ||
+		  acct_type == ACCT_PMBMP || acct_type == ACCT_PMTELE) {
 	        if (tmp.e[tmp.num].id && tmp.e[tmp.num].id2 && tmp.e[tmp.num].label.len) 
 		   Log(LOG_WARNING, "WARN ( %s/%s ): [%s:%u] set_tag (id), set_tag2 (id2) and set_label are mutual exclusive. Line ignored.\n", 
 			config.name, config.type, filename, tot_lines);
@@ -411,7 +436,15 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 		      tmp.e[tmp.num].key.agent_mask.family = AF_INET;
 
 		      memcpy(&recirc_e, &tmp.e[tmp.num], sizeof(struct id_entry));
-		      recirculate = TRUE;
+
+		      /*
+			If indexing is enabled and no address family is specified for 'ip'
+			(ie. 'ip' is likely not specified), we will not include it as part
+			of the index hash serializer anyway; we can skip recirculation.
+		      */
+		      if (!config.maps_index) {
+			recirculate = TRUE;
+		      }
 		    }
 		    else {
 		      memcpy(&tmp.e[tmp.num], &recirc_e, sizeof(struct id_entry));
@@ -552,10 +585,36 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
       t->ipv4_num = v4_num; 
       t->ipv4_base = &t->e[x];
       t->flags = tmp.flags;
+      {
+	pm_id_t pm_cdada_map_container;
+
+        t->label_map_v4 = cdada_map_create(pm_cdada_map_container);
+        t->label_map_v6 = cdada_map_create(pm_cdada_map_container);
+	if (!t->label_map_v4 || !t->label_map_v6) {
+	  Log(LOG_ERR, "ERROR ( %s/%s ): [%s] unable to allocate Label Map. Exiting.\n", config.name, config.type, t->filename);
+	  exit_gracefully(1);
+	}
+      }
+
       for (index = 0; index < tmp.num; index++) {
-        if (tmp.e[index].key.agent_ip.a.family == AF_INET) { 
+        if (tmp.e[index].key.agent_ip.a.family == AF_INET) {
           memcpy(&t->e[x], &tmp.e[index], sizeof(struct id_entry));
 	  t->e[x].pos = x;
+
+	  if (t->e[x].entry_label) {
+	    int ret;
+	    pm_id_t *idx_value;
+
+	    ret = cdada_map_find(t->label_map_v4, t->e[x].entry_label, (void **) &idx_value);
+	    if (ret == CDADA_E_NOT_FOUND) {
+	      ret = cdada_map_insert(t->label_map_v4, t->e[x].entry_label, &t->e[x].pos);
+	      if (ret != CDADA_SUCCESS) {
+		Log(LOG_ERR, "ERROR ( %s/%s ): [%s] unable to insert in Label Map v4. Exiting.\n", config.name, config.type, t->filename);
+		exit_gracefully(1);
+	      }
+	    }
+	  }
+
 	  x++;
         }
       }
@@ -566,6 +625,21 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
         if (tmp.e[index].key.agent_ip.a.family == AF_INET6) {
           memcpy(&t->e[x], &tmp.e[index], sizeof(struct id_entry));
 	  t->e[x].pos = x;
+
+	  if (t->e[x].entry_label) {
+	    int ret;
+	    pm_id_t *idx_value;
+
+	    ret = cdada_map_find(t->label_map_v6, t->e[x].entry_label, (void **) &idx_value);
+	    if (ret == CDADA_E_NOT_FOUND) {
+	      ret = cdada_map_insert(t->label_map_v6, t->e[x].entry_label, &t->e[x].pos);
+	      if (ret != CDADA_SUCCESS) {
+		Log(LOG_ERR, "ERROR ( %s/%s ): [%s] unable to insert in Label Map v6. Exiting.\n", config.name, config.type, t->filename);
+		exit_gracefully(1);
+	      }
+	    }
+	  }
+
           x++;
         }
       }
@@ -583,11 +657,14 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 	    label_solved = TRUE;
 	  }
 	  else {
-	    for (ptr2 = ptr+1, index = x+1; index < t->ipv4_num; ptr2++, index++) {
-	      if (!strcmp(ptr->jeq.label, ptr2->entry_label)) {
-	        ptr->jeq.ptr = ptr2;
-	        label_solved = TRUE;
-		break;
+            int ret;
+            pm_id_t *idx_value;
+
+            ret = cdada_map_find(t->label_map_v4, ptr->jeq.label, (void **) &idx_value);
+	    if (ret == CDADA_SUCCESS) {
+	      if ((*idx_value) > ptr->pos) {
+		ptr->jeq.ptr = &t->e[(*idx_value)];
+		label_solved = TRUE;
 	      }
 	    }
 	  }
@@ -601,19 +678,24 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
 
       for (ptr = t->ipv6_base, x = 0; x < t->ipv6_num; ptr++, x++) {
         if (ptr->jeq.label) {
+          int ret;
+          pm_id_t *idx_value;
+
           label_solved = FALSE;
-          for (ptr2 = ptr+1, index = x+1; index < t->ipv6_num; ptr2++, index++) {
-            if (!strcmp(ptr->jeq.label, ptr2->entry_label)) {
-              ptr->jeq.ptr = ptr2;
-              label_solved = TRUE;
-	      break;
-            }
-          }
-          if (!label_solved) {
-            ptr->jeq.ptr = NULL;
-            Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Unresolved label '%s'. Ignoring it.\n",
+
+          ret = cdada_map_find(t->label_map_v6, ptr->jeq.label, (void **) &idx_value);
+	  if (ret == CDADA_SUCCESS) {
+	    if ((*idx_value) > ptr->pos) {
+	      ptr->jeq.ptr = &t->e[(*idx_value)];
+	      label_solved = TRUE;
+	    }
+	  }
+
+	  if (!label_solved) {
+	    ptr->jeq.ptr = NULL;
+	    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Unresolved label '%s'. Ignoring it.\n",
 			config.name, config.type, filename, ptr->jeq.label);
-          }
+	  }
         }
       }
 
@@ -622,7 +704,8 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
       /* pre_tag_map indexing here */
       if (config.maps_index &&
 	  (acct_type == ACCT_NF || acct_type == ACCT_SF || acct_type == ACCT_PM ||
-	   acct_type == MAP_BGP_PEER_AS_SRC || acct_type == MAP_FLOW_TO_RD)) {
+	   acct_type == MAP_BGP_PEER_AS_SRC || acct_type == MAP_FLOW_TO_RD ||
+	   acct_type == ACCT_PMBGP || acct_type == ACCT_PMBMP || acct_type == ACCT_PMTELE)) {
 	pt_bitmap_t idx_bmap;
 	
 	t->index_num = MAX_ID_TABLE_INDEXES;
@@ -649,16 +732,48 @@ void load_id_file(int acct_type, char *filename, struct id_table *t, struct plug
           idx_bmap = pretag_index_build_bitmap(ptr, acct_type);
 
 	  /* fill indexes */
-	  pretag_index_fill(t, idx_bmap, ptr);
+	  err = pretag_index_fill(t, idx_bmap, ptr, x);
+	  if (err == PRETAG_IDX_ERR_FATAL) {
+	    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Fatal error. Indexing disabled.\n", config.name, config.type, filename);
+	    pretag_index_destroy(t);
+
+	    errs++;
+	    report = FALSE;
+
+	    break;
+	  }
+	  else if (err) {
+	    errs++;
+	  }
 	}
+      }
+
+      if (errs && t->flags & PRETAG_FLAG_JEQ) {
+	/* in case of fatal error, index was already destroyed */
+	if (err != PRETAG_IDX_ERR_FATAL) {
+          Log(LOG_WARNING, "WARN ( %s/%s ): [%s] 'jeq' not supported if error count is non-zero when loading. Indexing disabled.\n",
+	      config.name, config.type, filename);
+          pretag_index_destroy(t);
+	}
+
+        report = FALSE;
       }
 
       if (t->flags & PRETAG_FLAG_NEG) {
         Log(LOG_WARNING, "WARN ( %s/%s ): [%s] Negations not supported. Indexing disabled.\n",
-                config.name, config.type, filename);
+	    config.name, config.type, filename);
         pretag_index_destroy(t);
+        report = FALSE;
       }
-      else pretag_index_report(t);
+
+      if (pretag_index_validate_dedup_netmask_lists(t) == ERR) {
+        pretag_index_destroy(t);
+        report = FALSE;
+      }
+
+      if (report) {
+	pretag_index_report(t);
+      }
     }
   }
 
@@ -688,11 +803,20 @@ u_int8_t pt_check_neg(char **value, u_int32_t *flags)
   if (**value == '-') {
     (*value)++;
 
-    if (flags) *flags |= PRETAG_FLAG_NEG;
+    if (flags) {
+      *flags |= PRETAG_FLAG_NEG;
+    }
 
     return TRUE;
   }
   else return FALSE;
+}
+
+void pt_set_jeq(u_int32_t *flags)
+{
+  if (flags) {
+    *flags |= PRETAG_FLAG_JEQ;
+  }
 }
 
 char *pt_check_range(char *str)
@@ -757,16 +881,24 @@ int pretag_malloc_label(pt_label_t *label, int len)
   return SUCCESS;
 }
 
-int pretag_realloc_label(pt_label_t *label, int len)
+int pretag_realloc_label(pt_label_t *label, int old_len, int add_len)
 {
+  char *local_val = NULL;
+
   if (!label) return ERR;
 
-  label->val = realloc(label->val, len);
-  if (!label->val) {
+  local_val = malloc((old_len + add_len));
+  if (!local_val) {
     Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (pretag_realloc_label).\n", config.name, config.type);
     return ERR;
   }
-  label->len = len;
+
+  memset(local_val, 0, (old_len + add_len));
+  strcpy(local_val, label->val);
+
+  free(label->val);
+  label->val = local_val;
+  label->len = (old_len + add_len);
 
   return SUCCESS;
 }
@@ -818,8 +950,6 @@ int pretag_move_label(pt_label_t *dst, pt_label_t *src)
 
 int pretag_append_label(pt_label_t *dst, pt_label_t *src)
 {
-  char default_sep[] = ",";
-
   if (!src || !dst) return ERR;
 
   if (!dst->val) {
@@ -828,15 +958,15 @@ int pretag_append_label(pt_label_t *dst, pt_label_t *src)
   }
   else {
     if (src->len) {
-      pretag_realloc_label(dst, (dst->len + src->len + 1 /* sep */ + 1 /* null */));
+      pretag_realloc_label(dst, dst->len, (src->len + 1 /* sep */ + 1 /* null */));
       if (!dst->val) {
         Log(LOG_ERR, "ERROR ( %s/%s ): malloc() failed (pretag_append_label).\n", config.name, config.type);
         return ERR;
       }
 
-      strncat(dst->val, default_sep, 1);
+      strcat(dst->val, DEFAULT_SEP);
       strncat(dst->val, src->val, src->len);
-      dst->val[dst->len] = '\0';
+      dst->val[dst->len - 1] = '\0';
     }
   }
 
@@ -941,6 +1071,9 @@ pt_bitmap_t pretag_index_build_bitmap(struct id_entry *ptr, int acct_type)
   if (idx_bmap & PRETAG_SET_TAG2) idx_bmap ^= PRETAG_SET_TAG2;
   if (idx_bmap & PRETAG_SET_LABEL) idx_bmap ^= PRETAG_SET_LABEL;
 
+  /* 3) handle the case of catch-all rule */
+  if (!idx_bmap) idx_bmap = PRETAG_NULL;
+
   return idx_bmap;
 }
 
@@ -967,7 +1100,7 @@ int pretag_index_set_handlers(struct id_table *t)
   u_int32_t index = 0, iterator = 0, handler_index = 0;
 
   if (!t) return TRUE;
-  
+
   for (iterator = 0; iterator < t->index_num; iterator++) {
     residual_idx_bmap = t->index[iterator].bitmap;
 
@@ -1006,47 +1139,55 @@ int pretag_index_set_handlers(struct id_table *t)
 
 int pretag_index_allocate(struct id_table *t)
 {
-  pt_bitmap_t idx_t_size = 0;
-  u_int32_t iterator = 0, j = 0;
-  int ret, destroy = FALSE;
+  u_int32_t iterator = 0, i = 0, j = 0, z = 0;
+  int destroy = FALSE;
 
   if (!t) return TRUE;
 
   for (iterator = 0; iterator < t->index_num; iterator++) {
     if (t->index[iterator].entries) {
-      Log(LOG_INFO, "INFO ( %s/%s ): [%s] maps_index: created index %llx (%u entries).\n", config.name,
+      u_int32_t idx_entry_size = 0;
+
+      Log(LOG_INFO, "INFO ( %s/%s ): [%s] maps_index: creating index %llx (%u entries).\n", config.name,
     		config.type, t->filename, (unsigned long long)t->index[iterator].bitmap, t->index[iterator].entries);
 
-      assert(!t->index[iterator].idx_t);
-      
-      t->index[iterator].modulo = next_prime(t->index[iterator].entries * 2);
-      if (!t->index[iterator].modulo) t->index[iterator].modulo = (t->index[iterator].entries * 2);
+      assert(!t->index[iterator].idx_map);
 
-      idx_t_size = t->index[iterator].modulo * sizeof(struct id_index_entry);
-      t->index[iterator].idx_t = malloc(idx_t_size);
-
-      if (!t->index[iterator].idx_t) {
-        Log(LOG_WARNING, "WARN ( %s/%s ): [%s] maps_index: unable to allocate index %llx.\n", config.name,
-		config.type, t->filename, (unsigned long long)t->index[iterator].bitmap);
-	t->index[iterator].bitmap = 0;
-	t->index[iterator].entries = 0;
-	destroy = TRUE;
-	break;
-      }
-      else {
-	memset(t->index[iterator].idx_t, 0, idx_t_size); 
-
-	for (j = 0; j < t->index[iterator].modulo; j++) {
-	  t->index[iterator].idx_t[j].depth = ID_TABLE_INDEX_DEPTH;
+      for (idx_entry_size = 0, i = 0; i < MAX_BITMAP_ENTRIES; i++) {
+	if (!t->index[iterator].idt_handler[i]) {
+	  break;
 	}
 
-	ret = hash_init_serial(&t->index[iterator].hash_serializer, 16 /* dummy len for init sake */);
-	if (ret == ERR) {
-	  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] maps_index: unable to allocate hash serializer for index %llx.\n", config.name,
-		config.type, t->filename, (unsigned long long)t->index[iterator].bitmap);
+	for (j = 0; tag_map_index_entries_dictionary[j].key; j++) {
+	  if (t->index[iterator].idt_handler[i] == tag_map_index_entries_dictionary[j].func) {
+	    for (z = 0; tag_map_index_entries_size_dictionary[z].key; z++) {
+	      if (tag_map_index_entries_size_dictionary[z].key == tag_map_index_entries_dictionary[j].key) {
+		idx_entry_size += tag_map_index_entries_size_dictionary[z].size;
+		break;
+	      }
+	    }
+	    break;
+	  }
+	}
+      }
+
+      if (idx_entry_size) {
+	char pm_cdada_map_container[idx_entry_size];
+
+	hash_init_serial(&t->index[iterator].hash_serializer, idx_entry_size);
+        t->index[iterator].idx_map = cdada_map_create(pm_cdada_map_container);
+        if (!t->index[iterator].idx_map) {
+	  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] maps_index: unable to allocate index %llx. Destroying.\n", config.name,
+	      config.type, t->filename, (unsigned long long)t->index[iterator].bitmap);
 	  destroy = TRUE;
 	  break;
 	}
+      }
+      else {
+	Log(LOG_WARNING, "WARN ( %s/%s ): [%s] maps_index: null key for index %llx. Destroying.\n", config.name,
+	    config.type, t->filename, (unsigned long long)t->index[iterator].bitmap);
+	destroy = TRUE;
+	break;
       }
     }
   }
@@ -1059,100 +1200,126 @@ int pretag_index_allocate(struct id_table *t)
   return SUCCESS;
 }
 
-int pretag_index_fill(struct id_table *t, pt_bitmap_t idx_bmap, struct id_entry *ptr)
+int pretag_index_fill(struct id_table *t, pt_bitmap_t idx_bmap, struct id_entry *ptr, int lineno)
 {
-  u_int32_t index = 0, iterator = 0, handler_index = 0;
+  u_int32_t iterator = 0, handler_index = 0;
+  int ret = SUCCESS;
 
-  if (!t) return ERR;
+  if (!t) return PRETAG_IDX_ERR_FATAL;
 
   for (iterator = 0; iterator < t->index_num; iterator++) {
     if (t->index[iterator].entries && t->index[iterator].bitmap == idx_bmap) {
-      struct id_entry e;
-      struct id_index_entry *idie;
       pm_hash_serial_t *hash_serializer;
       pm_hash_key_t *hash_key;
-      int modulo, buckets;
 
-      /* fill serializer in and compute modulo */
-      memset(&e, 0, sizeof(struct id_entry));
+      /* fill serializer in */
       hash_serializer = &t->index[iterator].hash_serializer;
       hash_serial_set_off(hash_serializer, 0);
       hash_key = hash_serial_get_key(hash_serializer);
-      buckets = t->index[iterator].modulo;
 
-      if (!hash_key) return ERR;
+      if (!hash_key) return PRETAG_IDX_ERR_FATAL;
 
       for (handler_index = 0; t->index[iterator].idt_handler[handler_index]; handler_index++) {
-	(*t->index[iterator].idt_handler[handler_index])(&e, hash_serializer, ptr);
-      }
-      modulo = cache_crc32(hash_key_get_val(hash_key), hash_key_get_len(hash_key)) % buckets;
-      idie = &t->index[iterator].idx_t[modulo];
-
-      for (index = 0; index < idie->depth; index++) {
-        if (!idie->result[index]) {
-	  hash_dup_key(&idie->hash_key[index], hash_key);
-          idie->result[index] = ptr;
-          break;
-        }
-        /* removing duplicates */
-        else {
-	  pm_id_t saved_pos_idie, saved_pos_ptr;
-	  int match = FALSE;
-
-	  saved_pos_idie = idie->result[index]->pos; idie->result[index]->pos = 0;
-	  saved_pos_ptr = ptr->pos; ptr->pos = 0;
-
-          if (!memcmp(idie->result[index], ptr, sizeof(struct id_entry))) match = TRUE;
-
-          idie->result[index]->pos = saved_pos_idie;
-          ptr->pos = saved_pos_ptr;
-
-	  if (match) {
-	    hash_destroy_key(hash_key);
-	    break;
-	  }
+	ret = (*t->index[iterator].idt_handler[handler_index])(&t->index[iterator], handler_index, hash_serializer, ptr);
+        if (ret) {
+	  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] pretag_index_fill(): index=%llx line=%d (err!)\n",
+	      config.name, config.type, t->filename, (unsigned long long)idx_bmap, (lineno + 1));
+	  break;
         }
       }
 
-      if (index == idie->depth) {
-        Log(LOG_WARNING, "WARN ( %s/%s ): [%s] maps_index: out of index space %llx. Indexing disabled.\n",
-		config.name, config.type, t->filename, (unsigned long long)idx_bmap);
-	pretag_index_report(t);
-	pretag_index_destroy(t);
-	break;
+      if (!ret) {
+        ret = cdada_map_insert(t->index[iterator].idx_map, hash_key_get_val(hash_key), ptr);
+        if (ret == CDADA_E_EXISTS) {
+	  u_char key_hexdump[hash_key_get_len(hash_key) * 3];
+	  serialize_hex(hash_key_get_val(hash_key), key_hexdump, hash_key_get_len(hash_key));
+
+	  Log(LOG_DEBUG, "DEBUG ( %s/%s ): [%s] pretag_index_fill(): index=%llx line=%d key=%s (dup!)\n",
+	      config.name, config.type, t->filename, (unsigned long long)idx_bmap, (lineno + 1), key_hexdump);
+
+	  ret = PRETAG_IDX_ERR_NONE; /* alias SUCCESS */
+	}
       }
+
+      break;
+    }
+  }
+
+  return ret;
+}
+
+int pretag_index_validate_dedup_netmask_lists(struct id_table *t)
+{
+  u_int32_t iterator = 0;
+
+  if (!t) return ERR;
+
+  /* dedup */
+  for (iterator = 0; iterator < t->index_num; iterator++) {
+    if (t->index[iterator].netmask.v4.list) {
+      cdada_list_sort(t->index[iterator].netmask.v4.list);
+      cdada_list_unique(t->index[iterator].netmask.v4.list);
+      t->index[iterator].netmask.v4.size = cdada_list_size(t->index[iterator].netmask.v4.list);
+    }
+
+    if (t->index[iterator].netmask.v6.list) {
+      cdada_list_sort(t->index[iterator].netmask.v6.list);
+      cdada_list_unique(t->index[iterator].netmask.v6.list);
+      t->index[iterator].netmask.v6.size = cdada_list_size(t->index[iterator].netmask.v6.list);
     }
   }
 
   return SUCCESS;
 }
 
+void pretag_index_print_key(const cdada_map_t *map, const void *key, void *value, void *opaque)
+{
+  struct id_table_index *index = opaque;
+  pm_hash_serial_t *hash_serializer;
+  pm_hash_key_t *hash_key;
+  u_int16_t hash_keylen;
+
+  hash_serializer = &index->hash_serializer;
+  hash_key = hash_serial_get_key(hash_serializer);
+  hash_keylen = hash_key_get_len(hash_key);
+
+  {
+    u_char key_hexdump[hash_keylen * 3];
+    serialize_hex(key, key_hexdump, hash_keylen);
+
+    Log(LOG_DEBUG, "DEBUG ( %s/%s ): pretag_index_print_key(): index=%llx key=%s\n",
+	config.name, config.type, (unsigned long long)index->bitmap, key_hexdump);
+  }
+}
+
 void pretag_index_report(struct id_table *t)
 {
-  u_int32_t iterator = 0, buckets = 0, index = 0;
+  u_int32_t iterator = 0;
 
   if (!t) return;
 
   for (iterator = 0; iterator < t->index_num; iterator++) {
     if (t->index[iterator].entries) {
-      u_int32_t bucket_depths[ID_TABLE_INDEX_DEPTH];
+      Log(LOG_INFO, "INFO ( %s/%s ): [%s] pretag_index_report(): index=%llx entries=%u\n",
+	  config.name, config.type, t->filename, (unsigned long long)t->index[iterator].bitmap,
+	  cdada_map_size(t->index[iterator].idx_map));
 
-      buckets = t->index[iterator].modulo;
-      memset(&bucket_depths, 0, sizeof(bucket_depths));
-
-      for (index = 0; index < buckets; index++) {
-	struct id_index_entry *idie = &t->index[iterator].idx_t[index]; 
-	u_int32_t depth = 0;
-
-	for (depth = 0; idie->result[depth] && depth < idie->depth; depth++) bucket_depths[depth]++;
+      if (t->index[iterator].netmask.v4.list) {
+        Log(LOG_INFO, "INFO ( %s/%s ): [%s] pretag_index_report(): index=%llx handler=%u netmask.v4.list_entries=%u\n",
+	    config.name, config.type, t->filename, (unsigned long long)t->index[iterator].bitmap,
+	    t->index[iterator].netmask.hdlr_no, cdada_list_size(t->index[iterator].netmask.v4.list));
       }
 
-      Log(LOG_DEBUG, "DEBUG ( %s/%s ): [%s] pretag_index_report(): index=%llx buckets=%u depths=[0:%u 1:%u 2:%u 3:%u 4:%u 5:%u 6:%u 7:%u] size=%lu\n",
-	  config.name, config.type, t->filename, (unsigned long long)t->index[iterator].bitmap,
-	  buckets, bucket_depths[0], bucket_depths[1], bucket_depths[2], bucket_depths[3],
-	  bucket_depths[4], bucket_depths[5], bucket_depths[6], bucket_depths[7],
-	  (unsigned long)(buckets * sizeof(struct id_index_entry)));
-    } 
+      if (t->index[iterator].netmask.v6.list) {
+        Log(LOG_INFO, "INFO ( %s/%s ): [%s] pretag_index_report(): index=%llx handler=%u netmask.v6.list_entries=%u\n",
+	    config.name, config.type, t->filename, (unsigned long long)t->index[iterator].bitmap,
+	    t->index[iterator].netmask.hdlr_no, cdada_list_size(t->index[iterator].netmask.v6.list));
+      }
+
+      if (config.debug) {
+	cdada_map_traverse(t->index[iterator].idx_map, &pretag_index_print_key, &t->index[iterator]);
+      }
+    }
   }
 }
 
@@ -1160,28 +1327,43 @@ void pretag_index_destroy(struct id_table *t)
 {
   pm_hash_serial_t *hash_serializer;
   pm_hash_key_t *hash_key;
-  u_int32_t iterator = 0, buckets = 0, bucket_idx = 0, depth_idx = 0;
+  u_int32_t iterator = 0;
 
   if (!t) return;
 
   for (iterator = 0; iterator < t->index_num; iterator++) {
-    if (t->index[iterator].idx_t) {
-      buckets = t->index[iterator].modulo;
-
-      for (bucket_idx = 0; bucket_idx < buckets; bucket_idx++) {
-        for (depth_idx = 0; depth_idx < ID_TABLE_INDEX_DEPTH; depth_idx++) {
-          hash_destroy_key(&t->index[iterator].idx_t[bucket_idx].hash_key[depth_idx]);
-        }
-      }
-
-      free(t->index[iterator].idx_t);
-      Log(LOG_INFO, "INFO ( %s/%s ): [%s] maps_index: destroyed index %llx.\n",
-                config.name, config.type, t->filename, (unsigned long long)t->index[iterator].bitmap);
-    }
-
     hash_serializer = &t->index[iterator].hash_serializer;
     hash_key = hash_serial_get_key(hash_serializer);
+
+    /* destroy the hash */
+    if (t->index[iterator].idx_map) {
+      char pm_cdada_map_container[hash_key_get_len(hash_key)];
+      void *idx_map_val;
+
+      Log(LOG_INFO, "INFO ( %s/%s ): [%s] maps_index: destroying index %llx.\n", config.name,
+	  config.type, t->filename, (unsigned long long)t->index[iterator].bitmap);
+
+      while (cdada_map_first(t->index[iterator].idx_map, pm_cdada_map_container, &idx_map_val) == CDADA_SUCCESS) {
+	cdada_map_erase(t->index[iterator].idx_map, pm_cdada_map_container);
+      }
+
+      cdada_map_destroy(t->index[iterator].idx_map);
+      t->index[iterator].idx_map = NULL;
+    }
+
+    /* destroy the serializer */
     hash_destroy_key(hash_key);
+
+    /* destroy the lists */
+    if (t->index[iterator].netmask.v4.list) {
+      cdada_list_destroy(t->index[iterator].netmask.v4.list);
+    }
+
+    if (t->index[iterator].netmask.v6.list) {
+      cdada_list_destroy(t->index[iterator].netmask.v6.list);
+    }
+
+    /* cleanup */
     memset(&t->index[iterator], 0, sizeof(struct id_table_index));
   }
 
@@ -1191,50 +1373,66 @@ void pretag_index_destroy(struct id_table *t)
 u_int32_t pretag_index_lookup(struct id_table *t, struct packet_ptrs *pptrs, struct id_entry **index_results, int ir_entries)
 {
   struct id_entry res_fdata;
-  struct id_index_entry *idie;
   pm_hash_serial_t *hash_serializer;
   pm_hash_key_t *hash_key;
-  u_int32_t iterator, index_cc, index_hdlr;
-  int modulo, buckets, iterator_ir;
+  u_int32_t iterator, index_hdlr;
+  int iterator_ir, netmask_idx, netmask_max, ret;
+  void *idx_value = NULL;
 
   if (!t || !pptrs || !index_results) return 0;
 
   memset(&res_fdata, 0, sizeof(res_fdata));
   memset(index_results, 0, (sizeof(struct id_entry *) * ir_entries));
   iterator_ir = 0;
+  netmask_idx = netmask_max = ERR;
 
   for (iterator = 0; iterator < t->index_num; iterator++) {
     if (t->index[iterator].entries) {
+      if (pptrs->l3_proto == ETHERTYPE_IP && t->index[iterator].netmask.v4.size) {
+	netmask_idx = 0;
+	netmask_max = t->index[iterator].netmask.v4.size;
+      }
+      else if (pptrs->l3_proto == ETHERTYPE_IPV6 && t->index[iterator].netmask.v6.size) {
+	netmask_idx = 0;
+	netmask_max = t->index[iterator].netmask.v6.size;
+      }
+
+      netmask_recirc:
+
       hash_serializer = &t->index[iterator].hash_serializer;
       hash_serial_set_off(hash_serializer, 0);
       hash_key = hash_serial_get_key(hash_serializer);
-      buckets = t->index[iterator].modulo;
 
       for (index_hdlr = 0; (*t->index[iterator].fdata_handler[index_hdlr]); index_hdlr++) {
-        (*t->index[iterator].fdata_handler[index_hdlr])(&res_fdata, &t->index[iterator].hash_serializer, pptrs);
+        (*t->index[iterator].fdata_handler[index_hdlr])(&t->index[iterator], index_hdlr, netmask_idx,
+							&res_fdata, &t->index[iterator].hash_serializer, pptrs);
       }
 
-      modulo = cache_crc32(hash_key_get_val(hash_key), hash_key_get_len(hash_key)) % buckets;
-      idie = &t->index[iterator].idx_t[modulo];
+      if (netmask_idx >= 0) {
+	netmask_idx++;
+      }
 
-      for (index_cc = 0; idie->result[index_cc] && index_cc < idie->depth; index_cc++) {
-	if (!hash_key_cmp(&idie->hash_key[index_cc], hash_key)) {
-          index_results[iterator_ir] = idie->result[index_cc];
-	  if (iterator_ir < ir_entries) iterator_ir++;
-	  else {
-	    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] maps_index: out of index results space. Indexing disabled.\n",
-                config.name, config.type, t->filename);
-	    pretag_index_destroy(t);
-	    memset(index_results, 0, (sizeof(struct id_entry *) * ir_entries));
-	    return 0;
-	  }
+      idx_value = NULL;
+      ret = cdada_map_find(t->index[iterator].idx_map, hash_key_get_val(hash_key), &idx_value);
+      if (ret == CDADA_SUCCESS) {
+	index_results[iterator_ir] = idx_value;
+	if (iterator_ir < ir_entries) iterator_ir++;
+	else {
+	  Log(LOG_WARNING, "WARN ( %s/%s ): [%s] maps_index: out of index results space. Indexing disabled.\n",
+	      config.name, config.type, t->filename);
+	  pretag_index_destroy(t);
+	  memset(index_results, 0, (sizeof(struct id_entry *) * ir_entries));
+	  return 0;
 	}
+      }
+
+      if (netmask_idx < netmask_max) {
+        goto netmask_recirc;
       }
     }
     else break;
   }
 
-  // pretag_index_results_compress(index_results, iterator_ir);
   pretag_index_results_sort(index_results, iterator_ir);
   pretag_index_results_compress_jeqs(index_results, iterator_ir);
 
@@ -1255,26 +1453,6 @@ void pretag_index_results_sort(struct id_entry **index_results, int ir_entries)
 	index_results[j] = index_results[i];
 	index_results[i] = ptr;
       }
-    }
-  }
-}
-
-void pretag_index_results_compress(struct id_entry **index_results, int ir_entries)
-{
-  u_int32_t j, valid;
-  int i;
-
-  if (!index_results) return;
-
-  for (i = 0; i < ir_entries; i++) {
-    valid = 0;
-    if (!index_results[i]) {
-      for (j = i + 1; j < ir_entries; j++) {
-	if (index_results[j]) valid++;
-        index_results[j-1] = index_results[j];
-      }
-      index_results[ir_entries-1] = NULL;
-      if (!index_results[i] && valid) i--;
     }
   }
 }

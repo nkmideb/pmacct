@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -20,7 +20,6 @@
 */
 
 #include "pmacct.h"
-#include "addr.h"
 #ifdef WITH_KAFKA
 #include "kafka_common.h"
 #endif
@@ -86,7 +85,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
   signal(SIGPIPE, SIG_IGN);
   signal(SIGCHLD, SIG_IGN);
 
-  if (config.tee_transparent && getuid() != 0) {
+  if (config.tee_transparent && getuid() != 0 && !config.pmacctd_nonroot) {
     Log(LOG_ERR, "ERROR ( %s/%s ): Transparent mode requires super-user permissions. Exiting ...\n", config.name, config.type);
     exit_gracefully(1);
   }
@@ -180,7 +179,7 @@ void tee_plugin(int pipe_fd, struct configuration *cfgptr, void *ptr)
     }
 
     if (reload_log) {
-      reload_logs();
+      reload_logs(NULL);
       reload_log = FALSE;
     }
 
@@ -625,8 +624,8 @@ void Tee_init_socks()
         }
       }
 
-      target->fd = Tee_prepare_sock((struct sockaddr *) &target->dest, target->dest_len, receivers.pools[pool_idx].src_port,
-				    config.tee_transparent, config.tee_pipe_size);
+      target->fd = Tee_prepare_sock((struct sockaddr *) &target->dest, target->dest_len, config.nfprobe_source_ip,
+				    receivers.pools[pool_idx].src_port, config.tee_transparent, config.tee_pipe_size);
 
       if (config.debug) {
 	struct host_addr recv_addr;
@@ -697,9 +696,12 @@ void Tee_init_zmq_host(struct p_zmq_host *zmq_host, char *zmq_address, u_int32_t
 }
 #endif
 
-int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port, int transparent, int pipe_size)
+int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, char *src_ip, u_int16_t src_port, int transparent, int pipe_size)
 {
   int s, ret = 0;
+#if defined BSD
+  int hincl = TRUE;
+#endif
 
   if (!transparent) {
     struct host_addr source_ip;
@@ -708,8 +710,14 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port, i
     memset(&source_ip, 0, sizeof(source_ip));
     memset(&ssource_ip, 0, sizeof(ssource_ip));
 
-    if (src_port) { 
-      source_ip.family = addr->sa_family; 
+    if (src_ip || src_port) {
+      if (src_ip) {
+	str_to_addr(src_ip, &source_ip);
+      }
+      else {
+	source_ip.family = addr->sa_family;
+      }
+
       ret = addr_to_sa((struct sockaddr *) &ssource_ip, &source_ip, src_port);
     }
 
@@ -718,15 +726,15 @@ int Tee_prepare_sock(struct sockaddr *addr, socklen_t len, u_int16_t src_port, i
       exit_gracefully(1);
     }
 
-    if (ret && bind(s, (struct sockaddr *) &ssource_ip, sizeof(ssource_ip)) == -1)
+    if (ret && bind(s, (struct sockaddr *) &ssource_ip, sizeof(ssource_ip)) == -1) {
       Log(LOG_WARNING, "WARN ( %s/%s ): bind() error: %s\n", config.name, config.type, strerror(errno));
+    }
   }
   else {
     if ((s = socket(addr->sa_family, SOCK_RAW, IPPROTO_RAW)) == -1) {
       Log(LOG_ERR, "ERROR ( %s/%s ): socket() error: %s\n", config.name, config.type, strerror(errno));
       exit_gracefully(1);
     }
-
 
 #if defined BSD
     setsockopt(s, IPPROTO_IP, IP_HDRINCL, &hincl, (socklen_t) sizeof(hincl));
@@ -917,9 +925,8 @@ void Tee_select_templates(unsigned char *pkt, int pkt_len, int nfv, unsigned cha
   while (term1 > term2) {
     int fset_id = ntohs(hdr_flowset->flow_id);
     int fset_len = ntohs(hdr_flowset->flow_len);
-    int fset_hdr_len = sizeof(struct data_hdr_v9);
 
-    if (!fset_len || (fset_hdr_len + fset_len) > pkt_len) break;
+    if (!fset_len || fset_len > pkt_len) break;
 
     /* if template, copy over */
     if (((nfv == 9) && (fset_id == 0 || fset_id == 1)) ||

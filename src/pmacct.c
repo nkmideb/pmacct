@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -24,7 +24,6 @@
 /* include */
 #include "pmacct.h"
 #include "pmacct-data.h"
-#include "addr.h"
 #include "imt_plugin.h"
 #include "bgp/bgp_packet.h"
 #include "bgp/bgp.h"
@@ -47,6 +46,7 @@ void client_counters_merge(void *, int, int, int, int, int);
 int pmc_sanitize_buf(char *);
 void pmc_trim_all_spaces(char *);
 char *pmc_extract_token(char **, int);
+u_int16_t pmc_bgp_rd_type_get(u_int16_t);
 int pmc_bgp_rd2str(char *, rd_t *);
 int pmc_bgp_str2rd(rd_t *, char *);
 char *pmc_compose_json(u_int64_t, u_int64_t, u_int8_t, struct pkt_primitives *,
@@ -54,7 +54,7 @@ char *pmc_compose_json(u_int64_t, u_int64_t, u_int8_t, struct pkt_primitives *,
 			struct pkt_nat_primitives *, struct pkt_mpls_primitives *,
 			struct pkt_tunnel_primitives *, u_char *,
 			struct pkt_vlen_hdr_primitives *, pm_counter_t, pm_counter_t,
-			pm_counter_t, u_int32_t, struct timeval *, int, int);
+			pm_counter_t, u_int8_t, u_int8_t, struct timeval *, int, int);
 void pmc_append_rfc3339_timezone(char *, int, const struct tm *);
 void pmc_compose_timestamp(char *, int, struct timeval *, int, int, int);
 void pmc_custom_primitive_header_print(char *, int, struct imt_custom_primitive_entry *, int);
@@ -65,6 +65,8 @@ void pmc_lower_string(char *);
 char *pmc_ndpi_get_proto_name(u_int16_t);
 const char *pmc_rpki_roa_print(u_int8_t);
 u_int8_t pmc_rpki_str2roa(char *);
+const char *pmc_sampling_direction_print(u_int8_t);
+u_int8_t pmc_sampling_direction_str2id(char *);
 
 /* vars */
 struct imt_custom_primitives pmc_custom_primitives_registry;
@@ -95,7 +97,7 @@ void usage_client(char *prog)
   printf("  -n\t<bytes | packets | flows | all> \n\tSelect the counters to print (applies to -N)\n");
   printf("  -S\tSum counters instead of returning a single counter for each request (applies to -N)\n");
   printf("  -a\tDisplay all table fields (even those currently unused)\n");
-  printf("  -c\t< src_mac | dst_mac | vlan | cos | src_host | dst_host | src_net | dst_net | src_mask | dst_mask | \n\t src_port | dst_port | tos | proto | src_as | dst_as | sum_mac | sum_host | sum_net | sum_as | \n\t sum_port | in_iface | out_iface | tag | tag2 | flows | class | std_comm | ext_comm | lrg_comm | \n\t med | local_pref | as_path | dst_roa | peer_src_ip | peer_dst_ip | peer_src_as | peer_dst_as | \n\t src_as_path | src_std_comm | src_ext_comm | src_lrg_comm | src_med | src_local_pref | src_roa | \n\t mpls_vpn_rd | mpls_pw_id | etype | sampling_rate | sampling_direction | post_nat_src_host | \n\t post_nat_dst_host | post_nat_src_port | post_nat_dst_port | nat_event | tunnel_src_mac | \n\t tunnel_dst_mac | tunnel_src_host | tunnel_dst_host | tunnel_protocol | tunnel_tos | \n\t tunnel_src_port | tunnel_dst_port | vxlan | timestamp_start | timestamp_end | timestamp_arrival | \n\t mpls_label_top | mpls_label_bottom |  mpls_stack_depth | label | src_host_country | \n\t dst_host_country | export_proto_seqno | export_proto_version | export_proto_sysid | \n\t src_host_pocode | dst_host_pocode | src_host_coords | dst_host_coords > \n\tSelect primitives to match (required by -N and -M)\n");
+  printf("  -c\t< src_mac | dst_mac | vlan | out_vlan | cos | src_host | dst_host | src_net | dst_net | src_mask | dst_mask | \n\t src_port | dst_port | tos | proto | src_as | dst_as | sum_mac | sum_host | sum_net | sum_as | \n\t sum_port | in_iface | out_iface | tag | tag2 | flows | class | std_comm | ext_comm | lrg_comm | \n\t med | local_pref | as_path | dst_roa | peer_src_ip | peer_dst_ip | peer_src_as | peer_dst_as | \n\t src_as_path | src_std_comm | src_ext_comm | src_lrg_comm | src_med | src_local_pref | src_roa | \n\t mpls_vpn_rd | mpls_pw_id | etype | sampling_rate | sampling_direction | post_nat_src_host | \n\t post_nat_dst_host | post_nat_src_port | post_nat_dst_port | nat_event | fw_event | fwd_status | \n\t tunnel_src_mac | tunnel_dst_mac | tunnel_src_host | tunnel_dst_host | tunnel_protocol | \n\t tunnel_tos | tunnel_src_port | tunnel_dst_port | vxlan | timestamp_start | timestamp_end | \n\t timestamp_arrival | mpls_label_top | mpls_label_bottom |  label | \n\t src_host_country | dst_host_country | export_proto_seqno | export_proto_version | \n\t export_proto_sysid | src_host_pocode | dst_host_pocode | src_host_coords | dst_host_coords > \n\tSelect primitives to match (required by -N and -M)\n");
   printf("  -T\t<bytes | packets | flows>,[<# how many>] \n\tOutput top N statistics (applies to -M and -s)\n");
   printf("  -e\tClear statistics\n");
   printf("  -i\tShow time (in seconds) since statistics were last cleared (ie. pmacct -e)\n");
@@ -173,6 +175,7 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     printf("SRC_MAC            ");
     printf("DST_MAC            ");
     printf("VLAN   ");
+    printf("OUT_VLAN   ");
     printf("COS ");
     printf("ETYPE  ");
 #endif
@@ -221,10 +224,11 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     printf("POST_NAT_SRC_PORT  ");
     printf("POST_NAT_DST_PORT  ");
     printf("NAT_EVENT ");
+    printf("FW_EVENT ");
+    printf("FWD_STATUS ");
 
     printf("MPLS_LABEL_TOP  ");
     printf("MPLS_LABEL_BOTTOM  ");
-    printf("MPLS_STACK_DEPTH  ");
 
     printf("TUNNEL_SRC_MAC     ");
     printf("TUNNEL_DST_MAC     ");
@@ -274,6 +278,7 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     if (what_to_count & (COUNT_SRC_MAC|COUNT_SUM_MAC)) printf("SRC_MAC            "); 
     if (what_to_count & COUNT_DST_MAC) printf("DST_MAC            "); 
     if (what_to_count & COUNT_VLAN) printf("VLAN   ");
+    if (what_to_count_2 & COUNT_OUT_VLAN) printf("OUT_VLAN ");
     if (what_to_count & COUNT_COS) printf("COS ");
     if (what_to_count & COUNT_ETHERTYPE) printf("ETYPE  ");
 #endif
@@ -335,10 +340,11 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     if (what_to_count_2 & COUNT_POST_NAT_SRC_PORT) printf("POST_NAT_SRC_PORT  ");
     if (what_to_count_2 & COUNT_POST_NAT_DST_PORT) printf("POST_NAT_DST_PORT  ");
     if (what_to_count_2 & COUNT_NAT_EVENT) printf("NAT_EVENT ");
+    if (what_to_count_2 & COUNT_FW_EVENT) printf("FW_EVENT ");
+    if (what_to_count_2 & COUNT_FWD_STATUS) printf("FWD_STATUS ");
 
     if (what_to_count_2 & COUNT_MPLS_LABEL_TOP) printf("MPLS_LABEL_TOP  ");
     if (what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM) printf("MPLS_LABEL_BOTTOM  ");
-    if (what_to_count_2 & COUNT_MPLS_STACK_DEPTH) printf("MPLS_STACK_DEPTH  ");
 
     if (what_to_count_2 & COUNT_TUNNEL_SRC_MAC) printf("TUNNEL_SRC_MAC     ");
     if (what_to_count_2 & COUNT_TUNNEL_DST_MAC) printf("TUNNEL_DST_MAC     ");
@@ -348,6 +354,7 @@ void write_stats_header_formatted(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to
     if (what_to_count_2 & COUNT_TUNNEL_IP_TOS) printf("TUNNEL_TOS  ");
     if (what_to_count_2 & COUNT_TUNNEL_SRC_PORT) printf("TUNNEL_SRC_PORT  ");
     if (what_to_count_2 & COUNT_TUNNEL_DST_PORT) printf("TUNNEL_DST_PORT  ");
+    if (what_to_count_2 & COUNT_TUNNEL_TCPFLAGS) printf("TUNNEL_TCP_FLAGS  ");
     if (what_to_count_2 & COUNT_VXLAN) printf("VXLAN     ");
 
     if (what_to_count_2 & COUNT_TIMESTAMP_START) printf("TIMESTAMP_START                ");
@@ -393,6 +400,7 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     printf("%sSRC_MAC", write_sep(sep, &count));
     printf("%sDST_MAC", write_sep(sep, &count));
     printf("%sVLAN", write_sep(sep, &count));
+    printf("%sOUT_VLAN", write_sep(sep, &count));
     printf("%sCOS", write_sep(sep, &count));
     printf("%sETYPE", write_sep(sep, &count));
 #endif
@@ -440,9 +448,10 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     printf("%sPOST_NAT_SRC_PORT", write_sep(sep, &count));
     printf("%sPOST_NAT_DST_PORT", write_sep(sep, &count));
     printf("%sNAT_EVENT", write_sep(sep, &count));
+    printf("%sFW_EVENT", write_sep(sep, &count));
+    printf("%sFWD_STATUS", write_sep(sep, &count));
     printf("%sMPLS_LABEL_TOP", write_sep(sep, &count));
     printf("%sMPLS_LABEL_BOTTOM", write_sep(sep, &count));
-    printf("%sMPLS_STACK_DEPTH", write_sep(sep, &count));
     printf("%sTUNNEL_SRC_MAC", write_sep(sep, &count));
     printf("%sTUNNEL_DST_MAC", write_sep(sep, &count));
     printf("%sTUNNEL_SRC_IP", write_sep(sep, &count));
@@ -489,6 +498,7 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     if (what_to_count & (COUNT_SRC_MAC|COUNT_SUM_MAC)) printf("%sSRC_MAC", write_sep(sep, &count)); 
     if (what_to_count & COUNT_DST_MAC) printf("%sDST_MAC", write_sep(sep, &count)); 
     if (what_to_count & COUNT_VLAN) printf("%sVLAN", write_sep(sep, &count));
+    if (what_to_count_2 & COUNT_OUT_VLAN) printf("%sOUT_VLAN", write_sep(sep, &count));
     if (what_to_count & COUNT_COS) printf("%sCOS", write_sep(sep, &count));
     if (what_to_count & COUNT_ETHERTYPE) printf("%sETYPE", write_sep(sep, &count));
 #endif
@@ -550,10 +560,11 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     if (what_to_count_2 & COUNT_POST_NAT_SRC_PORT) printf("%sPOST_NAT_SRC_PORT", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_POST_NAT_DST_PORT) printf("%sPOST_NAT_DST_PORT", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_NAT_EVENT) printf("%sNAT_EVENT", write_sep(sep, &count));
+    if (what_to_count_2 & COUNT_FW_EVENT) printf("%sFW_EVENT", write_sep(sep, &count));
+    if (what_to_count_2 & COUNT_FWD_STATUS) printf("%sFWD_STATUS", write_sep(sep, &count));
 
     if (what_to_count_2 & COUNT_MPLS_LABEL_TOP) printf("%sMPLS_LABEL_TOP", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM) printf("%sMPLS_LABEL_BOTTOM", write_sep(sep, &count));
-    if (what_to_count_2 & COUNT_MPLS_STACK_DEPTH) printf("%sMPLS_STACK_DEPTH", write_sep(sep, &count));
 
     if (what_to_count_2 & COUNT_TUNNEL_SRC_MAC) printf("%sTUNNEL_SRC_MAC", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_TUNNEL_DST_MAC) printf("%sTUNNEL_DST_MAC", write_sep(sep, &count));
@@ -563,6 +574,7 @@ void write_stats_header_csv(pm_cfgreg_t what_to_count, pm_cfgreg_t what_to_count
     if (what_to_count_2 & COUNT_TUNNEL_IP_TOS) printf("%sTUNNEL_TOS", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_TUNNEL_SRC_PORT) printf("%sTUNNEL_SRC_PORT", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_TUNNEL_DST_PORT) printf("%sTUNNEL_DST_PORT", write_sep(sep, &count));
+    if (what_to_count_2 & COUNT_TUNNEL_TCPFLAGS) printf("%sTUNNEL_TCP_FLAGS", write_sep(sep, &count));
     if (what_to_count_2 & COUNT_VXLAN) printf("%sVXLAN", write_sep(sep, &count));
 
     if (what_to_count_2 & COUNT_TIMESTAMP_START) printf("%sTIMESTAMP_START", write_sep(sep, &count));
@@ -665,7 +677,7 @@ int main(int argc,char **argv)
   char *as_path, empty_aspath[] = "^$", empty_string[] = "", *bgp_comm;
   int sd, buflen, unpacked, printed;
   int counter=0, sep_len=0, is_event;
-  char *sep_ptr = NULL, sep[10], default_sep[] = ",", spacing_sep[2];
+  char *sep_ptr = NULL, sep[10], spacing_sep[2];
   struct imt_custom_primitives custom_primitives_input;
 
   /* mrtg stuff */
@@ -800,6 +812,10 @@ int main(int argc,char **argv)
 	  count_token_int[count_index] = COUNT_INT_VLAN;
 	  what_to_count |= COUNT_VLAN;
 	}
+        else if (!strcmp(count_token[count_index], "out_vlan")) {
+	  count_token_int[count_index] = COUNT_INT_OUT_VLAN;
+	  what_to_count_2 |= COUNT_OUT_VLAN;
+	}
         else if (!strcmp(count_token[count_index], "cos")) {
           count_token_int[count_index] = COUNT_INT_COS;
           what_to_count |= COUNT_COS;
@@ -914,8 +930,8 @@ int main(int argc,char **argv)
           what_to_count |= COUNT_TAG2;
         }
         else if (!strcmp(count_token[count_index], "class")) {
-          count_token_int[count_index] = COUNT_INT_CLASS;
-          what_to_count |= COUNT_CLASS;
+          count_token_int[count_index] = COUNT_INT_NDPI_CLASS;
+          what_to_count_2 |= COUNT_NDPI_CLASS;
         }
         else if (!strcmp(count_token[count_index], "std_comm")) {
           count_token_int[count_index] = COUNT_INT_STD_COMM;
@@ -1017,6 +1033,14 @@ int main(int argc,char **argv)
           count_token_int[count_index] = COUNT_INT_NAT_EVENT;
           what_to_count_2 |= COUNT_NAT_EVENT;
         }
+        else if (!strcmp(count_token[count_index], "fw_event")) {
+          count_token_int[count_index] = COUNT_INT_FW_EVENT;
+          what_to_count_2 |= COUNT_FW_EVENT;
+        }
+        else if (!strcmp(count_token[count_index], "fwd_status")) {
+          count_token_int[count_index] = COUNT_INT_FWD_STATUS;
+          what_to_count_2 |= COUNT_FWD_STATUS;
+        }
         else if (!strcmp(count_token[count_index], "mpls_label_top")) {
           count_token_int[count_index] = COUNT_INT_MPLS_LABEL_TOP;
           what_to_count_2 |= COUNT_MPLS_LABEL_TOP;
@@ -1024,10 +1048,6 @@ int main(int argc,char **argv)
         else if (!strcmp(count_token[count_index], "mpls_label_bottom")) {
           count_token_int[count_index] = COUNT_INT_MPLS_LABEL_BOTTOM;
           what_to_count_2 |= COUNT_MPLS_LABEL_BOTTOM;
-        }
-        else if (!strcmp(count_token[count_index], "mpls_stack_depth")) {
-          count_token_int[count_index] = COUNT_INT_MPLS_STACK_DEPTH;
-          what_to_count_2 |= COUNT_MPLS_STACK_DEPTH;
         }
         else if (!strcmp(count_token[count_index], "timestamp_start")) {
           count_token_int[count_index] = COUNT_INT_TIMESTAMP_START;
@@ -1321,7 +1341,7 @@ int main(int argc,char **argv)
   }
 
   sep_len = strlen(sep);
-  if (!sep_len) sep_ptr = default_sep;
+  if (!sep_len) sep_ptr = DEFAULT_SEP;
   else if (sep_len == 1) sep_ptr = sep;
   else {
     if (!strcmp(sep, "\\t")) {
@@ -1501,6 +1521,9 @@ int main(int argc,char **argv)
         else if (!strcmp(count_token[match_string_index], "vlan")) {
 	  request.data.vlan_id = atoi(match_string_token);
         }
+        else if (!strcmp(count_token[match_string_index], "out_vlan")) {
+	  request.data.out_vlan_id = atoi(match_string_token);
+        }
         else if (!strcmp(count_token[match_string_index], "cos")) {
           request.data.cos = atoi(match_string_token);
         }
@@ -1606,7 +1629,7 @@ int main(int argc,char **argv)
 	  request.data.sampling_rate = atoi(match_string_token);
 	}
 	else if (!strcmp(count_token[match_string_index], "sampling_direction")) {
-	  strlcpy(request.data.sampling_direction, match_string_token, sizeof(request.data.sampling_direction));
+	  request.data.sampling_direction = sampling_direction_str2id(match_string_token);
 	}
         else if (!strcmp(count_token[match_string_index], "proto")) {
 	  int proto = 0;
@@ -1693,7 +1716,7 @@ int main(int argc,char **argv)
   	      ct_idx = 0;
   	      while (ct_idx < ct_num) {
   	        class_table[ct_idx].protocol[MAX_PROTOCOL_LEN-1] = '\0';
-  	        if (!strcmp(class_table[ct_idx].protocol, sclass)) {
+		if (!strcasecmp(class_table[ct_idx].protocol, sclass)) {
   	          value = class_table[ct_idx].id;
   		  break;
   	        }
@@ -1704,7 +1727,16 @@ int main(int argc,char **argv)
   	        printf("ERROR: Server has not loaded any classifier for '%s'.\n", sclass);
   	        exit(1); 
   	      }
-  	      else request.data.class = value;
+	      else {
+#if defined (WITH_NDPI)
+		request.data.ndpi_class.master_protocol = FALSE;
+		request.data.ndpi_class.app_protocol = class_table[ct_idx].id;
+		request.data.ndpi_class.category = class_table[ct_idx].category;
+#endif
+	      }
+
+	      /* in case we did hit the break */
+	      ct_idx = (ct_num - 1);
             }
 	    else {
 	      printf("ERROR: missing EOF from server (2)\n");
@@ -1888,14 +1920,14 @@ int main(int argc,char **argv)
         else if (!strcmp(count_token[match_string_index], "nat_event")) {
           request.pnat.nat_event = atoi(match_string_token);
         }
+        else if (!strcmp(count_token[match_string_index], "fw_event")) {
+          request.pnat.fw_event = atoi(match_string_token);
+        }
         else if (!strcmp(count_token[match_string_index], "mpls_label_top")) {
 	  request.pmpls.mpls_label_top = atoi(match_string_token);
         }
         else if (!strcmp(count_token[match_string_index], "mpls_label_bottom")) {
 	  request.pmpls.mpls_label_bottom = atoi(match_string_token);
-        }
-        else if (!strcmp(count_token[match_string_index], "mpls_stack_depth")) {
-          request.pmpls.mpls_stack_depth = atoi(match_string_token);
         }
         else if (!strcmp(count_token[match_string_index], "tunnel_src_mac")) {
           unsigned char ethaddr[ETH_ADDR_LEN];
@@ -2243,6 +2275,11 @@ int main(int argc,char **argv)
 	if (!have_wtc || (what_to_count & COUNT_VLAN)) {
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-5u  ", acc_elem->primitives.vlan_id);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), acc_elem->primitives.vlan_id);
+        }
+
+	if (!have_wtc || (what_to_count_2 & COUNT_OUT_VLAN)) {
+          if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-5u  ", acc_elem->primitives.out_vlan_id);
+          else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), acc_elem->primitives.out_vlan_id);
         }
 
         if (!have_wtc || (what_to_count & COUNT_COS)) {
@@ -2624,8 +2661,10 @@ int main(int argc,char **argv)
 	}
 
 	if (!have_wtc || (what_to_count_2 & COUNT_SAMPLING_DIRECTION)) {
-	  if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-1s                  ", acc_elem->primitives.sampling_direction); 
-	  else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count), acc_elem->primitives.sampling_direction); 
+	  if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-1s                  ",
+	      						   pmc_sampling_direction_print(acc_elem->primitives.sampling_direction)); 
+	  else if (want_output & PRINT_OUTPUT_CSV) printf("%s%s", write_sep(sep_ptr, &count),
+							  sampling_direction_print(acc_elem->primitives.sampling_direction)); 
 	}
 
         if (!have_wtc || (what_to_count_2 & COUNT_POST_NAT_SRC_HOST)) {
@@ -2669,6 +2708,16 @@ int main(int argc,char **argv)
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), pnat->nat_event);
         }
 
+        if (!have_wtc || (what_to_count_2 & COUNT_FW_EVENT)) {
+          if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-3u      ", pnat->fw_event);
+          else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), pnat->fw_event);
+        }
+
+        if (!have_wtc || (what_to_count_2 & COUNT_FWD_STATUS)) {
+          if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-3u        ", pnat->fwd_status);
+          else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), pnat->fwd_status);
+	}
+
         if (!have_wtc || (what_to_count_2 & COUNT_MPLS_LABEL_TOP)) {
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-7u         ", pmpls->mpls_label_top);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), pmpls->mpls_label_top);
@@ -2677,11 +2726,6 @@ int main(int argc,char **argv)
         if (!have_wtc || (what_to_count_2 & COUNT_MPLS_LABEL_BOTTOM)) {
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-7u            ", pmpls->mpls_label_bottom);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), pmpls->mpls_label_bottom);
-        }
-
-        if (!have_wtc || (what_to_count_2 & COUNT_MPLS_STACK_DEPTH)) {
-          if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-2u                ", pmpls->mpls_stack_depth);
-          else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), pmpls->mpls_stack_depth);
         }
 
         if (!have_wtc || (what_to_count_2 & COUNT_TUNNEL_SRC_MAC)) {
@@ -2746,6 +2790,11 @@ int main(int argc,char **argv)
         if (!have_wtc || (what_to_count_2 & COUNT_TUNNEL_DST_PORT)) {
           if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-5u            ", ptun->tunnel_dst_port);
           else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), ptun->tunnel_dst_port);
+        }
+
+        if (!have_wtc || (what_to_count_2 & COUNT_TUNNEL_TCPFLAGS)) {
+          if (want_output & PRINT_OUTPUT_FORMATTED) printf("%-3u              ", acc_elem->tunnel_tcp_flags);
+          else if (want_output & PRINT_OUTPUT_CSV) printf("%s%u", write_sep(sep_ptr, &count), acc_elem->tunnel_tcp_flags);
         }
 
 	if (!have_wtc || (what_to_count_2 & COUNT_VXLAN)) {
@@ -2833,7 +2882,8 @@ int main(int argc,char **argv)
 	  json_str = pmc_compose_json(what_to_count, what_to_count_2, acc_elem->flow_type,
 				      &acc_elem->primitives, pbgp, plbgp, pnat, pmpls, ptun, pcust, pvlen,
 				      acc_elem->pkt_len, acc_elem->pkt_num, acc_elem->flo_num,
-				      acc_elem->tcp_flags, NULL, want_tstamp_since_epoch, want_tstamp_utc);
+				      acc_elem->tcp_flags, acc_elem->tunnel_tcp_flags, NULL,
+				      want_tstamp_since_epoch, want_tstamp_utc);
 
 	  if (json_str) {
 	    printf("%s\n", json_str);
@@ -3170,6 +3220,11 @@ void client_counters_merge(void *table, int start, int middle, int end, int size
   free(v2);
 }
 
+u_int16_t pmc_bgp_rd_type_get(u_int16_t type)
+{
+  return (type & RD_TYPE_MASK);
+}
+
 int pmc_bgp_rd2str(char *str, rd_t *rd)
 {
   struct rd_ip  *rdi;
@@ -3177,22 +3232,23 @@ int pmc_bgp_rd2str(char *str, rd_t *rd)
   struct rd_as4 *rda4;
   struct host_addr a;
   char ip_address[INET6_ADDRSTRLEN];
+  u_int16_t type = pmc_bgp_rd_type_get(rd->type);
 
-  switch (rd->type) {
+  switch (type) {
   case RD_TYPE_AS:
     rda = (struct rd_as *) rd;
-    sprintf(str, "%u:%u:%u", rda->type, rda->as, rda->val);
+    sprintf(str, "%u:%u:%u", type, rda->as, rda->val);
     break;
   case RD_TYPE_IP:
     rdi = (struct rd_ip *) rd;
     a.family = AF_INET;
     a.address.ipv4.s_addr = rdi->ip.s_addr;
     addr_to_str(ip_address, &a);
-    sprintf(str, "%u:%s:%u", rdi->type, ip_address, rdi->val);
+    sprintf(str, "%u:%s:%u", type, ip_address, rdi->val);
     break;
   case RD_TYPE_AS4:
     rda4 = (struct rd_as4 *) rd;
-    sprintf(str, "%u:%u:%u", rda4->type, rda4->as, rda4->val);
+    sprintf(str, "%u:%u:%u", type, rda4->as, rda4->val);
     break;
   case RD_TYPE_VRFID:
     rda = (struct rd_as *) rd;
@@ -3288,7 +3344,8 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
 		  struct pkt_nat_primitives *pnat, struct pkt_mpls_primitives *pmpls,
 		  struct pkt_tunnel_primitives *ptun, u_char *pcust, struct pkt_vlen_hdr_primitives *pvlen,
 		  pm_counter_t bytes_counter, pm_counter_t packet_counter, pm_counter_t flow_counter,
-		  u_int32_t tcp_flags, struct timeval *basetime, int tstamp_since_epoch, int tstamp_utc)
+		  u_int8_t tcp_flags, u_int8_t tunnel_tcp_flags, struct timeval *basetime,
+		  int tstamp_since_epoch, int tstamp_utc)
 {
   char src_mac[18], dst_mac[18], src_host[INET6_ADDRSTRLEN], dst_host[INET6_ADDRSTRLEN], ip_address[INET6_ADDRSTRLEN];
   char rd_str[SRVBUFLEN], misc_str[SRVBUFLEN], *as_path, *bgp_comm, empty_string[] = "", *tmpbuf;
@@ -3332,6 +3389,8 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
   }
 
   if (wtc & COUNT_VLAN) json_object_set_new_nocheck(obj, "vlan", json_integer((json_int_t)pbase->vlan_id));
+
+  if (wtc_2 & COUNT_OUT_VLAN) json_object_set_new_nocheck(obj, "vlan_out", json_integer((json_int_t)pbase->out_vlan_id));
 
   if (wtc & COUNT_COS) json_object_set_new_nocheck(obj, "cos", json_integer((json_int_t)pbase->cos));
 
@@ -3585,7 +3644,8 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
   if (wtc & COUNT_IP_TOS) json_object_set_new_nocheck(obj, "tos", json_integer((json_int_t)pbase->tos));
 
   if (wtc_2 & COUNT_SAMPLING_RATE) json_object_set_new_nocheck(obj, "sampling_rate", json_integer((json_int_t)pbase->sampling_rate));
-  if (wtc_2 & COUNT_SAMPLING_DIRECTION) json_object_set_new_nocheck(obj, "sampling_direction", json_string(pbase->sampling_direction));
+  if (wtc_2 & COUNT_SAMPLING_DIRECTION) json_object_set_new_nocheck(obj, "sampling_direction",
+								    json_string(sampling_direction_print(pbase->sampling_direction)));
 
   if (wtc_2 & COUNT_POST_NAT_SRC_HOST) {
     addr_to_str(src_host, &pnat->post_nat_src_ip);
@@ -3603,11 +3663,13 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
 
   if (wtc_2 & COUNT_NAT_EVENT) json_object_set_new_nocheck(obj, "nat_event", json_integer((json_int_t)pnat->nat_event));
 
+  if (wtc_2 & COUNT_FW_EVENT) json_object_set_new_nocheck(obj, "fw_event", json_integer((json_int_t)pnat->fw_event));
+
+  if (wtc_2 & COUNT_FWD_STATUS) json_object_set_new_nocheck(obj, "fwd_status", json_integer((json_int_t)pnat->fwd_status));
+
   if (wtc_2 & COUNT_MPLS_LABEL_TOP) json_object_set_new_nocheck(obj, "mpls_label_top", json_integer((json_int_t)pmpls->mpls_label_top));
 
   if (wtc_2 & COUNT_MPLS_LABEL_BOTTOM) json_object_set_new_nocheck(obj, "mpls_label_bottom", json_integer((json_int_t)pmpls->mpls_label_bottom));
-
-  if (wtc_2 & COUNT_MPLS_STACK_DEPTH) json_object_set_new_nocheck(obj, "mpls_stack_depth", json_integer((json_int_t)pmpls->mpls_stack_depth));
 
   if (wtc_2 & COUNT_TUNNEL_SRC_MAC) {
     etheraddr_string(ptun->tunnel_eth_shost, src_mac);
@@ -3642,6 +3704,11 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
   if (wtc_2 & COUNT_TUNNEL_IP_TOS) json_object_set_new_nocheck(obj, "tunnel_tos", json_integer((json_int_t)ptun->tunnel_tos));
   if (wtc_2 & COUNT_TUNNEL_SRC_PORT) json_object_set_new_nocheck(obj, "tunnel_port_src", json_integer((json_int_t)ptun->tunnel_src_port));
   if (wtc_2 & COUNT_TUNNEL_DST_PORT) json_object_set_new_nocheck(obj, "tunnel_port_dst", json_integer((json_int_t)ptun->tunnel_dst_port));
+  if (wtc_2 & COUNT_TUNNEL_TCPFLAGS) {
+    sprintf(misc_str, "%u", tunnel_tcp_flags);
+    json_object_set_new_nocheck(obj, "tunnel_tcp_flags", json_string(misc_str));
+  }
+
   if (wtc_2 & COUNT_VXLAN) json_object_set_new_nocheck(obj, "vxlan", json_integer((json_int_t)ptun->tunnel_id));
 
   if (wtc_2 & COUNT_TIMESTAMP_START) {
@@ -3710,7 +3777,8 @@ char *pmc_compose_json(u_int64_t wtc, u_int64_t wtc_2, u_int8_t flow_type, struc
 		  struct pkt_nat_primitives *pnat, struct pkt_mpls_primitives *pmpls,
 		  struct pkt_tunnel_primitives *ptun, u_char *pcust, struct pkt_vlen_hdr_primitives *pvlen,
 		  pm_counter_t bytes_counter, pm_counter_t packet_counter, pm_counter_t flow_counter,
-		  u_int32_t tcp_flags, struct timeval *basetime, int tstamp_since_epoch, int tstamp_utc)
+		  u_int8_t tcp_flags, u_int8_t tunnel_tcp_flags, struct timeval *basetime,
+		  int tstamp_since_epoch, int tstamp_utc)
 {
   return NULL;
 }
@@ -3959,8 +4027,14 @@ void pmc_lower_string(char *string)
 
 char *pmc_ndpi_get_proto_name(u_int16_t proto_id)
 {
-  if (!proto_id || proto_id > ct_idx || !class_table[proto_id].id) return class_table[0].protocol;
-  else return class_table[proto_id].protocol;
+  static char unknown[] = "unknown";
+
+  if (!proto_id || proto_id > ct_idx || !class_table[proto_id].id) {
+    return unknown;
+  }
+  else {
+    return class_table[proto_id - 1].protocol;
+  }
 }
 
 const char *pmc_rpki_roa_print(u_int8_t roa)
@@ -3976,4 +4050,19 @@ u_int8_t pmc_rpki_str2roa(char *roa_str)
   else if (!strcmp(roa_str, "v")) return ROA_STATUS_VALID;
 
   return ROA_STATUS_UNKNOWN;
+}
+
+const char *pmc_sampling_direction_print(u_int8_t sd_id)
+{
+  if (sd_id <= SAMPLING_DIRECTION_MAX) return sampling_direction[sd_id];
+  else return sampling_direction[SAMPLING_DIRECTION_UNKNOWN];
+}
+
+u_int8_t pmc_sampling_direction_str2id(char *sd_str)
+{
+  if (!strcmp(sd_str, "u")) return SAMPLING_DIRECTION_UNKNOWN;
+  else if (!strcmp(sd_str, "i")) return SAMPLING_DIRECTION_INGRESS;
+  else if (!strcmp(sd_str, "e")) return SAMPLING_DIRECTION_EGRESS;
+
+  return SAMPLING_DIRECTION_UNKNOWN;
 }

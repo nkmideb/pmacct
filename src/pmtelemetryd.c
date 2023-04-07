@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -29,7 +29,6 @@
 #include "plugin_hooks.h"
 #include "pkt_handlers.h"
 #include "ip_flow.h"
-#include "classifier.h"
 #include "net_aggr.h"
 
 /* Functions */
@@ -100,6 +99,11 @@ int main(int argc,char **argv, char **envp)
   errflag = 0;
   rows = 0;
 
+  /* needed for pre_tag_map support */
+  PvhdrSz = sizeof(struct pkt_vlen_hdr_primitives);
+  PmLabelTSz = sizeof(pm_label_t);
+  PtLabelTSz = sizeof(pt_label_t);
+
   /* getting commandline values */
   while (!errflag && ((cp = getopt(argc, argv, ARGS_PMTELEMETRYD)) != -1)) {
     cfg_cmdline[rows] = malloc(SRVBUFLEN);
@@ -166,7 +170,7 @@ int main(int argc,char **argv, char **envp)
       exit(0);
       break;
     case 'V':
-      version_daemon(PMTELEMETRYD_USAGE_HEADER);
+      version_daemon(config.acct_type, PMTELEMETRYD_USAGE_HEADER);
       exit(0);
       break;
     default:
@@ -251,14 +255,12 @@ int main(int argc,char **argv, char **envp)
   else Log(LOG_INFO, "INFO ( %s/core ): Reading configuration from cmdline.\n", config.name);
 
   pm_setproctitle("%s [%s]", "Core Process", config.proc_name);
+  if (config.pidfile) write_pid_file(config.pidfile);
 
   /* signal handling we want to inherit to plugins (when not re-defined elsewhere) */
   memset(&sighandler_action, 0, sizeof(sighandler_action)); /* To ensure the struct holds no garbage values */
   sigemptyset(&sighandler_action.sa_mask);  /* Within a signal handler all the signals are enabled */
   sighandler_action.sa_flags = SA_RESTART;  /* To enable re-entering a system call afer done with signal handling */
-
-  sighandler_action.sa_handler = startup_handle_falling_child;
-  sigaction(SIGCHLD, &sighandler_action, NULL);
 
   /* handles reopening of syslog channel */
   sighandler_action.sa_handler = reload;
@@ -282,7 +284,7 @@ int main(int argc,char **argv, char **envp)
   sighandler_action.sa_handler = PM_sigint_handler;
   sigaction(SIGTERM, &sighandler_action, NULL);
 
-  sighandler_action.sa_handler = handle_falling_child;
+  sighandler_action.sa_handler = SIG_IGN;
   sigaction(SIGCHLD, &sighandler_action, NULL);
 
   sighandler_action.sa_handler = PM_sigalrm_noop_handler;

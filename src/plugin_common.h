@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -24,8 +24,6 @@
 
 /* includes */
 #include "net_aggr.h"
-#include "ports_aggr.h"
-#include "sql_common.h"
 #include "preprocess.h"
 
 /* defines */
@@ -35,6 +33,16 @@
 
 #define AVERAGE_CHAIN_LEN 10
 #define PRINT_CACHE_ENTRIES 16411
+#define MAX_PTM_LABEL_TOKEN_LEN	128
+#define TCP_FLAG_LEN 6
+#define FWD_TYPES_STR_LEN 50
+#define MAX_MPLS_LABEL_STACK 128
+
+#define PORTS_TABLE_ENTRIES  65536
+#define PROTOS_TABLE_ENTRIES 256
+#define PM_L4_PORT_OTHERS 0
+#define PM_IP_PROTO_OTHERS 255
+#define PM_IP_TOS_OTHERS 255
 
 /* cache element states */
 #define PRINT_CACHE_FREE	0
@@ -63,7 +71,8 @@ struct chained_cache {
   pm_counter_t packet_counter;
   pm_counter_t flow_counter;
   u_int8_t flow_type;
-  u_int32_t tcp_flags;
+  u_int8_t tcp_flags;
+  u_int8_t tunnel_tcp_flags;
   struct pkt_bgp_primitives *pbgp;
   struct pkt_nat_primitives *pnat;
   struct pkt_mpls_primitives *pmpls;
@@ -78,8 +87,8 @@ struct chained_cache {
 };
 #endif
 
-#ifndef P_TABLE_RR
-#define P_TABLE_RR
+#ifndef STRUCT_P_TABLE_RR
+#define STRUCT_P_TABLE_RR
 struct p_table_rr {
   int min; /* unused */
   int max;
@@ -87,6 +96,46 @@ struct p_table_rr {
 };
 #endif
 
+#ifndef STRUCT_PTM_LABEL
+#define STRUCT_PTM_LABEL
+typedef struct {
+  char key[MAX_PTM_LABEL_TOKEN_LEN];
+  char value[MAX_PTM_LABEL_TOKEN_LEN];
+} __attribute__((packed)) ptm_label;
+#endif
+
+#ifndef STRUCT_TCPFLAGS
+#define STRUCT_TCPFLAGS
+typedef struct {
+  char flag[TCP_FLAG_LEN];
+} __attribute__((packed)) tcpflag;
+#endif
+
+#ifndef STRUCT_NFACCTD_FWDSTATUS
+#define STRUCT_NFACCTD_FWDSTATUS
+typedef struct {
+  unsigned int decimal;
+  char description[FWD_TYPES_STR_LEN];
+} __attribute__((packed)) fwd_status;
+#endif
+
+#ifndef STRUCT_PORTS_TABLE
+#define STRUCT_PORTS_TABLE 
+struct ports_table {
+  u_int8_t table[PORTS_TABLE_ENTRIES];
+  time_t timestamp;
+};
+#endif
+
+#ifndef STRUCT_PROTOS_TABLE
+#define STRUCT_PROTOS_TABLE 
+struct protos_table {
+  u_int8_t table[PROTOS_TABLE_ENTRIES];
+  time_t timestamp;
+};
+#endif
+
+#include "sql_common.h"
 
 /* prototypes */
 extern void P_set_signals();
@@ -105,7 +154,7 @@ extern void P_cache_insert(struct primitives_ptrs *, struct insert_data *);
 extern void P_cache_insert_pending(struct chained_cache *[], int, struct chained_cache *);
 extern void P_cache_mark_flush(struct chained_cache *[], int, int);
 extern void P_cache_flush(struct chained_cache *[], int);
-extern void P_cache_handle_flush_event(struct ports_table *);
+extern void P_cache_handle_flush_event(struct ports_table *, struct protos_table *, struct protos_table *);
 extern void P_exit_now(int);
 extern int P_trigger_exec(char *);
 extern void primptrs_set_all_from_chained_cache(struct primitives_ptrs *, struct chained_cache *);
@@ -116,6 +165,18 @@ extern void P_init_refresh_deadline(time_t *, int, int, char *);
 extern void P_eval_historical_acct(struct timeval *, struct timeval *, time_t);
 extern int P_cmp_historical_acct(struct timeval *, struct timeval *);
 extern void P_update_time_reference(struct insert_data *);
+extern void P_set_stitch(struct chained_cache *, struct pkt_data *, struct insert_data *);
+extern void P_update_stitch(struct chained_cache *, struct pkt_data *, struct insert_data *);
+
+extern cdada_list_t *ptm_labels_to_linked_list(const char *);
+extern cdada_list_t *tcpflags_to_linked_list(size_t);
+extern cdada_list_t *fwd_status_to_linked_list();
+
+extern void mpls_label_stack_to_str(char *, int, u_int32_t *, int);
+
+extern void load_ports(char *, struct ports_table *);
+extern void load_protos(char *, struct protos_table *);
+extern void load_tos(char *, struct protos_table *);
 
 /* global vars */
 extern void (*insert_func)(struct primitives_ptrs *, struct insert_data *); /* pointer to INSERT function */

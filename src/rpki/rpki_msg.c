@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2019 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -76,12 +76,18 @@ int rpki_roas_file_load(char *file, struct bgp_table *rib_v4, struct bgp_table *
 	  }
 
 	  asn_json = json_object_get(roa_json, "asn");
-	  if (asn_json == NULL || !json_is_string(asn_json)) {
+	  if (asn_json == NULL || (!json_is_string(asn_json) && !json_is_integer(asn_json))) {
 	    Log(LOG_WARNING, "WARN ( %s/%s ): [%s] no 'asn' element in ROA #%u.\n", config.name, m_data->log_str, file, (roas_idx + 1));
 	    goto exit_lane;
 	  }
 	  else {
-	    ret = bgp_str2asn((char *)json_string_value(asn_json), &asn);
+	    if (json_is_string(asn_json)) {
+	      ret = bgp_str2asn((char *)json_string_value(asn_json), &asn);
+	    }
+	    else {
+	      ret = FALSE;
+	      asn = json_integer_value(asn_json);
+	    }
 
 	    if (ret) {
 	      Log(LOG_WARNING, "WARN ( %s/%s ): [%s] invalid 'asn' element in ROA #%u.\n", config.name, m_data->log_str, file, (roas_idx + 1));
@@ -96,7 +102,7 @@ int rpki_roas_file_load(char *file, struct bgp_table *rib_v4, struct bgp_table *
 	  }
 	  else maxlen = json_integer_value(maxlen_json);
 
-	  if (maxlen < p.prefixlen) {
+	  if (maxlen > (p.family == AF_INET ? 32 : 128) || maxlen < p.prefixlen) {
 	    char prefix_str[PREFIX_STRLEN];
 
 	    prefix2str(&p, prefix_str, PREFIX_STRLEN);
@@ -285,7 +291,7 @@ void rpki_rtr_parse_ipv4_prefix(struct rpki_rtr_handle *cache, struct rpki_rtr_i
 
   asn = ntohl(p4m->asn);
 
-  if (p4m->max_len < p.prefixlen) {
+  if (p4m->max_len > 32 || p4m->max_len < p.prefixlen) {
     char prefix_str[PREFIX_STRLEN];
 
     prefix2str((struct prefix *) &p, prefix_str, PREFIX_STRLEN);
@@ -323,7 +329,7 @@ void rpki_rtr_parse_ipv6_prefix(struct rpki_rtr_handle *cache, struct rpki_rtr_i
 
   asn = ntohl(p6m->asn);
 
-  if (p6m->max_len < p.prefixlen) {
+  if (p6m->max_len > 128 || p6m->max_len < p.prefixlen) {
     char prefix_str[PREFIX_STRLEN];
 
     prefix2str((struct prefix *) &p, prefix_str, PREFIX_STRLEN);

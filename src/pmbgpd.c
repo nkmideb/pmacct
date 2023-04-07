@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "plugin_hooks.h"
 #include "bgp/bgp.h"
 #include "bgp/bgp_lg.h"
@@ -30,7 +29,6 @@
 #include "pmacct-data.h"
 #include "pkt_handlers.h"
 #include "ip_flow.h"
-#include "classifier.h"
 #include "net_aggr.h"
 #include "thread_pool.h"
 
@@ -99,6 +97,11 @@ int main(int argc,char **argv, char **envp)
   errflag = 0;
   rows = 0;
 
+  /* needed for pre_tag_map support */
+  PvhdrSz = sizeof(struct pkt_vlen_hdr_primitives);
+  PmLabelTSz = sizeof(pm_label_t);
+  PtLabelTSz = sizeof(pt_label_t);
+
   /* getting commandline values */
   while (!errflag && ((cp = getopt(argc, argv, ARGS_PMBGPD)) != -1)) {
     cfg_cmdline[rows] = malloc(SRVBUFLEN);
@@ -164,7 +167,7 @@ int main(int argc,char **argv, char **envp)
       exit(0);
       break;
     case 'V':
-      version_daemon(PMBGPD_USAGE_HEADER);
+      version_daemon(config.acct_type, PMBGPD_USAGE_HEADER);
       exit(0);
       break;
     default:
@@ -256,9 +259,6 @@ int main(int argc,char **argv, char **envp)
   sigemptyset(&sighandler_action.sa_mask);  /* Within a signal handler all the signals are enabled */
   sighandler_action.sa_flags = SA_RESTART;  /* To enable re-entering a system call afer done with signal handling */
 
-  sighandler_action.sa_handler = startup_handle_falling_child;
-  sigaction(SIGCHLD, &sighandler_action, NULL);
-
   /* handles reopening of syslog channel */
   sighandler_action.sa_handler = reload;
   sigaction(SIGHUP, &sighandler_action, NULL);
@@ -281,7 +281,7 @@ int main(int argc,char **argv, char **envp)
   sighandler_action.sa_handler = PM_sigint_handler;
   sigaction(SIGTERM, &sighandler_action, NULL);
 
-  sighandler_action.sa_handler = handle_falling_child;
+  sighandler_action.sa_handler = SIG_IGN;
   sigaction(SIGCHLD, &sighandler_action, NULL);
 
   sighandler_action.sa_handler = PM_sigalrm_noop_handler;

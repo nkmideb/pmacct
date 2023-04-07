@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "bgp/bgp.h"
 #include "bmp.h"
 #if defined WITH_RABBITMQ
@@ -49,31 +48,19 @@ char *bmp_get_and_check_length(char **bmp_packet_ptr, u_int32_t *pkt_size, u_int
   return current_ptr;
 }
 
-void bmp_jump_offset(char **bmp_packet_ptr, u_int32_t *len, u_int32_t offset)
+int bmp_jump_offset(char **bmp_packet_ptr, u_int32_t *len, u_int32_t offset)
 {
+  int ret = ERR;
+
   if (bmp_packet_ptr && (*bmp_packet_ptr) && len) {
     if (offset <= (*len)) {
       (*bmp_packet_ptr) += offset;
       (*len) -= offset;
+      ret = offset;
     }
   }
-}
 
-u_int32_t bmp_packet_adj_offset(char *bmp_packet, u_int32_t buf_len, u_int32_t recv_len, u_int32_t remaining_len, char *addr_str)
-{
-  char tmp_packet[BGP_BUFFER_SIZE];
-  
-  if (!bmp_packet || recv_len > buf_len || remaining_len >= buf_len || remaining_len > recv_len) {
-    if (addr_str)
-      Log(LOG_INFO, "INFO ( %s/core/BMP ): [%s] packet discarded: failed bmp_packet_adj_offset()\n", config.name, addr_str);
-
-    return FALSE;
-  }
-
-  memcpy(tmp_packet, &bmp_packet[recv_len - remaining_len], remaining_len);
-  memcpy(bmp_packet, tmp_packet, remaining_len);
-
-  return remaining_len;
+  return ret;
 }
 
 void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int etype, int log_type, int output, void *void_obj)
@@ -101,6 +88,11 @@ void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int etype, int log_type,
 
     json_object_set_new_nocheck(obj, "bmp_router_port", json_integer((json_int_t)bmpp->self.tcp_port));
 
+    addr_to_str(ip_address, &peer->addr);
+    json_object_set_new_nocheck(obj, "peer_ip", json_string(ip_address));
+
+    json_object_set_new_nocheck(obj, "peer_tcp_port", json_integer((json_int_t)peer->tcp_port));
+
     if (log_type == BGP_LOG_TYPE_DELETE) {
       json_object_set_new_nocheck(obj, "bmp_msg_type", json_string("internal"));
     }
@@ -109,7 +101,8 @@ void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int etype, int log_type,
     }
 #endif
   }
-  else if (output == PRINT_OUTPUT_AVRO_BIN) {
+  else if ((output == PRINT_OUTPUT_AVRO_BIN) ||
+	   (output == PRINT_OUTPUT_AVRO_JSON)) {
 #ifdef WITH_AVRO
     char ip_address[INET6_ADDRSTRLEN];
     avro_value_t *obj = (avro_value_t *) void_obj, p_avro_field, p_avro_branch;
@@ -131,6 +124,14 @@ void bgp_peer_log_msg_extras_bmp(struct bgp_peer *peer, int etype, int log_type,
     pm_avro_check(avro_value_get_by_name(obj, "bmp_router_port", &p_avro_field, NULL));
     pm_avro_check(avro_value_set_branch(&p_avro_field, TRUE, &p_avro_branch));
     pm_avro_check(avro_value_set_int(&p_avro_branch, bmpp->self.tcp_port));
+
+    addr_to_str(ip_address, &peer->addr);
+    pm_avro_check(avro_value_get_by_name(obj, "peer_ip", &p_avro_field, NULL));
+    pm_avro_check(avro_value_set_string(&p_avro_field, ip_address));
+
+    pm_avro_check(avro_value_get_by_name(obj, "peer_tcp_port", &p_avro_field, NULL));
+    pm_avro_check(avro_value_set_branch(&p_avro_field, TRUE, &p_avro_branch));
+    pm_avro_check(avro_value_set_int(&p_avro_branch, peer->tcp_port));
 
     if (log_type == BGP_LOG_TYPE_DELETE) {
       pm_avro_check(avro_value_get_by_name(obj, "bmp_msg_type", &p_avro_field, NULL));
@@ -163,6 +164,7 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->dump_amqp_routing_key_rr = config.bmp_dump_amqp_routing_key_rr;
   bms->dump_kafka_topic = config.bmp_dump_kafka_topic;
   bms->dump_kafka_topic_rr = config.bmp_dump_kafka_topic_rr;
+  bms->dump_kafka_partition_key = config.bmp_dump_kafka_partition_key;
   bms->dump_kafka_avro_schema_registry = config.bmp_dump_kafka_avro_schema_registry;
   bms->msglog_file = config.bmp_daemon_msglog_file;
   bms->msglog_output = config.bmp_daemon_msglog_output;
@@ -170,6 +172,7 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->msglog_amqp_routing_key_rr = config.bmp_daemon_msglog_amqp_routing_key_rr;
   bms->msglog_kafka_topic = config.bmp_daemon_msglog_kafka_topic;
   bms->msglog_kafka_topic_rr = config.bmp_daemon_msglog_kafka_topic_rr;
+  bms->msglog_kafka_partition_key = config.bmp_daemon_msglog_kafka_partition_key;
   bms->msglog_kafka_avro_schema_registry = config.bmp_daemon_msglog_kafka_avro_schema_registry;
   bms->peer_str = malloc(strlen("bmp_router") + 1);
   strcpy(bms->peer_str, "bmp_router");
@@ -194,6 +197,11 @@ void bmp_link_misc_structs(struct bgp_misc_structs *bms)
   bms->bgp_msg_open_router_id_check = NULL;
 
   if (!bms->is_thread && !bms->dump_backend_methods) bms->skip_rib = TRUE;
+
+  bms->tag = &bmp_logdump_tag;
+  bms->tag_map = config.bmp_daemon_tag_map;
+  bms->tag_peer = &bmp_logdump_tag_peer;
+  bms->bgp_table_info_delete_tag_find = bgp_table_info_delete_tag_find_bmp;
 }
 
 struct bgp_peer *bmp_sync_loc_rem_peers(struct bgp_peer *bgp_peer_loc, struct bgp_peer *bgp_peer_rem)
@@ -205,7 +213,38 @@ struct bgp_peer *bmp_sync_loc_rem_peers(struct bgp_peer *bgp_peer_loc, struct bg
   /* XXX: since BGP OPENs are fabricated, we assume that if remote
      peer is marked as able to send ADD-PATH capability, the local
      pper will be able to receive it just fine */
-  /* if (!bgp_peer_loc->cap_add_paths || !bgp_peer_rem->cap_add_paths) bgp_peer_rem->cap_add_paths = FALSE; */
+
+  /* Checking peers do agree on add-path capability; above comment
+     left for historical reference in case checks below have to be
+     further fine tuned */
+  {
+    afi_t afi, afi_max;
+    safi_t safi, safi_max;
+
+    if (bgp_peer_loc->cap_add_paths.afi_max > bgp_peer_rem->cap_add_paths.afi_max) {
+     afi_max = bgp_peer_loc->cap_add_paths.afi_max;
+    }
+    else {
+     afi_max = bgp_peer_rem->cap_add_paths.afi_max;
+    }
+
+    if (bgp_peer_loc->cap_add_paths.safi_max > bgp_peer_rem->cap_add_paths.safi_max) {
+     safi_max = bgp_peer_loc->cap_add_paths.safi_max;
+    }
+    else {
+     safi_max = bgp_peer_rem->cap_add_paths.safi_max;
+    }
+
+    for (afi = 0; afi <= afi_max; afi++) {
+      for (safi = 0; safi <= safi_max; safi++) {
+        if ((bgp_peer_loc->cap_add_paths.cap[afi][safi] && !bgp_peer_rem->cap_add_paths.cap[afi][safi]) ||
+	    (!bgp_peer_loc->cap_add_paths.cap[afi][safi] && bgp_peer_rem->cap_add_paths.cap[afi][safi])) {
+	  bgp_peer_loc->cap_add_paths.cap[afi][safi] = FALSE;
+	  bgp_peer_rem->cap_add_paths.cap[afi][safi] = FALSE;
+        }
+      }
+    }
+  }
 
   bgp_peer_rem->type = FUNC_TYPE_BMP;
   memcpy(&bgp_peer_rem->id, &bgp_peer_rem->addr, sizeof(struct host_addr));
@@ -243,8 +282,9 @@ void bmp_peer_close(struct bmp_peer *bmpp, int type)
   pm_tdestroy(&bmpp->bgp_peers_v4, bgp_peer_free);
   pm_tdestroy(&bmpp->bgp_peers_v6, bgp_peer_free);
 
-  if (bms->dump_file || bms->dump_amqp_routing_key || bms->dump_kafka_topic)
+  if (bms->dump_file || bms->dump_amqp_routing_key || bms->dump_kafka_topic) {
     bmp_dump_close_peer(peer);
+  }
 
   bgp_peer_close(peer, type, FALSE, FALSE, FALSE, FALSE, NULL);
 }
@@ -374,10 +414,12 @@ void bgp_extra_data_print_bmp(struct bgp_msg_extra_data *bmed, int output, void 
 
       bgp_rd2str(rd_str, &bmed_bmp->rd);
       json_object_set_new_nocheck(obj, "rd", json_string(rd_str));
+      json_object_set_new_nocheck(obj, "rd_origin", json_string(bgp_rd_origin_print(bmed_bmp->rd.type)));
     }
 #endif
   }
-  else if (output == PRINT_OUTPUT_AVRO_BIN) {
+  else if ((output == PRINT_OUTPUT_AVRO_BIN) ||
+	   (output == PRINT_OUTPUT_AVRO_JSON)) {
 #ifdef WITH_AVRO
     avro_value_t *obj = (avro_value_t *) void_obj, p_avro_field, p_avro_branch;
 
@@ -443,9 +485,16 @@ void bgp_extra_data_print_bmp(struct bgp_msg_extra_data *bmed, int output, void 
       pm_avro_check(avro_value_get_by_name(obj, "rd", &p_avro_field, NULL));
       pm_avro_check(avro_value_set_branch(&p_avro_field, TRUE, &p_avro_branch));
       pm_avro_check(avro_value_set_string(&p_avro_branch, rd_str));
+
+      pm_avro_check(avro_value_get_by_name(obj, "rd_origin", &p_avro_field, NULL));
+      pm_avro_check(avro_value_set_branch(&p_avro_field, TRUE, &p_avro_branch));
+      pm_avro_check(avro_value_set_string(&p_avro_branch, bgp_rd_origin_print(bmed_bmp->rd.type)));
     }
     else {
       pm_avro_check(avro_value_get_by_name(obj, "rd", &p_avro_field, NULL));
+      pm_avro_check(avro_value_set_branch(&p_avro_field, FALSE, &p_avro_branch));
+
+      pm_avro_check(avro_value_get_by_name(obj, "rd_origin", &p_avro_field, NULL));
       pm_avro_check(avro_value_set_branch(&p_avro_field, FALSE, &p_avro_branch));
     }
 #endif
@@ -497,4 +546,17 @@ char *decode_tstamp_arrival(char *buf)
   tstamp_len = strlen(buf);
 
   return &buf[tstamp_len + 1];
+}
+
+void bgp_table_info_delete_tag_find_bmp(struct bgp_peer *peer)
+{
+  struct bgp_misc_structs *bms = bgp_select_misc_db(peer->type);
+  struct bmp_peer *bmpp = NULL;
+  struct bgp_peer *bgpp = NULL;
+
+  if (peer && peer->bmp_se) bmpp = peer->bmp_se;
+  if (bmpp) bgpp = &bmpp->self;
+
+  bgp_tag_init_find(bgpp ? bgpp : peer, (struct sockaddr *) bms->tag_peer, bms->tag);
+  bgp_tag_find((struct id_table *)bms->tag->tag_table, bms->tag, &bms->tag->tag, NULL);
 }

@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #include "sflow.h"
 #include "bgp/bgp_packet.h"
 #include "bgp/bgp.h"
@@ -33,11 +32,13 @@
 #include "pkt_handlers.h"
 #include "ip_flow.h"
 #include "ip_frag.h"
-#include "classifier.h"
 #include "net_aggr.h"
 #include "crc32.h"
 #include "isis/isis.h"
 #include "bmp/bmp.h"
+#if defined WITH_EBPF
+#include "ebpf/ebpf_rp_balancer.h"
+#endif
 #ifdef WITH_RABBITMQ
 #include "amqp_common.h"
 #endif
@@ -205,7 +206,6 @@ int main(int argc,char **argv, char **envp)
   memset(&pptrs, 0, sizeof(pptrs));
   memset(&req, 0, sizeof(req));
   memset(&spp, 0, sizeof(spp));
-  memset(&class, 0, sizeof(class));
   memset(&xflow_status_table, 0, sizeof(xflow_status_table));
   memset(empty_mem_area_256b, 0, sizeof(empty_mem_area_256b));
 
@@ -366,7 +366,7 @@ int main(int argc,char **argv, char **envp)
       exit(0);
       break;
     case 'V':
-      version_daemon(SFACCTD_USAGE_HEADER);
+      version_daemon(config.acct_type, SFACCTD_USAGE_HEADER);
       exit(0);
       break;
     case 'a':
@@ -492,11 +492,10 @@ int main(int argc,char **argv, char **envp)
         if (list->cfg.what_to_count_2 & (COUNT_POST_NAT_SRC_HOST|COUNT_POST_NAT_DST_HOST|
                         COUNT_POST_NAT_SRC_PORT|COUNT_POST_NAT_DST_PORT|COUNT_NAT_EVENT|
                         COUNT_TIMESTAMP_START|COUNT_TIMESTAMP_END|COUNT_TIMESTAMP_ARRIVAL|
-			COUNT_EXPORT_PROTO_TIME))
+			COUNT_EXPORT_PROTO_TIME|COUNT_FWD_STATUS|COUNT_FW_EVENT))
           list->cfg.data_type |= PIPE_TYPE_NAT;
 
-        if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM|
-                        COUNT_MPLS_STACK_DEPTH))
+        if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM))
           list->cfg.data_type |= PIPE_TYPE_MPLS;
 
 	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_MAC|COUNT_TUNNEL_DST_MAC|
@@ -507,7 +506,7 @@ int main(int argc,char **argv, char **envp)
 	  alloc_sppi = TRUE;
 	}
 
-        if (list->cfg.what_to_count_2 & (COUNT_LABEL))
+        if (list->cfg.what_to_count_2 & (COUNT_LABEL|COUNT_MPLS_LABEL_STACK))
           list->cfg.data_type |= PIPE_TYPE_VLEN;
 
 	evaluate_sums(&list->cfg.what_to_count, &list->cfg.what_to_count_2, list->name, list->type.string);
@@ -546,20 +545,10 @@ int main(int argc,char **argv, char **envp)
           }
         }
 
-	if (list->cfg.what_to_count & COUNT_CLASS && !list->cfg.classifiers_path) {
-	  Log(LOG_ERR, "ERROR ( %s/%s ): 'class' aggregation selected but NO 'classifiers' key specified. Exiting...\n\n", list->name, list->type.string);
-	  exit_gracefully(1);
-	}
-
 #if defined (WITH_NDPI)
 	if (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS) {
           enable_ip_fragment_handler();
           config.classifier_ndpi = TRUE;
-	}
-
-	if ((list->cfg.what_to_count & COUNT_CLASS) && (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS)) {
-	  Log(LOG_ERR, "ERROR ( %s/%s ): 'class_legacy' and 'class' primitives are mutual exclusive. Exiting...\n\n", list->name, list->type.string);
-	  exit_gracefully(1);
 	}
 #endif
 
@@ -707,22 +696,27 @@ int main(int argc,char **argv, char **envp)
     }
 
     /* bind socket to port */
-#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
-    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
-    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT.\n", config.name);
-#else
+#if (defined HAVE_SO_REUSEPORT)
+    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEPORT.\n", config.name);
+#endif
+
     rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
-#endif
 
-#if (defined IPV6_BINDV6ONLY)
-    {
-      int no=0;
-
-      rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
-      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for IPV6_BINDV6ONLY.\n", config.name);
+#if (defined HAVE_SO_BINDTODEVICE)
+    if (config.nfacctd_interface)  {
+      rc = setsockopt(config.sock, SOL_SOCKET, SO_BINDTODEVICE, config.nfacctd_interface, (socklen_t) strlen(config.nfacctd_interface));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, errno);
     }
 #endif
+
+    if (config.nfacctd_ipv6_only) {
+      int yes=1;
+
+      rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &yes, (socklen_t) sizeof(yes));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for IPV6_V6ONLY.\n", config.name);
+    }
 
     if (config.nfacctd_pipe_size) {
       socklen_t l = sizeof(config.nfacctd_pipe_size);
@@ -905,9 +899,13 @@ int main(int argc,char **argv, char **envp)
       Log(LOG_ERR, "ERROR ( %s/core ): bind() to ip=%s port=%d/udp failed (errno: %d).\n", config.name, config.nfacctd_ip, config.nfacctd_port, errno);
       exit_gracefully(1);
     }
-  }
 
-  if (config.classifiers_path) init_classifiers(config.classifiers_path);
+#if defined WITH_EBPF
+    if (config.nfacctd_rp_ebpf_prog) {
+      attach_ebpf_reuseport_balancer(config.sock, config.nfacctd_rp_ebpf_prog, config.cluster_name, "sfacctd", config.cluster_id, FALSE);
+    }
+#endif
+  }
 
 #if defined (WITH_NDPI)
   if (config.classifier_ndpi) {
@@ -1064,7 +1062,7 @@ int main(int argc,char **argv, char **envp)
   // pptrs.vlanmpls6.pkthdr->caplen = 104; /* eth_header + vlan + upto 10 MPLS labels + ip6_hdr + pm_tlhdr */
   pptrs.vlanmpls6.pkthdr->caplen = 121;
   pptrs.vlanmpls6.pkthdr->len = 128; /* fake len */
-  pptrs.vlanmpls6.l3_proto = ETHERTYPE_IP;
+  pptrs.vlanmpls6.l3_proto = ETHERTYPE_IPV6;
 
   if (config.pcap_savefile) {
     Log(LOG_INFO, "INFO ( %s/core ): reading sFlow data from: %s\n", config.name, config.pcap_savefile);
@@ -1282,7 +1280,7 @@ int main(int argc,char **argv, char **envp)
     }
 
     if (reload_log) {
-      reload_logs();
+      reload_logs(SFACCTD_USAGE_HEADER);
       reload_log = FALSE;
     }
 
@@ -1671,7 +1669,6 @@ void SF_compute_once()
   SFLAddressSz = sizeof(SFLAddress);
   SFrenormEntrySz = sizeof(struct xflow_status_entry_sampling);
   PptrsSz = sizeof(struct packet_ptrs);
-  CSSz = sizeof(struct class_st);
   HostAddrSz = sizeof(struct host_addr);
   UDPHdrSz = sizeof(struct pm_udphdr);
 
@@ -1713,12 +1710,12 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
   */
   if (sample->gotIPV4 || sample->gotIPV6 || !sample->eth_type) {
     reset_net_status_v(pptrsv);
-    pptrs->flow_type = SF_evaluate_flow_type(pptrs);
+    pptrs->flow_type.traffic_type = SF_evaluate_flow_type(pptrs);
 
     if (config.classifier_ndpi || config.aggregate_primitives) sf_flow_sample_hdr_decode(sample);
 
     /* we need to understand the IP protocol version in order to build the fake packet */
-    switch (pptrs->flow_type) {
+    switch (pptrs->flow_type.traffic_type) {
     case PM_FTYPE_IPV4:
       if (req->bpf_filter) {
         reset_mac(pptrs);
@@ -1754,7 +1751,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(pptrs, req);
       break;
     case PM_FTYPE_IPV6:
-      pptrsv->v6.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->v6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         reset_mac(&pptrsv->v6);
@@ -1790,7 +1787,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->v6, req);
       break;
     case PM_FTYPE_VLAN_IPV4:
-      pptrsv->vlan4.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->vlan4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         reset_mac_vlan(&pptrsv->vlan4);
@@ -1827,7 +1824,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->vlan4, req);
       break;
     case PM_FTYPE_VLAN_IPV6:
-      pptrsv->vlan6.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->vlan6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         reset_mac_vlan(&pptrsv->vlan6);
@@ -1864,7 +1861,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->vlan6, req);
       break;
     case PM_FTYPE_MPLS_IPV4:
-      pptrsv->mpls4.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->mpls4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         u_char *ptr = pptrsv->mpls4.mpls_ptr;
@@ -1914,7 +1911,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->mpls4, req);
       break;
     case PM_FTYPE_MPLS_IPV6:
-      pptrsv->mpls6.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->mpls6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         u_char *ptr = pptrsv->mpls6.mpls_ptr;
@@ -1963,7 +1960,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->mpls6, req);
       break;
     case PM_FTYPE_VLAN_MPLS_IPV4:
-      pptrsv->vlanmpls4.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->vlanmpls4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         u_char *ptr = pptrsv->vlanmpls4.mpls_ptr;
@@ -2013,7 +2010,7 @@ void finalizeSample(SFSample *sample, struct packet_ptrs_vector *pptrsv, struct 
       exec_plugins(&pptrsv->vlanmpls4, req);
       break;
     case PM_FTYPE_VLAN_MPLS_IPV6:
-      pptrsv->vlanmpls6.flow_type = pptrs->flow_type;
+      memcpy(&pptrsv->vlanmpls6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
       if (req->bpf_filter) {
         u_char *ptr = pptrsv->vlanmpls6.mpls_ptr;
@@ -2079,7 +2076,8 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
 
   if (!t) return 0;
 
-  /* The id_table is shared between by IPv4 and IPv6 sFlow collectors.
+  /*
+     The id_table is shared between by IPv4 and IPv6 sFlow collectors.
      IPv4 ones are in the lower part (0..x), IPv6 ones are in the upper
      part (x+1..end)
   */
@@ -2092,7 +2090,7 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
     pptrs->have_tag2 = FALSE;
   }
 
-  /* Giving a first try with index(es) */
+  /* If we have any index defined, let's use it */
   if (config.maps_index && pretag_index_have_one(t)) {
     struct id_entry *index_results[ID_TABLE_INDEX_RESULTS];
     u_int32_t iterator, num_results;
@@ -2104,7 +2102,7 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
       if (!(ret & PRETAG_MAP_RCODE_JEQ)) return ret;
     }
 
-    /* if we have at least one index we trust we did a good job */
+    /* done */
     return ret;
   }
 
@@ -2141,12 +2139,13 @@ int SF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
 u_int8_t SF_evaluate_flow_type(struct packet_ptrs *pptrs)
 {
   SFSample *sample = (SFSample *)pptrs->f_data;
-  u_int8_t ret = PM_FTYPE_TRAFFIC;
+  u_int8_t ret = FALSE;
 
   if (sample->in_vlan || sample->out_vlan) ret += PM_FTYPE_VLAN;
   if (sample->lstk.depth > 0) ret += PM_FTYPE_MPLS;
-  if (sample->gotIPV4); 
-  else if (sample->gotIPV6) ret += PM_FTYPE_TRAFFIC_IPV6;
+
+  if (sample->gotIPV4) ret += PM_FTYPE_IPV4;
+  else if (sample->gotIPV6) ret += PM_FTYPE_IPV6;
 
   return ret;
 }
@@ -2239,7 +2238,7 @@ void sfv245_check_counter_log_init(struct packet_ptrs *pptrs)
     if (!peer->log) { 
       memcpy(&peer->addr, &entry->agent_addr, sizeof(struct host_addr));
       addr_to_str(peer->addr_str, &peer->addr);
-      bgp_peer_log_init(peer, config.sfacctd_counter_output, FUNC_TYPE_SFLOW_COUNTER);
+      bgp_peer_log_init(peer, NULL, config.sfacctd_counter_output, FUNC_TYPE_SFLOW_COUNTER);
     }
   }
 }

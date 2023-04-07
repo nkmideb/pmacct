@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -99,12 +99,7 @@
 #endif
 
 #if defined (WITH_NDPI)
-/* NDPI_LIB_COMPILATION definition appears to be new in 2.5 */
-#ifndef NDPI_LIB_COMPILATION
-#define NDPI_LIB_COMPILATION
-#endif
 #include <ndpi_main.h>
-#undef NDPI_LIB_COMPILATION
 #endif
 
 #if !defined ETHER_ADDRSTRLEN
@@ -117,7 +112,9 @@
 #define INET6_ADDRSTRLEN 46
 #endif
 
-#if (defined SOLARIS) && (defined CPU_sparc)
+#if defined IM_BIG_ENDIAN
+#define ntohs(x) (x)
+#define ntohl(x) (x)
 #define htons(x) (x)
 #define htonl(x) (x)
 #endif
@@ -143,12 +140,6 @@
 
 #ifndef LOCK_EX
 #define LOCK_EX 2
-#endif
-
-#ifdef NOINLINE
-#define Inline
-#else
-#define Inline static inline
 #endif
 
 /* Let work the unaligned copy macros the hard way: byte-per byte copy via
@@ -231,6 +222,12 @@ typedef struct {
 #include <avro.h>
 #endif
 
+#if (defined WITH_AVRO)
+#if (!defined WITH_JANSSON)
+#error "--enable-avro requires --enable-jansson"
+#endif
+#endif
+
 #if (defined WITH_SERDES)
 #if (!defined WITH_AVRO)
 #error "--enable-serdes requires --enable-avro"
@@ -250,6 +247,7 @@ typedef struct {
 #define PM_GNUTLS_CAFILE "ca-certificates.crt"
 #endif
 
+#include "addr.h"
 #include "network.h"
 #include "pretag.h"
 #include "cfg.h"
@@ -314,6 +312,15 @@ struct pm_pcap_callback_data {
   struct pm_pcap_callback_signals sig;
 };
 
+struct pm_dump_runner {
+  u_int16_t id;
+  u_int64_t seq;
+  u_int64_t first;
+  u_int64_t last;
+  int noop;
+  void *extra; /* extra data to pass to the runner thread */
+};
+
 struct _protocols_struct {
   char name[PROTO_LEN];
   int number;
@@ -334,6 +341,11 @@ struct _primitives_matrix_struct {
   u_int8_t pmbgpd;
   u_int8_t pmbmpd;
   char desc[PRIMITIVE_DESC_LEN];
+};
+
+struct _id_to_string_struct {
+  u_int64_t id;
+  char str[PRIMITIVE_DESC_LEN];
 };
 
 struct largebuf {
@@ -368,13 +380,13 @@ void handle_falling_child();
 void ignore_falling_child();
 void PM_sigint_handler(int);
 void PM_sigalrm_noop_handler(int);
-void reload();
-void push_stats();
-void reload_maps();
+void reload(int);
+void push_stats(int);
+void reload_maps(int);
 extern void pm_pcap_device_initialize(struct pm_pcap_devices *);
 extern void pm_pcap_device_copy_all(struct pm_pcap_devices *, struct pm_pcap_devices *);
 extern void pm_pcap_device_copy_entry(struct pm_pcap_devices *, struct pm_pcap_devices *, int);
-extern int pm_pcap_device_getindex_byifname(struct pm_pcap_devices *, char *);
+extern int pm_pcap_device_getindex_by_ifname_direction(struct pm_pcap_devices *, char *, int);
 extern pcap_t *pm_pcap_open(const char *, int, int, int, int, int, char *);
 extern void pm_pcap_add_filter(struct pm_pcap_device *);
 extern int pm_pcap_add_interface(struct pm_pcap_device *, char *, struct pm_pcap_interface *, int);
@@ -394,6 +406,7 @@ extern void chdlc_handler(const struct pcap_pkthdr *, register struct packet_ptr
 
 extern int ip_handler(register struct packet_ptrs *);
 extern int ip6_handler(register struct packet_ptrs *);
+extern int unknown_etype_handler(register struct packet_ptrs *);
 extern int gtp_tunnel_func(register struct packet_ptrs *);
 extern int gtp_tunnel_configurator(struct tunnel_handler *, char *);
 extern void tunnel_registry_init();

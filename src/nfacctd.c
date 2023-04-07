@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -21,7 +21,6 @@
 
 /* includes */
 #include "pmacct.h"
-#include "addr.h"
 #ifdef WITH_KAFKA
 #include "kafka_common.h"
 #endif
@@ -39,6 +38,9 @@
 #include "isis/isis.h"
 #include "bmp/bmp.h"
 #include "telemetry/telemetry.h"
+#if defined WITH_EBPF
+#include "ebpf/ebpf_rp_balancer.h"
+#endif
 #if defined (WITH_NDPI)
 #include "ndpi/ndpi.h"
 #endif
@@ -49,6 +51,7 @@ struct template_cache tpl_cache;
 struct host_addr debug_a;
 char debug_agent_addr[50];
 u_int16_t debug_agent_port;
+cdada_map_t *tpl_data_map, *tpl_opt_map;
 
 /* Functions */
 void usage_daemon(char *prog_name)
@@ -244,6 +247,23 @@ int main(int argc,char **argv, char **envp)
   FD_ZERO(&read_descs);
   FD_ZERO(&bkp_read_descs);
 
+  {
+    u_int16_t tpl_hash_keylen = calc_template_keylen();
+    char pm_cdada_map_container[tpl_hash_keylen];
+
+    tpl_data_map = cdada_map_create(pm_cdada_map_container);
+    if (!tpl_data_map) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Unable to allocate tpl_data_map. Exiting.\n", config.name, config.type);
+      exit_gracefully(1);
+    }
+
+    tpl_opt_map = cdada_map_create(pm_cdada_map_container);
+    if (!tpl_opt_map) {
+      Log(LOG_ERR, "ERROR ( %s/%s ): Unable to allocate tpl_opt_map. Exiting.\n", config.name, config.type);
+      exit_gracefully(1);
+    }
+  }
+
   /* getting commandline values */
   while (!errflag && ((cp = getopt(argc, argv, ARGS_NFACCTD)) != -1)) {
     if (!cfg_cmdline[rows]) cfg_cmdline[rows] = malloc(SRVBUFLEN);
@@ -383,7 +403,7 @@ int main(int argc,char **argv, char **envp)
       exit(0);
       break;
     case 'V':
-      version_daemon(NFACCTD_USAGE_HEADER);
+      version_daemon(config.acct_type, NFACCTD_USAGE_HEADER);
       exit(0);
       break;
     case 'a':
@@ -509,11 +529,10 @@ int main(int argc,char **argv, char **envp)
 	if (list->cfg.what_to_count_2 & (COUNT_POST_NAT_SRC_HOST|COUNT_POST_NAT_DST_HOST|
 			COUNT_POST_NAT_SRC_PORT|COUNT_POST_NAT_DST_PORT|COUNT_NAT_EVENT|
 			COUNT_TIMESTAMP_START|COUNT_TIMESTAMP_END|COUNT_TIMESTAMP_ARRIVAL|
-			COUNT_EXPORT_PROTO_TIME))
+			COUNT_EXPORT_PROTO_TIME|COUNT_FWD_STATUS|COUNT_FW_EVENT))
 	  list->cfg.data_type |= PIPE_TYPE_NAT;
 
-	if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP|COUNT_MPLS_LABEL_BOTTOM|
-			COUNT_MPLS_STACK_DEPTH))
+	if (list->cfg.what_to_count_2 & (COUNT_MPLS_LABEL_TOP| COUNT_MPLS_LABEL_BOTTOM))
 	  list->cfg.data_type |= PIPE_TYPE_MPLS;
 
 	if (list->cfg.what_to_count_2 & (COUNT_TUNNEL_SRC_MAC|COUNT_TUNNEL_DST_MAC|
@@ -522,7 +541,7 @@ int main(int argc,char **argv, char **envp)
 			COUNT_VXLAN))
 	  list->cfg.data_type |= PIPE_TYPE_TUN;
 
-	if (list->cfg.what_to_count_2 & (COUNT_LABEL))
+	if (list->cfg.what_to_count_2 & (COUNT_LABEL|COUNT_MPLS_LABEL_STACK))
 	  list->cfg.data_type |= PIPE_TYPE_VLEN;
 
         if (list->cfg.what_to_count & (COUNT_SRC_PORT|COUNT_DST_PORT|COUNT_SUM_PORT|COUNT_TCPFLAGS)) {
@@ -536,11 +555,11 @@ int main(int argc,char **argv, char **envp)
 	}
 	if (list->cfg.what_to_count & (COUNT_SRC_AS|COUNT_DST_AS|COUNT_SUM_AS)) {
 	  if (!list->cfg.networks_file && list->cfg.nfacctd_as & NF_AS_NEW) {
-	    Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation selected but NO 'networks_file' specified. Exiting...\n\n", list->name, list->type.string);
+	    Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation selected but NO 'networks_file' specified. Exiting.\n\n", list->name, list->type.string);
 	    exit_gracefully(1);
 	  }
           if (!list->cfg.bgp_daemon && !list->cfg.bmp_daemon && list->cfg.nfacctd_as == NF_AS_BGP) {
-            Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation selected but 'bgp_daemon' or 'bmp_daemon' is not enabled. Exiting...\n\n", list->name, list->type.string);
+            Log(LOG_ERR, "ERROR ( %s/%s ): AS aggregation selected but 'bgp_daemon' or 'bmp_daemon' is not enabled. Exiting.\n\n", list->name, list->type.string);
             exit_gracefully(1);
 	  }
           if (list->cfg.nfacctd_as & NF_AS_FALLBACK && list->cfg.networks_file)
@@ -557,7 +576,7 @@ int main(int argc,char **argv, char **envp)
 	        (list->cfg.nfacctd_net == NF_NET_STATIC && !list->cfg.networks_mask) || 
 	        (list->cfg.nfacctd_net == NF_NET_BGP && !list->cfg.bgp_daemon && !list->cfg.bmp_daemon) ||
 	        (list->cfg.nfacctd_net == NF_NET_IGP && !list->cfg.nfacctd_isis)) {
-	      Log(LOG_ERR, "ERROR ( %s/%s ): network aggregation selected but none of 'bgp_daemon', 'bmp_daemon', 'isis_daemon', 'networks_file', 'networks_mask' is specified. Exiting ...\n\n", list->name, list->type.string);
+	      Log(LOG_ERR, "ERROR ( %s/%s ): network aggregation selected but none of 'bgp_daemon', 'bmp_daemon', 'isis_daemon', 'networks_file', 'networks_mask' is specified. Exiting.\n\n", list->name, list->type.string);
 	      exit_gracefully(1);
 	    }
             if (list->cfg.nfacctd_net & NF_NET_FALLBACK && list->cfg.networks_file)
@@ -569,11 +588,6 @@ int main(int argc,char **argv, char **envp)
         if (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS) {
 	  enable_ip_fragment_handler();
           config.classifier_ndpi = TRUE;
-        }
-
-        if ((list->cfg.what_to_count & COUNT_CLASS) && (list->cfg.what_to_count_2 & COUNT_NDPI_CLASS)) {
-          Log(LOG_ERR, "ERROR ( %s/%s ): 'class_legacy' and 'class' primitives are mutual exclusive. Exiting...\n\n", list->name, list->type.string);
-          exit_gracefully(1);
         }
 #endif
 
@@ -589,7 +603,7 @@ int main(int argc,char **argv, char **envp)
   }
 
   if (tee_plugins && data_plugins) {
-    Log(LOG_ERR, "ERROR ( %s/core ): 'tee' plugins are not compatible with data (memory/mysql/pgsql/etc.) plugins. Exiting...\n\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/core ): 'tee' plugins are not compatible with data (memory/mysql/pgsql/etc.) plugins. Exiting.\n\n", config.name);
     exit_gracefully(1);
   }
 
@@ -603,37 +617,39 @@ int main(int argc,char **argv, char **envp)
 #endif
 
   if (capture_methods > 1) {
-    Log(LOG_ERR, "ERROR ( %s/core ): pcap_savefile, nfacctd_ip, nfacctd_kafka_* and nfacctd_zmq_* are mutual exclusive. Exiting...\n\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/core ): pcap_savefile, nfacctd_ip, nfacctd_kafka_* and nfacctd_zmq_* are mutual exclusive. Exiting.\n\n", config.name);
     exit_gracefully(1);
   }
 
-  if (config.nfacctd_templates_receiver) {
+  if (config.nfacctd_templates_port) {
     if (!config.nfacctd_port && !config.nfacctd_ip && capture_methods) {
-      Log(LOG_ERR, "ERROR ( %s/core ): nfacctd_templates_receiver only applies to live UDP collection (nfacctd_ip, nfacctd_port). Exiting...\n\n", config.name);
+      Log(LOG_ERR, "ERROR ( %s/core ): nfacctd_templates_port only applies to live UDP collection (nfacctd_ip, nfacctd_port). Exiting.\n\n", config.name);
       exit_gracefully(1);
     }
+  }
 
+  if (config.nfacctd_templates_receiver) {
     if (tee_plugins) {
-      Log(LOG_ERR, "ERROR ( %s/core ): nfacctd_templates_receiver and tee plugin ae mutual exclusive. Exiting...\n\n", config.name);
+      Log(LOG_ERR, "ERROR ( %s/core ): nfacctd_templates_receiver and tee plugin ae mutual exclusive. Exiting.\n\n", config.name);
       exit_gracefully(1);
     }
   }
 
 #ifdef WITH_KAFKA
   if ((config.nfacctd_kafka_broker_host && !config.nfacctd_kafka_topic) || (config.nfacctd_kafka_topic && !config.nfacctd_kafka_broker_host)) {
-    Log(LOG_ERR, "ERROR ( %s/core ): Kafka collection requires both nfacctd_kafka_broker_host and nfacctd_kafka_topic to be specified. Exiting...\n\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/core ): Kafka collection requires both nfacctd_kafka_broker_host and nfacctd_kafka_topic to be specified. Exiting.\n\n", config.name);
     exit_gracefully(1);
   }
 
   if (config.nfacctd_kafka_broker_host && tee_plugins) {
-    Log(LOG_ERR, "ERROR ( %s/core ): Kafka collection is mutual exclusive with 'tee' plugins. Exiting...\n\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/core ): Kafka collection is mutual exclusive with 'tee' plugins. Exiting.\n\n", config.name);
     exit_gracefully(1);
   }
 #endif
 
 #ifdef WITH_ZMQ
   if (config.nfacctd_zmq_address && tee_plugins) {
-    Log(LOG_ERR, "ERROR ( %s/core ): ZeroMQ collection is mutual exclusive with 'tee' plugins. Exiting...\n\n", config.name);
+    Log(LOG_ERR, "ERROR ( %s/core ): ZeroMQ collection is mutual exclusive with 'tee' plugins. Exiting.\n\n", config.name);
     exit_gracefully(1);
   }
 #endif
@@ -836,46 +852,63 @@ int main(int argc,char **argv, char **envp)
     }
 
     /* bind socket to port */
-#if (defined LINUX) && (defined HAVE_SO_REUSEPORT)
-    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
-    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT.\n", config.name);
-
-    if (config.nfacctd_templates_port) {
-      rc = setsockopt(config.nfacctd_templates_sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
-      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT.\n", config.name);
-    }
-
-#ifdef WITH_GNUTLS
-    if (config.nfacctd_dtls_port) {
-      rc = setsockopt(config.nfacctd_dtls_sock, SOL_SOCKET, SO_REUSEADDR|SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
-      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR|SO_REUSEPORT.\n", config.name);
-    }
+#if (defined HAVE_SO_REUSEPORT)
+    rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
+    if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEPORT.\n", config.name);
 #endif
-#else
+
     rc = setsockopt(config.sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
     if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
 
+#if (defined HAVE_SO_BINDTODEVICE)
+    if (config.nfacctd_interface)  {
+      rc = setsockopt(config.sock, SOL_SOCKET, SO_BINDTODEVICE, config.nfacctd_interface, (socklen_t) strlen(config.nfacctd_interface));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, errno);
+    }
+#endif
+
     if (config.nfacctd_templates_port) {
+#if (defined HAVE_SO_REUSEPORT)
+      rc = setsockopt(config.nfacctd_templates_sock, SOL_SOCKET, SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEPORT.\n", config.name);
+#endif
+
       rc = setsockopt(config.nfacctd_templates_sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
       if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
+
+#if (defined HAVE_SO_BINDTODEVICE)
+      if (config.nfacctd_interface)  {
+	rc = setsockopt(config.nfacctd_templates_sock, SOL_SOCKET, SO_BINDTODEVICE, config.nfacctd_interface, (socklen_t) strlen(config.nfacctd_interface));
+	if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, errno);
+      }
+#endif
     }
 
 #ifdef WITH_GNUTLS
     if (config.nfacctd_dtls_port) {
+#if (defined HAVE_SO_REUSEPORT)
+      rc = setsockopt(config.nfacctd_dtls_sock, SOL_SOCKET, SO_REUSEPORT, (char *) &yes, (socklen_t) sizeof(yes));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEPORT.\n", config.name);
+#endif
+
       rc = setsockopt(config.nfacctd_dtls_sock, SOL_SOCKET, SO_REUSEADDR, (char *) &yes, (socklen_t) sizeof(yes));
       if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_REUSEADDR.\n", config.name);
+
+#if (defined HAVE_SO_BINDTODEVICE)
+      if (config.nfacctd_interface)  {
+	rc = setsockopt(config.nfacctd_dtls_sock, SOL_SOCKET, SO_BINDTODEVICE, config.nfacctd_interface, (socklen_t) strlen(config.nfacctd_interface));
+	if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for SO_BINDTODEVICE (errno: %d).\n", config.name, errno);
+      }
+#endif
     }
 #endif
-#endif
 
-#if (defined IPV6_BINDV6ONLY)
-    {
-     int no=0;
+    if (config.nfacctd_ipv6_only) {
+      int yes=1;
 
-      rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_BINDV6ONLY, (char *) &no, (socklen_t) sizeof(no));
-      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for IPV6_BINDV6ONLY.\n", config.name);
+      rc = setsockopt(config.sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *) &yes, (socklen_t) sizeof(yes));
+      if (rc < 0) Log(LOG_ERR, "WARN ( %s/core ): setsockopt() failed for IPV6_V6ONLY.\n", config.name);
     }
-#endif
 
     if (config.nfacctd_pipe_size) {
       socklen_t l = sizeof(config.nfacctd_pipe_size);
@@ -913,18 +946,18 @@ int main(int argc,char **argv, char **envp)
     }
 
     memset(&tee_templates, 0, sizeof(struct tee_receiver));
+  }
 
-    if (config.nfacctd_templates_receiver) {
-      tee_templates.dest_len = sizeof(tee_templates.dest);
+  if (config.nfacctd_templates_receiver) {
+    tee_templates.dest_len = sizeof(tee_templates.dest);
 
-      ret = Tee_parse_hostport(config.nfacctd_templates_receiver, (struct sockaddr *) &tee_templates.dest, &tee_templates.dest_len, FALSE);
-      if (ret) {
-	Log(LOG_ERR, "ERROR ( %s/core ): Invalid receiver: %s.\n", config.name, config.nfacctd_templates_receiver);
-	exit_gracefully(1);
-      }
-
-      tee_templates.fd = Tee_prepare_sock((struct sockaddr *) &tee_templates.dest, tee_templates.dest_len, FALSE, TRUE, FALSE);
+    ret = Tee_parse_hostport(config.nfacctd_templates_receiver, (struct sockaddr *) &tee_templates.dest, &tee_templates.dest_len, FALSE);
+    if (ret) {
+      Log(LOG_ERR, "ERROR ( %s/core ): Invalid nfacctd_templates_receiver: %s.\n", config.name, config.nfacctd_templates_receiver);
+      exit_gracefully(1);
     }
+
+    tee_templates.fd = Tee_prepare_sock((struct sockaddr *) &tee_templates.dest, tee_templates.dest_len, NULL, FALSE, TRUE, FALSE);
   }
 
   if (config.nfacctd_allow_file) load_allow_file(config.nfacctd_allow_file, &allow);
@@ -1081,12 +1114,24 @@ int main(int argc,char **argv, char **envp)
       exit_gracefully(1);
     }
 
+#if defined WITH_EBPF
+    if (config.nfacctd_rp_ebpf_prog) {
+      attach_ebpf_reuseport_balancer(config.sock, config.nfacctd_rp_ebpf_prog, config.cluster_name, "nfacctd", config.cluster_id, FALSE);
+    }
+#endif
+
     if (config.nfacctd_templates_port) {
       rc = bind(config.nfacctd_templates_sock, (struct sockaddr *) &server_templates, slen);
       if (rc < 0) {
 	Log(LOG_ERR, "ERROR ( %s/core ): bind() to ip=%s port=%d/udp failed (errno: %d).\n", config.name, config.nfacctd_ip, config.nfacctd_templates_port, errno);
 	exit_gracefully(1);
       }
+
+#if defined WITH_EBPF
+      if (config.nfacctd_rp_ebpf_prog) {
+        attach_ebpf_reuseport_balancer(config.nfacctd_templates_sock, config.nfacctd_rp_ebpf_prog, config.cluster_name, "nfacctd_tpl", config.cluster_id, FALSE);
+      }
+#endif
     }
 
 #ifdef WITH_GNUTLS
@@ -1100,7 +1145,7 @@ int main(int argc,char **argv, char **envp)
 #endif
   }
 
-  init_classifiers(NULL);
+  init_classifiers();
 
 #if defined (WITH_NDPI)
   if (config.classifier_ndpi) {
@@ -1480,7 +1525,7 @@ int main(int argc,char **argv, char **envp)
     }
 
     if (reload_log) {
-      reload_logs();
+      reload_logs(NFACCTD_USAGE_HEADER);
       reload_log = FALSE;
     }
 
@@ -1588,7 +1633,7 @@ void process_v5_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs *pp
   pptrs->f_status_g = NULL;
 
   reset_mac(pptrs);
-  pptrs->flow_type = PM_FTYPE_TRAFFIC;
+  pptrs->flow_type.traffic_type = PM_FTYPE_TRAFFIC;
 
   if (tee_dissect) {
     tee_dissect->hdrVersion = version;
@@ -1683,6 +1728,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
   u_int16_t flowsetCount = 0, direction = 0, FlowSeqInc = 0; 
   u_int32_t HdrSz = 0, SourceId = 0, FlowSeq = 0;
   u_char *dummy_packet_ptr = NULL;
+  int ret;
 
   if (version == 9) {
     HdrSz = NfHdrV9Sz; 
@@ -1765,6 +1811,14 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
     tee_dissect->flowSetLen = NfDataHdrV9Sz; /* updated later */
   }
 
+  if (config.debug) {
+    sa_to_addr((struct sockaddr *)pptrs->f_agent, &debug_a, &debug_agent_port);
+    addr_to_str(debug_agent_addr, &debug_a);
+
+    Log(LOG_DEBUG, "DEBUG ( %s/core ): Processing NetFlow/IPFIX flowset [%d] from [%s:%u] seqno [%u]\n",
+	config.name, fid, debug_agent_addr, debug_agent_port, FlowSeq);
+  }
+
   if (fid == 0 || fid == 2) { /* template: 0 NetFlow v9, 2 IPFIX */ 
     unsigned char *tpl_ptr = pkt;
     u_int16_t pens = 0;
@@ -1791,11 +1845,16 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
       u_int32_t tpl_len = 0;
 
       template_hdr = (struct template_hdr_v9 *) tpl_ptr;
-      if (off+flowsetlen > len) { 
+      if ((off + flowsetlen) > len) {
         notify_malf_packet(LOG_INFO, "INFO", "unable to read next Template Flowset (incomplete NetFlow v9/IPFIX packet)",
 		        (struct sockaddr *) pptrsv->v4.f_agent, FlowSeq);
         xflow_status_table.tot_bad_datagrams++;
         return;
+      }
+
+      if ((flowsetlen - flowoff) < sizeof(struct template_hdr_v9)) {
+	/* skip padding */
+	break;
       }
 
       tpl = handle_template(template_hdr, pptrs, fid, SourceId, &pens, flowsetlen-flowoff, FlowSeq);
@@ -1834,20 +1893,31 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
       u_int32_t tpl_len = 0;
 
       opt_template_hdr = (struct options_template_hdr_v9 *) tpl_ptr;
-      if (off+flowsetlen > len) {
+      if ((off + flowsetlen) > len) {
         notify_malf_packet(LOG_INFO, "INFO", "unable to read next Options Template Flowset (incomplete NetFlow v9/IPFIX packet)",
                         (struct sockaddr *) pptrsv->v4.f_agent, FlowSeq);
         xflow_status_table.tot_bad_datagrams++;
         return;
       }
 
+      if ((flowsetlen - flowoff) < sizeof(struct options_template_hdr_v9)) {
+	/* skip padding */
+	break;
+      }
+
       tpl = handle_template((struct template_hdr_v9 *)opt_template_hdr, pptrs, fid, SourceId, &pens, flowsetlen-flowoff, FlowSeq);
       if (!tpl) return;
 
-      /* Increment is not precise for NetFlow v9 but will work */
-      tpl_len = sizeof(struct options_template_hdr_v9) +
-		(((ntohs(opt_template_hdr->scope_len) + ntohs(opt_template_hdr->option_len)) * sizeof(struct template_field_v9)) +
-		(pens * sizeof(u_int32_t)));
+      if (fid == 3 /* IPFIX */) {
+	tpl_len = sizeof(struct options_template_hdr_v9) +
+		  (((ntohs(opt_template_hdr->scope_len) + ntohs(opt_template_hdr->option_len)) * sizeof(struct template_field_v9)) +
+		  (pens * sizeof(u_int32_t)));
+      }
+      else if (fid == 1 /* NetFlow v9 */) {
+	tpl_len = sizeof(struct options_template_hdr_v9) +
+		  ((ntohs(opt_template_hdr->scope_len) + ntohs(opt_template_hdr->option_len)) +
+		  (pens * sizeof(u_int32_t)));
+      }
 
       tpl_ptr += tpl_len;
       flowoff += tpl_len;
@@ -1989,7 +2059,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  }
 	}
 
-	if (tpl->tpl[NF9_APPLICATION_ID].len == 4 && tpl->tpl[NF9_APPLICATION_NAME].len > 0) {
+	if ((tpl->tpl[NF9_APPLICATION_ID].len == 2 || tpl->tpl[NF9_APPLICATION_ID].len == 3 || tpl->tpl[NF9_APPLICATION_ID].len == 5) &&
+	    tpl->tpl[NF9_APPLICATION_NAME].len > 0) {
 	  struct pkt_classifier css;
 	  pm_class_t class_id = 0, class_int_id = 0;
 
@@ -1999,7 +2070,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  }
 	  else entry = (struct xflow_status_entry *) pptrs->f_status_g;
 
-	  memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
+	  memcpy(&class_id, (pkt + tpl->tpl[NF9_APPLICATION_ID].off + 1), (tpl->tpl[NF9_APPLICATION_ID].len - 1));
 
           if (entry) centry = search_class_id_status_table(entry->class, class_id);
           if (!centry) {
@@ -2022,6 +2093,9 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 
 	    css.id = centry->class_int_id;
 	    strlcpy(css.protocol, centry->class_name, MAX_PROTOCOL_LEN);
+#if defined (WITH_NDPI)
+	    css.category = FALSE; /* unused */
+#endif
 	    pmct_register(&css);
           }
 	}
@@ -2034,18 +2108,25 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
           else entry = (struct xflow_status_entry *) pptrs->f_status_g;
 
 	  if (entry) {
+	    int got_v4 = FALSE;
+
 	    if (tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].len) {
 	      raw_to_addr(&entry->exp_addr, pkt+tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].off, AF_INET);
 	      raw_to_sa(&entry->exp_sa, pkt+tpl->tpl[NF9_EXPORTER_IPV4_ADDRESS].off, 0, AF_INET);
+
+	      if (!is_any(&entry->exp_addr)) {
+		got_v4 = TRUE;
+	      }
 	    }
-	    else if (tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].len) {
+
+	    if (!got_v4 && tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].len) {
 	      raw_to_addr(&entry->exp_addr, pkt+tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].off, AF_INET6);
 	      raw_to_sa(&entry->exp_sa, pkt+tpl->tpl[NF9_EXPORTER_IPV6_ADDRESS].off, 0, AF_INET6);
 	    }
 	  }
 	}
 
-        if ((tpl->tpl[NF9_INGRESS_VRFID].len == 4 || tpl->tpl[NF9_INGRESS_VRFID].len == 4) && tpl->tpl[NF9_MPLS_VPN_RD].len == 8) {
+        if (tpl->tpl[NF9_INGRESS_VRFID].len == 4 && tpl->tpl[NF9_MPLS_VPN_RD].len == 8) {
           /* Handling the global option scoping case */
           if (!config.nfacctd_disable_opt_scope_check) {
             if (tpl->tpl[NF9_OPT_SCOPE_SYSTEM].len) entry = (struct xflow_status_entry *) pptrs->f_status_g;
@@ -2058,10 +2139,18 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 
 	    if (!entry->in_rd_map) {
 	      entry->in_rd_map = cdada_map_create(u_int32_t); /* size of vrfid */
+	      if (!entry->in_rd_map) {
+		Log(LOG_ERR, "ERROR ( %s/core ): Unable to allocate entry->in_rd_map. Exiting.\n", config.name);
+		exit_gracefully(1);
+	      }
 	    }
 
 	    if (!entry->out_rd_map) {
 	      entry->out_rd_map = cdada_map_create(u_int32_t); /* size of vrfid */
+	      if (!entry->out_rd_map) {
+		Log(LOG_ERR, "ERROR ( %s/core ): Unable to allocate entry->out_rd_map. Exiting.\n", config.name);
+		exit_gracefully(1);
+	      }
 	    }
 
 	    memcpy(&ingress_vrfid, pkt+tpl->tpl[NF9_INGRESS_VRFID].off, tpl->tpl[NF9_INGRESS_VRFID].len);
@@ -2077,11 +2166,19 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	      bgp_rd_ntoh(mpls_vpn_rd);
 
 	      if (ingress_vrfid) {
-	        cdada_map_insert(entry->in_rd_map, &ingress_vrfid, mpls_vpn_rd);
+	        ret = cdada_map_insert(entry->in_rd_map, &ingress_vrfid, mpls_vpn_rd);
+		if (ret != CDADA_SUCCESS && ret != CDADA_E_EXISTS){
+		  Log(LOG_ERR, "ERROR ( %s/core ): Unable to insert in entry->in_rd_map. Exiting.\n", config.name);
+		  exit_gracefully(1);
+		}
 	      }
 
 	      if (egress_vrfid) {
-	        cdada_map_insert(entry->out_rd_map, &egress_vrfid, mpls_vpn_rd);
+	        ret = cdada_map_insert(entry->out_rd_map, &egress_vrfid, mpls_vpn_rd);
+		if (ret != CDADA_SUCCESS && ret != CDADA_E_EXISTS){
+		  Log(LOG_ERR, "ERROR ( %s/core ): Unable to insert in entry->out_rd_map. Exiting.\n", config.name);
+		  exit_gracefully(1);
+		}
 	      }
 	    }
 	  }
@@ -2091,7 +2188,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrs->f_data = pkt;
 	  pptrs->f_tpl = (u_char *) tpl;
 	  reset_net_status_v(pptrsv);
-	  pptrs->flow_type = NF_evaluate_flow_type(tpl, pptrs);
+	  NF_evaluate_flow_type(&pptrs->flow_type, tpl, pptrs);
 
 	  exec_plugins(pptrs, req);
 	}
@@ -2139,11 +2236,11 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  goto finalize_record;
 	}
 
-	pptrs->flow_type = NF_evaluate_flow_type(tpl, pptrs);
+	NF_evaluate_flow_type(&pptrs->flow_type, tpl, pptrs);
 	direction = NF_evaluate_direction(tpl, pptrs);
 
 	/* we need to understand the IP protocol version in order to build the fake packet */ 
-	switch (pptrs->flow_type) {
+	switch (pptrs->flow_type.traffic_type) {
 	case PM_FTYPE_IPV4:
 	  if (req->bpf_filter) {
 	    reset_mac(pptrs);
@@ -2176,14 +2273,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrs->l4_proto = 0;
 	  memcpy(&pptrs->l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
-	  if (tpl->tpl[NF9_APPLICATION_ID].len == 4) {
-	    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
-	    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs->f_status_g;
-	    pm_class_t class_id = 0;
-
-	    memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
-	    if (entry) pptrs->class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
-	  }
+	  NF_process_classifiers(pptrs, pptrs, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(pptrs);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(pptrs);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, pptrs, &pptrs->bta, &pptrs->bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, pptrs, &pptrs->bitr, NULL);
@@ -2198,7 +2289,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->v6.f_header = pptrs->f_header;
 	  pptrsv->v6.f_data = pptrs->f_data;
 	  pptrsv->v6.f_tpl = pptrs->f_tpl;
-	  pptrsv->v6.flow_type = pptrs->flow_type;
+	  memcpy(&pptrsv->v6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
 	  if (req->bpf_filter) {
 	    reset_mac(&pptrsv->v6);
@@ -2231,14 +2322,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->v6.l4_proto = 0;
 	  memcpy(&pptrsv->v6.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
-	  if (tpl->tpl[NF9_APPLICATION_ID].len == 4) {
-	    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
-	    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs->f_status_g;
-	    pm_class_t class_id = 0;
-
-	    memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
-	    if (entry) pptrsv->v6.class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
-	  }
+	  NF_process_classifiers(pptrs, &pptrsv->v6, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->v6);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->v6);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->v6, &pptrsv->v6.bta, &pptrsv->v6.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->v6, &pptrsv->v6.bitr, NULL);
@@ -2253,7 +2338,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->vlan4.f_header = pptrs->f_header;
 	  pptrsv->vlan4.f_data = pptrs->f_data;
 	  pptrsv->vlan4.f_tpl = pptrs->f_tpl;
-	  pptrsv->vlan4.flow_type = pptrs->flow_type;
+	  memcpy(&pptrsv->vlan4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
 	  if (req->bpf_filter) {
 	    reset_mac_vlan(&pptrsv->vlan4); 
@@ -2288,14 +2373,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->vlan4.l4_proto = 0;
 	  memcpy(&pptrsv->vlan4.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
-	  if (tpl->tpl[NF9_APPLICATION_ID].len == 4) {
-	    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
-	    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs->f_status_g;
-            pm_class_t class_id = 0;
-
-            memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
-	    if (entry) pptrsv->vlan4.class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
-	  } 
+	  NF_process_classifiers(pptrs, &pptrsv->vlan4, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->vlan4);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlan4);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlan4, &pptrsv->vlan4.bta, &pptrsv->vlan4.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlan4, &pptrsv->vlan4.bitr, NULL);
@@ -2310,7 +2389,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->vlan6.f_header = pptrs->f_header;
 	  pptrsv->vlan6.f_data = pptrs->f_data;
 	  pptrsv->vlan6.f_tpl = pptrs->f_tpl;
-	  pptrsv->vlan6.flow_type = pptrs->flow_type;
+	  memcpy(&pptrsv->vlan6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
 	  if (req->bpf_filter) {
 	    reset_mac_vlan(&pptrsv->vlan6);
@@ -2345,14 +2424,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->vlan6.l4_proto = 0;
 	  memcpy(&pptrsv->vlan6.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
-	  if (tpl->tpl[NF9_APPLICATION_ID].len == 4) {
-	    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
-	    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs->f_status_g;
-            pm_class_t class_id = 0;
-
-            memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
-	    if (entry) pptrsv->vlan6.class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
-	  }
+	  NF_process_classifiers(pptrs, &pptrsv->vlan6, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->vlan6);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlan6);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlan6, &pptrsv->vlan6.bta, &pptrsv->vlan6.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlan6, &pptrsv->vlan6.bitr, NULL);
@@ -2367,7 +2440,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
           pptrsv->mpls4.f_header = pptrs->f_header;
           pptrsv->mpls4.f_data = pptrs->f_data;
           pptrsv->mpls4.f_tpl = pptrs->f_tpl;
-	  pptrsv->mpls4.flow_type = pptrs->flow_type;
+	  memcpy(&pptrsv->mpls4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
           if (req->bpf_filter) {
 	    u_char *ptr = pptrsv->mpls4.mpls_ptr;
@@ -2412,14 +2485,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->mpls4.l4_proto = 0;
 	  memcpy(&pptrsv->mpls4.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
-	  if (tpl->tpl[NF9_APPLICATION_ID].len == 4) {
-	    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
-	    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs->f_status_g;
-            pm_class_t class_id = 0;
-
-            memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
-	    if (entry) pptrsv->mpls4.class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
-	  }
+	  NF_process_classifiers(pptrs, &pptrsv->mpls4, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->mpls4);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->mpls4);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->mpls4, &pptrsv->mpls4.bta, &pptrsv->mpls4.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->mpls4, &pptrsv->mpls4.bitr, NULL);
@@ -2434,7 +2501,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->mpls6.f_header = pptrs->f_header;
 	  pptrsv->mpls6.f_data = pptrs->f_data;
 	  pptrsv->mpls6.f_tpl = pptrs->f_tpl;
-	  pptrsv->mpls6.flow_type = pptrs->flow_type;
+	  memcpy(&pptrsv->mpls6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
 	  if (req->bpf_filter) {
 	    u_char *ptr = pptrsv->mpls6.mpls_ptr;
@@ -2478,14 +2545,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->mpls6.l4_proto = 0;
 	  memcpy(&pptrsv->mpls6.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
-	  if (tpl->tpl[NF9_APPLICATION_ID].len == 4) {
-	    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
-	    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs->f_status_g;
-            pm_class_t class_id = 0;
-
-            memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
-	    if (entry) pptrsv->mpls6.class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
-	  }
+	  NF_process_classifiers(pptrs, &pptrsv->mpls6, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->mpls6);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->mpls6);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->mpls6, &pptrsv->mpls6.bta, &pptrsv->mpls6.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->mpls6, &pptrsv->mpls6.bitr, NULL);
@@ -2500,7 +2561,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->vlanmpls4.f_header = pptrs->f_header;
 	  pptrsv->vlanmpls4.f_data = pptrs->f_data;
 	  pptrsv->vlanmpls4.f_tpl = pptrs->f_tpl;
-	  pptrsv->vlanmpls4.flow_type = pptrs->flow_type;
+	  memcpy(&pptrsv->vlanmpls4.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
           if (req->bpf_filter) {
             u_char *ptr = pptrsv->vlanmpls4.mpls_ptr;
@@ -2547,14 +2608,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->vlanmpls4.l4_proto = 0;
 	  memcpy(&pptrsv->vlanmpls4.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
-	  if (tpl->tpl[NF9_APPLICATION_ID].len == 4) {
-	    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
-	    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs->f_status_g;
-            pm_class_t class_id = 0;
-
-            memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
-	    if (entry) pptrsv->vlanmpls4.class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
-	  }
+	  NF_process_classifiers(pptrs, &pptrsv->vlanmpls4, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->vlanmpls4);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlanmpls4);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bta, &pptrsv->vlanmpls4.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlanmpls4, &pptrsv->vlanmpls4.bitr, NULL);
@@ -2569,7 +2624,7 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->vlanmpls6.f_header = pptrs->f_header;
 	  pptrsv->vlanmpls6.f_data = pptrs->f_data;
 	  pptrsv->vlanmpls6.f_tpl = pptrs->f_tpl;
-	  pptrsv->vlanmpls6.flow_type = pptrs->flow_type;
+	  memcpy(&pptrsv->vlanmpls6.flow_type, &pptrs->flow_type, sizeof(struct flow_chars));
 
           if (req->bpf_filter) {
             u_char *ptr = pptrsv->vlanmpls6.mpls_ptr;
@@ -2615,14 +2670,8 @@ void process_v9_packet(unsigned char *pkt, u_int16_t len, struct packet_ptrs_vec
 	  pptrsv->vlanmpls6.l4_proto = 0;
 	  memcpy(&pptrsv->vlanmpls6.l4_proto, pkt+tpl->tpl[NF9_L4_PROTOCOL].off, tpl->tpl[NF9_L4_PROTOCOL].len);
 
-	  if (tpl->tpl[NF9_APPLICATION_ID].len == 4) {
-	    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs->f_status;
-	    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs->f_status_g;
-            pm_class_t class_id = 0;
-
-            memcpy(&class_id, pkt+tpl->tpl[NF9_APPLICATION_ID].off, 4);
-	    if (entry) pptrsv->vlanmpls6.class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
-	  }
+	  NF_process_classifiers(pptrs, &pptrsv->vlanmpls6, pkt, tpl);
+	  NF_mpls_vpn_rd_fromie90(&pptrsv->vlanmpls6);
 	  if (config.nfacctd_isis) isis_srcdst_lookup(&pptrsv->vlanmpls6);
 	  if (config.bgp_daemon_to_xflow_agent_map) BTA_find_id((struct id_table *)pptrs->bta_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bta, &pptrsv->vlanmpls6.bta2);
 	  if (config.nfacctd_flow_to_rd_map) NF_find_id((struct id_table *)pptrs->bitr_table, &pptrsv->vlanmpls6, &pptrsv->vlanmpls6.bitr, NULL);
@@ -2863,7 +2912,6 @@ void NF_compute_once()
   IP4HdrSz = sizeof(struct pm_iphdr);
   IP4TlSz = sizeof(struct pm_iphdr)+sizeof(struct pm_tlhdr);
   PptrsSz = sizeof(struct packet_ptrs);
-  CSSz = sizeof(struct class_st);
   HostAddrSz = sizeof(struct host_addr);
   UDPHdrSz = sizeof(struct pm_udphdr);
   IpFixHdrSz = sizeof(struct struct_header_ipfix); 
@@ -2873,45 +2921,72 @@ void NF_compute_once()
   IP6TlSz = sizeof(struct ip6_hdr)+sizeof(struct pm_tlhdr);
 }
 
-u_int8_t NF_evaluate_flow_type(struct template_cache_entry *tpl, struct packet_ptrs *pptrs)
+void NF_evaluate_flow_type(struct flow_chars *flow_type, struct template_cache_entry *tpl, struct packet_ptrs *pptrs)
 {
-  u_int8_t ret = PM_FTYPE_TRAFFIC;
+  u_int8_t ret = FALSE;
   u_int8_t have_ip_proto = FALSE;
+
+  memset(flow_type, 0, sizeof(struct flow_chars));
 
   /* first round: event vs traffic */
   if (!tpl->tpl[NF9_IN_BYTES].len && !tpl->tpl[NF9_OUT_BYTES].len && !tpl->tpl[NF9_FLOW_BYTES].len &&
       !tpl->tpl[NF9_INITIATOR_OCTETS].len && !tpl->tpl[NF9_RESPONDER_OCTETS].len && /* packets? && */
-      !tpl->tpl[NF9_DATALINK_FRAME_SECTION].len && !tpl->tpl[NF9_LAYER2_PKT_SECTION_DATA].len) {
+      !tpl->tpl[NF9_DATALINK_FRAME_SECTION].len && !tpl->tpl[NF9_LAYER2_PKT_SECTION_DATA].len &&
+      !tpl->tpl[NF9_LAYER2OCTETDELTACOUNT].len) {
     ret = NF9_FTYPE_EVENT;
   }
   else {
     if ((tpl->tpl[NF9_IN_VLAN].len && *(pptrs->f_data+tpl->tpl[NF9_IN_VLAN].off) > 0) ||
-        (tpl->tpl[NF9_OUT_VLAN].len && *(pptrs->f_data+tpl->tpl[NF9_OUT_VLAN].off) > 0)) ret += PM_FTYPE_VLAN;
-    if (tpl->tpl[NF9_MPLS_LABEL_1].len /* check: value > 0 ? */) ret += PM_FTYPE_MPLS;
+        (tpl->tpl[NF9_OUT_VLAN].len && *(pptrs->f_data+tpl->tpl[NF9_OUT_VLAN].off) > 0)) {
+      ret += PM_FTYPE_VLAN;
+    }
+
+    if (tpl->tpl[NF9_MPLS_LABEL_1].len /* check: value > 0 ? */) {
+      ret += PM_FTYPE_MPLS;
+    }
 
     /* Explicit IP protocol definition first; a bit of heuristics as fallback */
     if (tpl->tpl[NF9_IP_PROTOCOL_VERSION].len) {
       if (*(pptrs->f_data+tpl->tpl[NF9_IP_PROTOCOL_VERSION].off) == 4) {
+	ret += PM_FTYPE_IPV4;
 	have_ip_proto = TRUE;
       }
       else if (*(pptrs->f_data+tpl->tpl[NF9_IP_PROTOCOL_VERSION].off) == 6) {
-	ret += PM_FTYPE_TRAFFIC_IPV6;
+	ret += PM_FTYPE_IPV6;
 	have_ip_proto = TRUE;
       }
     }
 
     if (!have_ip_proto) {
-      if (tpl->tpl[NF9_IPV4_SRC_ADDR].len) {
+      /* If we have both v4 and v6 as part of the same flow, let's run the
+	 cheapest check possible to try to determine which one is non-zero */
+      if ((tpl->tpl[NF9_IPV4_SRC_ADDR].len || tpl->tpl[NF9_IPV4_DST_ADDR].len) &&
+	  (tpl->tpl[NF9_IPV6_SRC_ADDR].len || tpl->tpl[NF9_IPV6_DST_ADDR].len)) {
+	if (*(pptrs->f_data+tpl->tpl[NF9_IPV4_SRC_ADDR].off) != 0) {
+          ret += PM_FTYPE_IPV4;
+	  have_ip_proto = TRUE;
+	}
+	else {
+	  ret += PM_FTYPE_IPV6;
+	  have_ip_proto = TRUE;
+	}
+      }
+      else if (tpl->tpl[NF9_IPV4_SRC_ADDR].len || tpl->tpl[NF9_IPV4_DST_ADDR].len) {
+        ret += PM_FTYPE_IPV4;
 	have_ip_proto = TRUE;
       }
-      else if (tpl->tpl[NF9_IPV6_SRC_ADDR].len) {
-	ret += PM_FTYPE_TRAFFIC_IPV6;
+      else if (tpl->tpl[NF9_IPV6_SRC_ADDR].len || tpl->tpl[NF9_IPV6_DST_ADDR].len) {
+	ret += PM_FTYPE_IPV6;
 	have_ip_proto = TRUE;
       }
     }
 
     if (tpl->tpl[NF9_DATALINK_FRAME_SECTION].len || tpl->tpl[NF9_LAYER2_PKT_SECTION_DATA].len) {
       ret = NF9_FTYPE_DLFS;
+    }
+
+    if (tpl->tpl[NF9_INITIATOR_OCTETS].len && tpl->tpl[NF9_RESPONDER_OCTETS].len) {
+      flow_type->is_bi = TRUE;
     }
   }
 
@@ -2923,7 +2998,7 @@ u_int8_t NF_evaluate_flow_type(struct template_cache_entry *tpl, struct packet_p
   /* NetFlow/IPFIX option final override */
   if (tpl->template_type == 1) ret = NF9_FTYPE_OPTION;
 
-  return ret;
+  flow_type->traffic_type = ret;
 }
 
 u_int16_t NF_evaluate_direction(struct template_cache_entry *tpl, struct packet_ptrs *pptrs)
@@ -3011,7 +3086,8 @@ int NF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
 
   sa = (struct sockaddr *) pptrs->f_agent;
 
-  /* The id_table is shared between by IPv4 and IPv6 NetFlow agents.
+  /* 
+     The id_table is shared between by IPv4 and IPv6 NetFlow agents.
      IPv4 ones are in the lower part (0..x), IPv6 ones are in the upper
      part (x+1..end)
   */
@@ -3024,7 +3100,7 @@ int NF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
     pptrs->have_tag2 = FALSE;
   }
 
-  /* Giving a first try with index(es) */
+  /* If we have any index defined, let's use it */
   if (config.maps_index && pretag_index_have_one(t)) {
     struct id_entry *index_results[ID_TABLE_INDEX_RESULTS];
     u_int32_t iterator, num_results;
@@ -3036,7 +3112,7 @@ int NF_find_id(struct id_table *t, struct packet_ptrs *pptrs, pm_id_t *tag, pm_i
       if (!(ret & PRETAG_MAP_RCODE_JEQ)) goto exit_lane;
     }
 
-    /* if we have at least one index we trust we did a good job */
+    /* done */
     goto exit_lane;
   }
 
@@ -3103,6 +3179,18 @@ struct xflow_status_entry *nfv9_check_status(struct packet_ptrs *pptrs, u_int32_
   }
 
   return entry;
+}
+
+void NF_process_classifiers(struct packet_ptrs *pptrs_main, struct packet_ptrs *pptrs, unsigned char *pkt, struct template_cache_entry *tpl)
+{
+  if (tpl->tpl[NF9_APPLICATION_ID].len == 2 || tpl->tpl[NF9_APPLICATION_ID].len == 3 || tpl->tpl[NF9_APPLICATION_ID].len == 5) {
+    struct xflow_status_entry *entry = (struct xflow_status_entry *) pptrs_main->f_status;
+    struct xflow_status_entry *gentry = (struct xflow_status_entry *) pptrs_main->f_status_g;
+    pm_class_t class_id = 0;
+
+    memcpy(&class_id, (pkt + tpl->tpl[NF9_APPLICATION_ID].off + 1), (tpl->tpl[NF9_APPLICATION_ID].len - 1));
+    if (entry) pptrs->class = NF_evaluate_classifiers(entry->class, &class_id, gentry);
+  }
 }
 
 pm_class_t NF_evaluate_classifiers(struct xflow_status_entry_class *entry, pm_class_t *class_id, struct xflow_status_entry *gentry)
@@ -3208,3 +3296,22 @@ void NF_init_zmq_host(void *zh, int *pipe_fd)
   if (pipe_fd) (*pipe_fd) = p_zmq_get_fd(zmq_host);
 }
 #endif
+
+void NF_mpls_vpn_rd_fromie90(struct packet_ptrs *pptrs)
+{
+  struct struct_header_v5 *hdr = (struct struct_header_v5 *) pptrs->f_header;
+  struct template_cache_entry *tpl = (struct template_cache_entry *) pptrs->f_tpl;
+
+  switch(hdr->version) {
+  case 10:
+  case 9:
+    if (tpl->tpl[NF9_MPLS_VPN_RD].len) {
+      memcpy(&pptrs->bitr, pptrs->f_data+tpl->tpl[NF9_MPLS_VPN_RD].off, MIN(tpl->tpl[NF9_MPLS_VPN_RD].len, 8));
+      bgp_rd_ntoh((rd_t *)&pptrs->bitr);
+      bgp_rd_origin_set((rd_t *)&pptrs->bitr, RD_ORIGIN_FLOW);
+    }
+    break;
+  default:
+    break;
+  }
+}

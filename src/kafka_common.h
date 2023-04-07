@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -57,6 +57,7 @@ struct p_kafka_host {
 
 #ifdef WITH_SERDES
   serdes_schema_t *sd_schema[MAX_AVRO_SCHEMA];
+  struct p_broker_timers sd_schema_timers;
 #endif
 
   struct p_broker_timers btimers;
@@ -64,6 +65,8 @@ struct p_kafka_host {
 
 /* prototypes */
 extern void p_kafka_init_host(struct p_kafka_host *, char *);
+extern void p_kafka_init_host_struct(struct p_kafka_host *);
+extern void p_kafka_init_host_conf(struct p_kafka_host *, char *);
 extern void p_kafka_init_topic_rr(struct p_kafka_host *);
 
 extern void p_kafka_set_broker(struct p_kafka_host *, char *, int);
@@ -91,13 +94,14 @@ extern void p_kafka_apply_global_config(struct p_kafka_host *);
 extern void p_kafka_apply_topic_config(struct p_kafka_host *);
 
 extern void p_kafka_logger(const rd_kafka_t *, int, const char *, const char *);
-extern void p_kafka_msg_delivered(rd_kafka_t *, void *, size_t, int, void *, void *);
+extern void p_kafka_msg_delivered(rd_kafka_t *, const rd_kafka_message_t *, void *);
 extern void p_kafka_msg_error(rd_kafka_t *, int, const char *, void *);
 extern int p_kafka_stats(rd_kafka_t *, char *, size_t, void *);
 
 extern int p_kafka_connect_to_produce(struct p_kafka_host *);
 extern int p_kafka_produce_data(struct p_kafka_host *, void *, size_t);
-extern int p_kafka_produce_data_to_part(struct p_kafka_host *, void *, size_t, int);
+extern int p_kafka_produce_data_and_free(struct p_kafka_host *, void *, size_t);
+extern int p_kafka_produce_data_to_part(struct p_kafka_host *, void *, size_t, int, int);
 
 extern int p_kafka_connect_to_consume(struct p_kafka_host *);
 extern int p_kafka_manage_consumer(struct p_kafka_host *, int);
@@ -113,13 +117,10 @@ extern int write_binary_kafka(void *, void *, size_t);
 /* global vars */
 extern struct p_kafka_host kafkap_kafka_host;
 extern struct p_kafka_host bgp_daemon_msglog_kafka_host;
-extern struct p_kafka_host bgp_table_dump_kafka_host;
 extern struct p_kafka_host bmp_daemon_msglog_kafka_host;
-extern struct p_kafka_host bmp_dump_kafka_host;
 extern struct p_kafka_host sfacctd_counter_kafka_host;
 extern struct p_kafka_host telemetry_kafka_host;
 extern struct p_kafka_host telemetry_daemon_msglog_kafka_host;
-extern struct p_kafka_host telemetry_dump_kafka_host;
 extern struct p_kafka_host nfacctd_kafka_host;
 
 extern int kafkap_ret_err_cb;

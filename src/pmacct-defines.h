@@ -1,6 +1,6 @@
 /*
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2022 by Paolo Lucente
 */
 
 /*
@@ -40,8 +40,12 @@
 #define MAX_PROTOCOL_LEN 32 
 #define DEFAULT_AVRO_SCHEMA_REFRESH_TIME 60
 #define MAX_AVRO_SCHEMA 65535 
+#define MIN_REFRESH_TIME 60
+#define MAX_REFRESH_TIME 86400
 #define DEFAULT_IMT_PLUGIN_POLL_TIMEOUT 5
 #define DEFAULT_SLOTH_SLEEP_TIME 5
+#define DEFAULT_SEP ","
+#define DEFAULT_SEP_INT ','
 #define UINT32T_THRESHOLD 4290000000UL
 #define UINT64T_THRESHOLD 18446744073709551360ULL
 #define INT64T_THRESHOLD 9223372036854775807ULL
@@ -142,7 +146,7 @@
 #define ACCT_NF			2	/* NetFlow */
 #define ACCT_SF			3	/* sFlow */
 #define ACCT_UL			4	/* Linux NetFilter NFLOG */
-#define ACCT_FWPLANE_MAX	100	/* Max ID for forwarding-plane daemons */ 
+#define ACCT_FWDPLANE_MAX	100	/* Max ID for forwarding-plane daemons */ 
 #define ACCT_PMBGP		101	/* standalone BGP daemon */
 #define ACCT_PMBMP		102	/* standalone BMP daemon */
 #define ACCT_CTLPLANE_MAX	200	/* Max ID for control-plane daemons */ 
@@ -151,17 +155,17 @@
 
 /* map type */
 #define MAP_TAG 		0	/* pre_tag_map */
-#define MAP_BGP_PEER_AS_SRC	100	/* bgp_peer_src_as_map */
-#define MAP_BGP_TO_XFLOW_AGENT	101	/* bgp_to_agent_map */
-#define MAP_BGP_SRC_LOCAL_PREF	102	/* bgp_src_local_pref_map */
-#define MAP_BGP_SRC_MED		103	/* bgp_src_med_map */
-#define MAP_FLOW_TO_RD		104	/* flow_to_rd_map */
-#define MAP_SAMPLING		105	/* sampling_map */
-#define MAP_TEE_RECVS		106	/* tee_receivers */
-#define MAP_IGP			107	/* igp_daemon_map */
-#define MAP_CUSTOM_PRIMITIVES	108	/* aggregate_primitives */
-#define MAP_BGP_XCS		109	/* bgp_xconnect_map */
-#define MAP_PCAP_INTERFACES	110	/* pcap_interfaces_map */
+#define MAP_BGP_PEER_AS_SRC	1000	/* bgp_peer_src_as_map */
+#define MAP_BGP_TO_XFLOW_AGENT	1001	/* bgp_to_agent_map */
+#define MAP_BGP_SRC_LOCAL_PREF	1002	/* bgp_src_local_pref_map */
+#define MAP_BGP_SRC_MED		1003	/* bgp_src_med_map */
+#define MAP_FLOW_TO_RD		1004	/* flow_to_rd_map */
+#define MAP_SAMPLING		1005	/* sampling_map */
+#define MAP_TEE_RECVS		1006	/* tee_receivers */
+#define MAP_IGP			1007	/* igp_daemon_map */
+#define MAP_CUSTOM_PRIMITIVES	1008	/* aggregate_primitives */
+#define MAP_BGP_XCS		1009	/* bgp_xconnect_map */
+#define MAP_PCAP_INTERFACES	1010	/* pcap_interfaces_map */
 
 /* PRIMITIVES DEFINITION: START */
 /* internal: first registry, ie. what_to_count, aggregation, etc. */
@@ -229,7 +233,7 @@
 #define COUNT_INT_TIMESTAMP_ARRIVAL	0x0002000000000800ULL
 #define COUNT_INT_MPLS_LABEL_TOP	0x0002000000001000ULL
 #define COUNT_INT_MPLS_LABEL_BOTTOM	0x0002000000002000ULL
-#define COUNT_INT_MPLS_STACK_DEPTH	0x0002000000004000ULL
+/* #define XXX: available 		0x0002000000004000ULL */
 #define COUNT_INT_LABEL			0x0002000000008000ULL
 #define COUNT_INT_EXPORT_PROTO_SEQNO	0x0002000000010000ULL
 #define COUNT_INT_EXPORT_PROTO_VERSION  0x0002000000020000ULL
@@ -255,6 +259,11 @@
 #define COUNT_INT_TUNNEL_DST_PORT	0x0002002000000000ULL
 #define COUNT_INT_EXPORT_PROTO_TIME	0x0002004000000000ULL
 #define COUNT_INT_TIMESTAMP_EXPORT	0x0002004000000000ULL /* alias of COUNT_EXPORT_PROTO_TIME */
+#define COUNT_INT_FWD_STATUS		0x0002008000000000ULL
+#define COUNT_INT_MPLS_LABEL_STACK	0x0002010000000000ULL
+#define COUNT_INT_FW_EVENT		0x0002020000000000ULL
+#define COUNT_INT_TUNNEL_TCPFLAGS	0x0002040000000000ULL
+#define COUNT_INT_OUT_VLAN		0x0002080000000000ULL
 #define COUNT_INT_CUSTOM_PRIMITIVES	0x0002800000000000ULL
 
 #define COUNT_INDEX_MASK	0xFFFF
@@ -327,7 +336,6 @@
 #define COUNT_TIMESTAMP_ARRIVAL		(COUNT_INT_TIMESTAMP_ARRIVAL & COUNT_REGISTRY_MASK)
 #define COUNT_MPLS_LABEL_TOP		(COUNT_INT_MPLS_LABEL_TOP & COUNT_REGISTRY_MASK)
 #define COUNT_MPLS_LABEL_BOTTOM		(COUNT_INT_MPLS_LABEL_BOTTOM & COUNT_REGISTRY_MASK)
-#define COUNT_MPLS_STACK_DEPTH		(COUNT_INT_MPLS_STACK_DEPTH & COUNT_REGISTRY_MASK)
 #define COUNT_LABEL			(COUNT_INT_LABEL & COUNT_REGISTRY_MASK)
 #define COUNT_EXPORT_PROTO_SEQNO	(COUNT_INT_EXPORT_PROTO_SEQNO & COUNT_REGISTRY_MASK)
 #define COUNT_EXPORT_PROTO_VERSION	(COUNT_INT_EXPORT_PROTO_VERSION & COUNT_REGISTRY_MASK)
@@ -352,7 +360,11 @@
 #define COUNT_TUNNEL_SRC_PORT		(COUNT_INT_TUNNEL_SRC_PORT & COUNT_REGISTRY_MASK)
 #define COUNT_TUNNEL_DST_PORT		(COUNT_INT_TUNNEL_DST_PORT & COUNT_REGISTRY_MASK)
 #define COUNT_EXPORT_PROTO_TIME		(COUNT_INT_EXPORT_PROTO_TIME & COUNT_REGISTRY_MASK)
-#define COUNT_TIMESTAMP_EXPORT		(COUNT_INT_TIMESTAMP_EXPORT & COUNT_REGISTRY_MASK) /* alias of COUNT_EXPORT_PROTO_TIME */
+#define COUNT_FWD_STATUS		(COUNT_INT_FWD_STATUS & COUNT_REGISTRY_MASK)
+#define COUNT_MPLS_LABEL_STACK		(COUNT_INT_MPLS_LABEL_STACK & COUNT_REGISTRY_MASK)
+#define COUNT_FW_EVENT			(COUNT_INT_FW_EVENT & COUNT_REGISTRY_MASK)
+#define COUNT_TUNNEL_TCPFLAGS		(COUNT_INT_TUNNEL_TCPFLAGS & COUNT_REGISTRY_MASK)
+#define COUNT_OUT_VLAN			(COUNT_INT_OUT_VLAN & COUNT_REGISTRY_MASK)
 #define COUNT_CUSTOM_PRIMITIVES		(COUNT_INT_CUSTOM_PRIMITIVES & COUNT_REGISTRY_MASK)
 /* PRIMITIVES DEFINITION: END */
 
@@ -430,6 +442,11 @@
 #define DIRECTION_TAG		0x00000004
 #define DIRECTION_TAG2		0x00000008
 
+#define SAMPLING_DIRECTION_UNKNOWN	0
+#define SAMPLING_DIRECTION_INGRESS	1
+#define SAMPLING_DIRECTION_EGRESS	2
+#define SAMPLING_DIRECTION_MAX		2
+
 #define IFINDEX_STATIC		0x00000001
 #define IFINDEX_TAG		0x00000002
 #define IFINDEX_TAG2		0x00000004
@@ -463,6 +480,8 @@
 #define DYN_STR_MONGODB_TABLE		4
 #define DYN_STR_SQL_TABLE		5
 #define DYN_STR_PRINT_FILE		6
+#define DYN_STR_WRITER_ID		7
+#define DYN_STR_MAX			7
 
 typedef u_int32_t pm_class_t;
 typedef u_int64_t pm_id_t;
@@ -492,7 +511,7 @@ typedef struct {
 typedef struct {
   u_int32_t len;
   char *val;
-} pt_label_t;
+} __attribute__ ((packed))pt_label_t;
 
 typedef struct {
   u_int8_t set;
@@ -527,23 +546,22 @@ typedef u_int64_t pm_counter_t;
 #define NF_NET_FALLBACK	0x80000000 /* Fallback flag */
 
 /* flow type */
-#define PM_FTYPE_TRAFFIC		1  /* temporary: re-coding needed */
-#define PM_FTYPE_TRAFFIC_IPV6		1
-#define PM_FTYPE_IPV4			1
-#define PM_FTYPE_IPV6			2
+#define PM_FTYPE_TRAFFIC		1
+#define PM_FTYPE_IPV4			2
+#define PM_FTYPE_IPV6			3
 #define PM_FTYPE_VLAN			5
-#define PM_FTYPE_VLAN_IPV4		6  /* PM_FTYPE_VLAN + PM_FTYPE_IPV4 */
-#define PM_FTYPE_VLAN_IPV6		7  /* PM_FTYPE_VLAN + PM_FTYPE_IPV6 */
+#define PM_FTYPE_VLAN_IPV4		7  /* PM_FTYPE_VLAN + PM_FTYPE_IPV4 */
+#define PM_FTYPE_VLAN_IPV6		8  /* PM_FTYPE_VLAN + PM_FTYPE_IPV6 */
 #define PM_FTYPE_MPLS			10
-#define PM_FTYPE_MPLS_IPV4		11 /* PM_FTYPE_MPLS + PM_FTYPE_IPV4 */
-#define PM_FTYPE_MPLS_IPV6		12 /* PM_FTYPE_MPLS + PM_FTYPE_IPV6 */
-#define PM_FTYPE_VLAN_MPLS		15
-#define PM_FTYPE_VLAN_MPLS_IPV4		16 /* PM_FTYPE_VLAN_MPLS + PM_FTYPE_IPV4 */
-#define PM_FTYPE_VLAN_MPLS_IPV6		17 /* PM_FTYPE_VLAN_MPLS + PM_FTYPE_IPV6 */
+#define PM_FTYPE_MPLS_IPV4		12 /* PM_FTYPE_MPLS + PM_FTYPE_IPV4 */
+#define PM_FTYPE_MPLS_IPV6		13 /* PM_FTYPE_MPLS + PM_FTYPE_IPV6 */
+#define PM_FTYPE_VLAN_MPLS		15 /* PM_FTYPE_MPLS + PM_FTYPE_VLAN */
+#define PM_FTYPE_VLAN_MPLS_IPV4		17 /* PM_FTYPE_VLAN_MPLS + PM_FTYPE_IPV4 */
+#define PM_FTYPE_VLAN_MPLS_IPV6		18 /* PM_FTYPE_VLAN_MPLS + PM_FTYPE_IPV6 */
 #define PM_FTYPE_TRAFFIC_MAX		99  /* temporary: re-coding needed */
 
 /* flow type: NetFlow/IPFIX extended code-points */
-#define NF9_FTYPE_DLFS			3
+#define NF9_FTYPE_DLFS			4
 #define NF9_FTYPE_EVENT			100 /* temporary: re-coding needed */
 #define NF9_FTYPE_NAT_EVENT             100
 #define NF9_FTYPE_OPTION		200
@@ -557,3 +575,10 @@ typedef u_int64_t pm_counter_t;
 #define CUSTOM_PRIMITIVE_L4_PTR		5
 #define CUSTOM_PRIMITIVE_PAYLOAD_PTR	6
 #define CUSTOM_PRIMITIVE_MAX_PPTRS_IDX	7
+
+/* libpcap supports pkg-config only since recently,
+   so fixing this little >= 1.1.0 definition here for
+   OS's coming with vintage versions installed */
+#ifndef PCAP_NETMASK_UNKNOWN
+#define PCAP_NETMASK_UNKNOWN		0xffffffff
+#endif

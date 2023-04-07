@@ -1,6 +1,6 @@
 /*  
     pmacct (Promiscuous mode IP Accounting package)
-    pmacct is Copyright (C) 2003-2020 by Paolo Lucente
+    pmacct is Copyright (C) 2003-2021 by Paolo Lucente
 */
 
 /*
@@ -20,7 +20,6 @@
 */
 
 #include "pmacct.h"
-#include "addr.h"
 #include "network.h"
 #include "thread_pool.h"
 
@@ -63,7 +62,7 @@ int parse_proxy_header(int fd, struct host_addr *addr, u_int16_t *port)
     /* Find the Source IP Address */
     char *s = &hdr.v1.line[11];
     char *e = strchr(s, ' ');
-    snprintf(ip_address, (e - s + 1), "%s", s);
+    snprintf(ip_address, INET6_ADDRSTRLEN, "%s", s);
 
     /* Find the Source TCP Port */
     s = e + 1;
