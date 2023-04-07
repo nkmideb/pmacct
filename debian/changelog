@@ -1,3 +1,9 @@
+pmacct (1.7.8-0nkmi1~dist) unstable; urgency=medium
+
+  * nkmideb release of 1.7.8
+
+ -- Sorah Fukumori <her@sorah.jp>  Sat, 08 Apr 2023 02:26:01 +0900
+
 pmacct (1.7.7-1) unstable; urgency=medium
 
   * QA upload.
